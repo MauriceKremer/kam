@@ -45,7 +45,7 @@ const (
 	PAYLOAD_VERSION_V4 = 0x03 // v4 - Future version
 )
 
-func (m *Manager) parseAndStoreLoop(ctx context.Context) {
+func (m *Manager) routeLoop(ctx context.Context) {
 	for {
 		select {
 		case <-m.stopChan:
@@ -74,11 +74,11 @@ func (m *Manager) parseAndStoreLoop(ctx context.Context) {
 
 				//packet payload is at least 2 bytes (1 byte for route/payload type, 1 byte for payload version)
 				if len(payload) < 2 {
-					slog.Info("[Parser] Warning: Received malformed packet with insufficient payload length")
+					slog.Info("[Router] Warning: Received malformed packet with insufficient payload length")
 					continue
 				}
 
-				slog.Debug("[Parser] Received packet", "cmdByte", cmdByte, "payload", payload)
+				slog.Debug("[Router] Received packet", "cmdByte", cmdByte, "payload", payload)
 
 				header := payload[0]
 
@@ -88,11 +88,11 @@ func (m *Manager) parseAndStoreLoop(ctx context.Context) {
 				version := (header >> 6) & 0x03
 
 				if version != PAYLOAD_VERSION_V1 {
-					slog.Info("[Parser] Warning: Received unsupported packet version", "version", version)
+					slog.Info("[Router] Warning: Received unsupported packet version", "version", version)
 					continue
 				}
 
-				slog.Info("[Parser] Decoded packet header...", "routeType", RouteType(routeType), "payloadType", PayloadType(payloadType), "version", PayloadVersion(version))
+				slog.Info("[Router] Decoded packet header...", "routeType", RouteType(routeType), "payloadType", PayloadType(payloadType), "version", PayloadVersion(version))
 
 			}
 		}

@@ -57,9 +57,9 @@ func NewManager(portName string, baud int) (*Manager, error) {
 
 func (m *Manager) Start() {
 	// Start the goroutines
-	go m.readLoop()                              // located in kiss_reader.go
-	go m.writeLoop()                             // located in kiss_writer.go
-	go m.parseAndStoreLoop(context.Background()) // located in kiss_parser.go
+	go m.readLoop()                      // located in kiss_reader.go
+	go m.writeLoop()                     // located in kiss_writer.go
+	go m.routeLoop(context.Background()) // located in kiss_router.go
 }
 
 func (m *Manager) Stop() {
