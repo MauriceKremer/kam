@@ -27,7 +27,7 @@ func (m *Manager) readLoop() {
 					copy(frameCopy, frameBuffer)
 					m.rxChan <- frameCopy
 					frameBuffer = frameBuffer[:0] // Reset the buffer
-					slog.Info("Frame received", "frame", frameCopy)
+					slog.Debug("KissReader - Frame received", "frame", frameCopy)
 				}
 			case FESC:
 				inEscape = true

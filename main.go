@@ -4,12 +4,24 @@ import (
 	"context"
 	"log"
 	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"kam.bytecoder.nl/internal/kiss"
 )
 
 func main() {
+	level := slog.LevelInfo
+	if os.Getenv("DEBUG") == "1" {
+		level = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+	}))
+	slog.SetDefault(logger)
+
 	// Initialize the KISS manager
 	manager, err := kiss.NewManager("/dev/cu.usbserial-0001", 115200)
 	if err != nil {
@@ -47,4 +59,12 @@ func main() {
 	slog.Info("Bandwidth", "kHz", float64(config.Bandwidth)/1000.0)
 	slog.Info("Spreading Factor", "SF", config.SpreadingFactor)
 	slog.Info("Coding Rate", "CR", config.CodingRate)
+
+	slog.Info("Press Ctrl+C to stop")
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	<-sigChan
+
+	manager.Stop()
+	slog.Info("Stopped")
 }
