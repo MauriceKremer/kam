@@ -2,6 +2,7 @@ package kiss
 
 import (
 	"context"
+	"encoding/hex"
 	"log/slog"
 )
 
@@ -77,7 +78,7 @@ func (m *Manager) routeLoop(ctx context.Context) {
 					continue
 				}
 
-				slog.Debug("[Router] Received packet", "cmdByte", cmdByte, "payload", payload)
+				slog.Debug("[Router] Received packet", "cmdByte", cmdByte, "payload", hex.EncodeToString(payload))
 
 				header := payload[0]
 
@@ -132,7 +133,7 @@ func (m *Manager) routeLoop(ctx context.Context) {
 
 				// Extract the clean application-layer payload
 				appPayload := payload[cursor:]
-				slog.Info("[Router] Dispatching packet...", "payload", appPayload)
+				slog.Info("[Router] Dispatching packet...", "payload", hex.EncodeToString(appPayload))
 
 				// 2. Dispatch to the appropriate handler
 				switch payloadType {
