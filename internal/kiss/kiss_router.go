@@ -71,8 +71,7 @@ func (m *Manager) routeLoop(ctx context.Context) {
 				m.registry.Dispatch(subCmd, subPayload)
 
 			case CMD_DATA:
-
-				//packet payload is at least 2 bytes (1 byte for route/payload type, 1 byte for payload version)
+				// Packet payload must be at least 2 bytes to read the header safely
 				if len(payload) < 2 {
 					slog.Info("[Router] Warning: Received malformed packet with insufficient payload length")
 					continue
@@ -94,10 +93,60 @@ func (m *Manager) routeLoop(ctx context.Context) {
 
 				slog.Info("[Router] Decoded packet header...", "routeType", RouteType(routeType), "payloadType", PayloadType(payloadType), "version", PayloadVersion(version))
 
-			}
-		}
-	}
-}
+				// --- Dynamic Header Slicing Logic ---
+				cursor := 1 // Account for the 1-byte header already processed
+
+				if routeType == ROUTE_TYPE_TRANSPORT_FLOOD || routeType == ROUTE_TYPE_TRANSPORT_DIRECT {
+					// 1. Skip the 4-byte transport codes block
+					cursor += 4
+
+					// 2. Parse the variable-length path log frame if present
+					if cursor < len(payload) {
+						pathFlags := payload[cursor]
+						cursor++ // Consume the path flags byte
+
+						// Extract number of hops from the lower 4 bits
+						numHops := int(pathFlags & 0x0F)
+
+						// Determine the hash size per hop from the upper bits
+						hashSize := 1
+						if (pathFlags & 0x40) != 0 {
+							hashSize = 2 // 2-byte node hashes
+						} else if (pathFlags & 0x80) != 0 {
+							hashSize = 3
+						}
+
+						// Skip the accumulated node hop hashes
+						cursor += numHops * hashSize
+					}
+				} else {
+					// Standard Flood or Direct packets only have a 1-byte hop limit/metric
+					cursor += 1
+				}
+
+				// Safety check to avoid slicing out of bounds
+				if cursor > len(payload) {
+					slog.Info("[Router] Warning: Packet layout truncated or malformed parsing network headers")
+					continue
+				}
+
+				// Extract the clean application-layer payload
+				appPayload := payload[cursor:]
+				slog.Info("[Router] Dispatching packet...", "payload", appPayload)
+
+				// 2. Dispatch to the appropriate handler
+				switch payloadType {
+				case PAYLOAD_TYPE_ADVERT:
+					m.handleAdvert(appPayload)
+				case PAYLOAD_TYPE_GRP_TXT:
+					m.handleGroupText(appPayload)
+				default:
+					slog.Info("[Router] Warning: Received unhandled payload type", "payloadType", PayloadType(payloadType))
+				} // Closes switch payloadType
+			} // Closes switch cmdByte
+		} // Closes select
+	} // Closes for
+} // Closes routeLoop function
 
 func (rt RouteType) String() string {
 	switch rt {
