@@ -11,7 +11,6 @@ func (m *Manager) writeLoop() {
 			m.writeFrame(frame)
 		}
 	}
-
 }
 
 func (m *Manager) writeFrame(frame []byte) error {
