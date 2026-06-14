@@ -12,7 +12,7 @@ func (m *Manager) readLoop() {
 		n, err := m.stream.Read(readBuffer)
 		if err != nil {
 			slog.Error("Error reading from serial port", "err", err)
-			continue
+			return
 		}
 
 		slog.Debug("Read bytes from serial port", "n", n, "data", readBuffer[:n])

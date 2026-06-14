@@ -7,6 +7,8 @@ import (
 func (m *Manager) parseAndStoreLoop(ctx context.Context) {
 	for {
 		select {
+		case <-m.stopChan:
+			return
 		case <-ctx.Done():
 			return
 		case frame := <-m.rxChan:

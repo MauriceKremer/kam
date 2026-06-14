@@ -32,6 +32,9 @@ type Manager struct {
 
 	// hardware Tx Mutex protect against concurrent writes to the serial port
 	hwTxMutex sync.Mutex
+
+	// stopChan is used to signal the goroutines to stop
+	stopChan chan struct{}
 }
 
 func NewManager(portName string, baud int) (*Manager, error) {
@@ -48,6 +51,7 @@ func NewManager(portName string, baud int) (*Manager, error) {
 		txChan:   make(chan []byte, 10), // Buffered to prevent immediate blocking
 		rxChan:   make(chan []byte, 10),
 		registry: NewResponseRegistry(),
+		stopChan: make(chan struct{}),
 	}, nil
 }
 
@@ -56,6 +60,14 @@ func (m *Manager) Start() {
 	go m.readLoop()                              // located in kiss_reader.go
 	go m.writeLoop()                             // located in kiss_writer.go
 	go m.parseAndStoreLoop(context.Background()) // located in kiss_parser.go
+}
+
+func (m *Manager) Stop() {
+	// Signal the goroutines to stop
+	close(m.stopChan)
+
+	// Close the serial port
+	m.stream.Close()
 }
 
 type RadioConfig struct {
