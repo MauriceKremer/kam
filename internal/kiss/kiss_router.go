@@ -2,6 +2,7 @@ package kiss
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
 )
@@ -72,6 +73,7 @@ func (m *Manager) routeLoop(ctx context.Context) {
 				m.registry.Dispatch(subCmd, subPayload)
 
 			case CMD_DATA:
+
 				// Packet payload must be at least 2 bytes to read the header safely
 				if len(payload) < 2 {
 					slog.Info("[Router] Warning: Received malformed packet with insufficient payload length")
@@ -133,6 +135,14 @@ func (m *Manager) routeLoop(ctx context.Context) {
 
 				// Extract the clean application-layer payload
 				appPayload := payload[cursor:]
+
+				// 1. Perform deduplication immediately upon receiving raw data
+				// Pass the 'payload' (which starts with the header byte) to the filter
+				if m.isDuplicate(appPayload) {
+					slog.Info("[Router] Dropping duplicate packet")
+					continue
+				}
+
 				slog.Info("[Router] Dispatching packet...", "payload", hex.EncodeToString(appPayload))
 
 				// 2. Dispatch to the appropriate handler
@@ -212,4 +222,24 @@ func (pv PayloadVersion) String() string {
 	default:
 		return "Unknown"
 	}
+}
+
+func (m *Manager) isDuplicate(payload []byte) bool {
+	// 1. Generate hash
+	hash := hex.EncodeToString(sha256.New().Sum(payload))
+
+	// 2. Check if we've seen it
+	for _, seen := range m.seenHashes {
+		if seen == hash {
+			return true
+		}
+	}
+
+	// 3. Update the buffer (FIFO)
+	if len(m.seenHashes) >= 10 {
+		m.seenHashes = m.seenHashes[1:] // Pop oldest
+	}
+	m.seenHashes = append(m.seenHashes, hash) // Push newest
+
+	return false
 }

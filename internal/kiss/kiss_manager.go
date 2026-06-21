@@ -35,6 +35,9 @@ type Manager struct {
 
 	// stopChan is used to signal the goroutines to stop
 	stopChan chan struct{}
+
+	// The fixed-size FIFO queue of recently seen message hashes for duplicate suppression
+	seenHashes []string
 }
 
 func NewManager(portName string, baud int) (*Manager, error) {
