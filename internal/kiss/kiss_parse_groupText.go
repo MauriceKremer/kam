@@ -40,9 +40,14 @@ func SetPublicChannelSecretHex(keyHex string) error {
 
 // GroupTextMessage represents a decrypted mesh chat message
 type GroupTextMessage struct {
-	ChannelName string
-	Timestamp   time.Time
-	Message     string
+	ChannelName     string
+	Timestamp       time.Time
+	Message         string
+	Sender          string
+	Body            string
+	TxtType         uint8
+	Attempt         uint8
+	PublicKeyPrefix []byte
 }
 
 // topicStorage holds cryptographic parameters derived from a topic string name
@@ -228,6 +233,10 @@ func (m *Manager) handleGroupText(payload []byte) {
 		return
 	}
 
+	flagsByte := decryptedPlaintext[4]
+	txtType := (flagsByte >> 2) & 0x3F
+	attempt := flagsByte & 0x03
+
 	// Strip null padding added by AES block alignment
 	// Skip 4-byte timestamp + 1-byte flags (plaintext format per MeshCore spec)
 	msgBytes := decryptedPlaintext[5:]
@@ -235,15 +244,40 @@ func (m *Manager) handleGroupText(payload []byte) {
 		msgBytes = msgBytes[:i]
 	}
 
+	var pubKeyPrefix []byte
+	if txtType == 0x02 && len(msgBytes) >= 4 {
+		pubKeyPrefix = msgBytes[:4]
+		msgBytes = msgBytes[4:]
+	}
+
+	message := string(msgBytes)
+	sender, body := splitGroupTextMessage(message)
+
 	successMsgPacket := GroupTextMessage{
-		ChannelName: matchedChannelName,
-		Timestamp:   txTime,
-		Message:     string(msgBytes),
+		ChannelName:     matchedChannelName,
+		Timestamp:       txTime,
+		Message:         message,
+		Sender:          sender,
+		Body:            body,
+		TxtType:         txtType,
+		Attempt:         attempt,
+		PublicKeyPrefix: pubKeyPrefix,
 	}
 
 	slog.Info("[Group Text] Broadcast Message Received",
 		"channel", successMsgPacket.ChannelName,
 		"time", successMsgPacket.Timestamp.Format("15:04:05"),
-		"message", successMsgPacket.Message,
+		"txt_type", successMsgPacket.TxtType,
+		"attempt", successMsgPacket.Attempt,
+		"sender", successMsgPacket.Sender,
+		"body", successMsgPacket.Body,
+		"pubkey_prefix", hex.EncodeToString(successMsgPacket.PublicKeyPrefix),
 	)
+}
+
+func splitGroupTextMessage(message string) (sender, body string) {
+	if i := strings.Index(message, ": "); i >= 0 {
+		return message[:i], message[i+2:]
+	}
+	return "", message
 }

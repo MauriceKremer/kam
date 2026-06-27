@@ -1,1 +1,5 @@
 kam.bytecoder.nl
+*.db
+*.db-shm
+*.db-wal
+

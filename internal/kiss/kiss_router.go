@@ -100,31 +100,34 @@ func (m *Manager) routeLoop(ctx context.Context) {
 				cursor := 1 // Account for the 1-byte header already processed
 
 				if routeType == ROUTE_TYPE_TRANSPORT_FLOOD || routeType == ROUTE_TYPE_TRANSPORT_DIRECT {
-					// 1. Skip the 4-byte transport codes block
+					// Skip the 4-byte transport codes block
 					cursor += 4
+				}
 
-					// 2. Parse the variable-length path log frame if present
-					if cursor < len(payload) {
-						pathFlags := payload[cursor]
-						cursor++ // Consume the path flags byte
+				// Parse the variable-length path frame present for all route types
+				if cursor < len(payload) {
+					pathFlags := payload[cursor]
+					cursor++ // Consume the path flags byte
 
-						// Extract number of hops from the lower 4 bits
-						numHops := int(pathFlags & 0x0F)
+					// Extract number of hops from the lower 6 bits
+					numHops := int(pathFlags & 0x3F)
 
-						// Determine the hash size per hop from the upper bits
-						hashSize := 1
-						if (pathFlags & 0x40) != 0 {
-							hashSize = 2 // 2-byte node hashes
-						} else if (pathFlags & 0x80) != 0 {
-							hashSize = 3
-						}
-
-						// Skip the accumulated node hop hashes
-						cursor += numHops * hashSize
+					// Determine the hash size per hop from the upper 2 bits
+					hashSize := 1
+					switch (pathFlags >> 6) & 0x03 {
+					case 0:
+						hashSize = 1
+					case 1:
+						hashSize = 2
+					case 2:
+						hashSize = 3
+					case 3:
+						slog.Warn("[Router] Invalid path hash size code 0b11, dropping packet")
+						continue
 					}
-				} else {
-					// Standard Flood or Direct packets only have a 1-byte hop limit/metric
-					cursor += 1
+
+					// Skip the accumulated node hop hashes
+					cursor += numHops * hashSize
 				}
 
 				// Safety check to avoid slicing out of bounds
@@ -136,7 +139,7 @@ func (m *Manager) routeLoop(ctx context.Context) {
 				// Extract the clean application-layer payload
 				appPayload := payload[cursor:]
 
-				// 1. Perform deduplication immediately upon receiving raw data
+				// Perform deduplication immediately upon receiving raw data
 				// Pass the 'payload' (which starts with the header byte) to the filter
 				if m.isDuplicate(appPayload) {
 					slog.Info("[Router] Dropping duplicate packet")
