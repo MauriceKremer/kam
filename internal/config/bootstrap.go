@@ -6,7 +6,7 @@ import (
 	"kam.bytecoder.nl/internal/kiss"
 )
 
-func BootstrapChannels(cfg *ChannelsConfig, dbPath string) error {
+func BootstrapChannels(cfg *KamConfig, dbPath string) error {
 	db, err := OpenChannelsDB(dbPath)
 	if err != nil {
 		return fmt.Errorf("open channels db: %w", err)

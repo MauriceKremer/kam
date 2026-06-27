@@ -23,23 +23,23 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	channelsCfg, err := config.LoadChannelsConfig("channels.yml")
+	kamCfg, err := config.LoadKamConfig("kam.yml")
 	if err != nil {
-		log.Fatalf("Could not load channels.yml: %v", err)
+		log.Fatalf("Could not load kam.yml: %v", err)
 	}
-	if err := config.BootstrapChannels(channelsCfg, "channels.db"); err != nil {
-		log.Fatalf("Could not bootstrap channels from channels.yml: %v", err)
+	if err := config.BootstrapChannels(kamCfg, "kam.db"); err != nil {
+		log.Fatalf("Could not bootstrap channels from kam.yml: %v", err)
 	}
 
-	advertQueue, err := config.NewAdvertQueue("channels.db")
+	advertQueue, err := config.NewAdvertQueue("kam.db")
 	if err != nil {
 		log.Fatalf("Could not open advert queue: %v", err)
 	}
 
-	slog.Info("Loaded channels config", "count", len(channelsCfg.Channels))
+	slog.Info("Loaded channels config", "count", len(kamCfg.Channels))
 
 	// Initialize the KISS manager
-	manager, err := kiss.NewManager("/dev/cu.usbserial-0001", 115200)
+	manager, err := kiss.NewManager(kamCfg.Radio.Port, kamCfg.Radio.Baud)
 	if err != nil {
 		panic(err)
 	}
@@ -53,10 +53,10 @@ func main() {
 	defer queryCancel()
 
 	err = kiss.NewRadioClient(manager).Set(queryCtx, &kiss.RadioConfig{
-		Frequency:       869618000,
-		Bandwidth:       62500,
-		SpreadingFactor: 7,
-		CodingRate:      5,
+		Frequency:       kamCfg.Radio.FrequencyHz,
+		Bandwidth:       kamCfg.Radio.BandwidthHz,
+		SpreadingFactor: kamCfg.Radio.SpreadingFactor,
+		CodingRate:      kamCfg.Radio.CodingRate,
 	})
 	if err != nil {
 		log.Fatalf("Could not set radio config: %v", err)

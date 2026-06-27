@@ -15,9 +15,21 @@ const (
 	KeyStrategyExplicit = "explicit"
 )
 
-type ChannelsConfig struct {
+// KamConfig is the top-level configuration file for the application.
+type KamConfig struct {
 	Version  int             `yaml:"version"`
+	Radio    RadioConfig     `yaml:"radio"`
 	Channels []ChannelConfig `yaml:"channels"`
+}
+
+// RadioConfig defines the default serial and RF settings.
+type RadioConfig struct {
+	Port            string `yaml:"port"`
+	Baud            int    `yaml:"baud"`
+	FrequencyHz     uint32 `yaml:"frequency_hz"`
+	BandwidthHz     uint32 `yaml:"bandwidth_hz"`
+	SpreadingFactor uint8  `yaml:"spreading_factor"`
+	CodingRate      uint8  `yaml:"coding_rate"`
 }
 
 type ChannelConfig struct {
@@ -28,7 +40,7 @@ type ChannelConfig struct {
 }
 
 func NormalizeChannelConfig(ch ChannelConfig) (ChannelConfig, error) {
-	cfg := &ChannelsConfig{
+	cfg := &KamConfig{
 		Version:  1,
 		Channels: []ChannelConfig{ch},
 	}
@@ -39,7 +51,7 @@ func NormalizeChannelConfig(ch ChannelConfig) (ChannelConfig, error) {
 	return normalized.Channels[0], nil
 }
 
-func (cfg *ChannelsConfig) PublicChannelKeyHex() (string, error) {
+func (cfg *KamConfig) PublicChannelKeyHex() (string, error) {
 	for _, ch := range cfg.Channels {
 		if ch.Name == "#public" {
 			if ch.KeyStrategy != KeyStrategyPublic {
@@ -54,15 +66,15 @@ func (cfg *ChannelsConfig) PublicChannelKeyHex() (string, error) {
 	return "", fmt.Errorf("#public channel is missing from config")
 }
 
-func LoadChannelsConfig(path string) (*ChannelsConfig, error) {
+func LoadKamConfig(path string) (*KamConfig, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read channels config: %w", err)
+		return nil, fmt.Errorf("read kam config: %w", err)
 	}
 
-	var cfg ChannelsConfig
+	var cfg KamConfig
 	if err := yaml.Unmarshal(content, &cfg); err != nil {
-		return nil, fmt.Errorf("parse channels config yaml: %w", err)
+		return nil, fmt.Errorf("parse kam config yaml: %w", err)
 	}
 
 	normalized, err := normalizeAndValidate(&cfg)
@@ -73,16 +85,36 @@ func LoadChannelsConfig(path string) (*ChannelsConfig, error) {
 	return normalized, nil
 }
 
-func normalizeAndValidate(cfg *ChannelsConfig) (*ChannelsConfig, error) {
+func normalizeAndValidate(cfg *KamConfig) (*KamConfig, error) {
 	if cfg.Version != 1 {
-		return nil, fmt.Errorf("channels config version must be 1, got %d", cfg.Version)
+		return nil, fmt.Errorf("config version must be 1, got %d", cfg.Version)
 	}
 	if len(cfg.Channels) == 0 {
-		return nil, fmt.Errorf("channels config must include at least one channel")
+		return nil, fmt.Errorf("config must include at least one channel")
 	}
 
-	out := &ChannelsConfig{
+	if cfg.Radio.Port == "" {
+		return nil, fmt.Errorf("radio port is required")
+	}
+	if cfg.Radio.Baud <= 0 {
+		return nil, fmt.Errorf("radio baud must be positive, got %d", cfg.Radio.Baud)
+	}
+	if cfg.Radio.FrequencyHz == 0 {
+		return nil, fmt.Errorf("radio frequency_hz is required")
+	}
+	if cfg.Radio.BandwidthHz == 0 {
+		return nil, fmt.Errorf("radio bandwidth_hz is required")
+	}
+	if cfg.Radio.SpreadingFactor == 0 {
+		return nil, fmt.Errorf("radio spreading_factor is required")
+	}
+	if cfg.Radio.CodingRate == 0 {
+		return nil, fmt.Errorf("radio coding_rate is required")
+	}
+
+	out := &KamConfig{
 		Version:  cfg.Version,
+		Radio:    cfg.Radio,
 		Channels: make([]ChannelConfig, 0, len(cfg.Channels)),
 	}
 	seen := make(map[string]struct{}, len(cfg.Channels))

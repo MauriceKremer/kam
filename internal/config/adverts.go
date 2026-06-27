@@ -160,15 +160,20 @@ func (q *AdvertQueue) writerLoop() {
 
 func advertToRecord(a kiss.AdvertPacket) AdvertRecord {
 	return AdvertRecord{
+		NodeHash:         a.NodeHash,
 		PublicKey:        a.PublicKey,
 		Timestamp:        a.Timestamp.Unix(),
 		Signature:        a.Signature,
 		SignatureValid:   a.SignatureValid,
 		IsChatNode:       a.IsChatNode,
+		IsRepeater:       a.IsRepeater,
+		IsRoomServer:     a.IsRoomServer,
+		IsSensor:         a.IsSensor,
 		Nickname:         a.Nickname,
 		HasLocation:      a.HasLocation,
 		Latitude:         a.Latitude,
 		Longitude:        a.Longitude,
 		TimeDriftSeconds: a.TimeDriftSeconds,
+		RawPayload:       a.RawPayload,
 	}
 }

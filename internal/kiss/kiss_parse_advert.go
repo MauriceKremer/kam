@@ -12,12 +12,17 @@ type AdvertPacket struct {
 	Timestamp        time.Time
 	Signature        []byte
 	IsChatNode       bool
+	IsRepeater       bool
+	IsRoomServer     bool
+	IsSensor         bool
 	Nickname         string
 	HasLocation      bool
 	Latitude         float32
 	Longitude        float32
 	TimeDriftSeconds int64
 	SignatureValid   bool
+	RawPayload       []byte
+	NodeHash         byte
 }
 
 func (m *Manager) handleAdvert(payload []byte) {
@@ -62,13 +67,26 @@ func (m *Manager) handleAdvert(payload []byte) {
 		Signature:        signature,
 		TimeDriftSeconds: int64(timeDelta.Seconds()),
 		SignatureValid:   signatureValid,
+		RawPayload:       append([]byte(nil), payload...),
+		NodeHash:         pubKey[0],
 	}
 
 	if len(payload) > 100 {
 		flags := payload[100]
 		cursor := 101
 
-		advert.IsChatNode = (flags & 0x01) != 0
+		nodeType := flags & 0x0F
+		switch nodeType {
+		case 0x01:
+			advert.IsChatNode = true
+		case 0x02:
+			advert.IsRepeater = true
+		case 0x03:
+			advert.IsRoomServer = true
+		case 0x04:
+			advert.IsSensor = true
+		}
+
 
 		if (flags & 0x10) != 0 {
 			advert.HasLocation = true
@@ -93,7 +111,7 @@ func (m *Manager) handleAdvert(payload []byte) {
 
 	slog.Info("[Parse Advert] Processed and Authenticated",
 		"name", advert.Nickname,
-		"can_chat", advert.IsChatNode,
+		"node_type", advertNodeTypeString(advert),
 		"has_gps", advert.HasLocation,
 		"time_drift_sec", advert.TimeDriftSeconds,
 		"signature_valid", advert.SignatureValid,
@@ -108,5 +126,20 @@ func (m *Manager) handleAdvert(payload []byte) {
 
 	if m.AdvertStore != nil {
 		m.AdvertStore.Enqueue(advert)
+	}
+}
+
+func advertNodeTypeString(a AdvertPacket) string {
+	switch {
+	case a.IsChatNode:
+		return "chat"
+	case a.IsRepeater:
+		return "repeater"
+	case a.IsRoomServer:
+		return "room_server"
+	case a.IsSensor:
+		return "sensor"
+	default:
+		return "unknown"
 	}
 }

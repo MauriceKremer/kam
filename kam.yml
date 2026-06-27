@@ -1,4 +1,11 @@
 version: 1
+radio:
+  port: "/dev/cu.usbserial-0001"
+  baud: 115200
+  frequency_hz: 869618000
+  bandwidth_hz: 62500
+  spreading_factor: 7
+  coding_rate: 5
 channels:
   - name: "#public"
     key_strategy: "public"

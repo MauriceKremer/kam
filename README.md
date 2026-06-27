@@ -29,13 +29,21 @@ During operation, additions/updates are written to SQLite and then reloaded into
 
 ### YAML file format
 
-Planned file name: `channels.yml`
+File name: `kam.yml`
 
 ```yaml
 version: 1
+radio:
+  port: "/dev/cu.usbserial-0001"
+  baud: 115200
+  frequency_hz: 869618000
+  bandwidth_hz: 62500
+  spreading_factor: 7
+  coding_rate: 5
 channels:
   - name: "#public"
     key_strategy: "public"
+    key_hex: "8b3387e9c5cdea6ac9e5edbaa115cd72"
     enabled: true
 
   - name: "#mesh-dev"
@@ -47,6 +55,18 @@ channels:
     key_hex: "00112233445566778899aabbccddeeff"
     enabled: true
 ```
+
+### Radio settings
+
+The `radio` block configures the default serial port and LoRa parameters used at startup:
+- `port` — serial device path.
+- `baud` — serial baud rate.
+- `frequency_hz` — center frequency in Hz.
+- `bandwidth_hz` — LoRa bandwidth in Hz.
+- `spreading_factor` — LoRa spreading factor.
+- `coding_rate` — LoRa coding rate.
+
+These values are pushed to the hardware during `main.go` initialization.
 
 ### Key strategy semantics
 
@@ -87,12 +107,22 @@ CREATE TABLE IF NOT EXISTS channels (
 CREATE INDEX IF NOT EXISTS idx_channels_enabled ON channels(enabled);
 ```
 
-### Planned Go models for Step 2+
+### Planned Go models
 
 ```go
-type ChannelsConfig struct {
+type KamConfig struct {
     Version  int             `yaml:"version"`
+    Radio    RadioConfig     `yaml:"radio"`
     Channels []ChannelConfig `yaml:"channels"`
+}
+
+type RadioConfig struct {
+    Port            string `yaml:"port"`
+    Baud            int    `yaml:"baud"`
+    FrequencyHz     uint32 `yaml:"frequency_hz"`
+    BandwidthHz     uint32 `yaml:"bandwidth_hz"`
+    SpreadingFactor uint8  `yaml:"spreading_factor"`
+    CodingRate      uint8  `yaml:"coding_rate"`
 }
 
 type ChannelConfig struct {
@@ -106,7 +136,7 @@ type ChannelRecord struct {
     ID          int64
     Name        string
     KeyStrategy string
-    KeyHex      *string
+    KeyHex      string
     Enabled     bool
     Source      string
 }
@@ -115,12 +145,14 @@ type ChannelRecord struct {
 ### Startup and runtime behavior
 
 1. Startup:
-   - Parse `channels.yml`.
-   - Normalize + validate.
-   - Upsert into SQLite (`channels.db`) with `source='seed'` for YAML-provided rows.
+   - Parse `kam.yml`.
+   - Normalize + validate channels and radio settings.
+   - Upsert channels into SQLite (`kam.db`) with `source='seed'` for YAML-provided rows.
    - Load #public key and all `enabled=1` non-public rows from SQLite into the in-memory topic registry.
+   - Open the advert queue against the same SQLite file.
+   - Open the KISS manager using the configured `radio.port` and `radio.baud`, then push `radio.frequency_hz`, `radio.bandwidth_hz`, `radio.spreading_factor`, and `radio.coding_rate` to the hardware.
 2. Runtime changes:
-   - Insert/update rows in SQLite with `source='runtime'`.
+   - Insert/update channel rows in SQLite with `source='runtime'`.
    - Reload only changed channel(s) in memory without restart via `config.UpsertRuntimeChannelAndApply(...)`.
 
 ## Advert Persistence
@@ -138,29 +170,44 @@ Validated `ADVERT` packets are persisted to SQLite without blocking the packet r
 
 ### SQLite write tuning
 
-The same SQLite file (`channels.db`) is used for channels and adverts. WAL mode is enabled at open time, along with a 5-second busy timeout and NORMAL synchronous mode. This keeps reads responsive while allowing concurrent writes.
+The same SQLite file (`kam.db`) is used for channels and adverts. WAL mode is enabled at open time, along with a 5-second busy timeout and NORMAL synchronous mode. This keeps reads responsive while allowing concurrent writes.
 
 ### Adverts schema
 
 ```sql
 CREATE TABLE IF NOT EXISTS adverts (
   id INTEGER PRIMARY KEY,
+  node_hash INTEGER NOT NULL,
   public_key BLOB NOT NULL,
   advert_timestamp INTEGER NOT NULL,
   signature BLOB NOT NULL,
   signature_valid INTEGER NOT NULL,
   is_chat_node INTEGER NOT NULL,
+  is_repeater INTEGER NOT NULL,
+  is_room_server INTEGER NOT NULL,
+  is_sensor INTEGER NOT NULL,
   nickname TEXT,
   has_location INTEGER NOT NULL,
   latitude REAL,
   longitude REAL,
   time_drift_seconds INTEGER NOT NULL,
+  raw_payload BLOB NOT NULL,
   received_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE INDEX IF NOT EXISTS idx_adverts_received_at ON adverts(received_at);
 CREATE INDEX IF NOT EXISTS idx_adverts_public_key ON adverts(public_key);
+CREATE INDEX IF NOT EXISTS idx_adverts_node_hash ON adverts(node_hash);
+CREATE INDEX IF NOT EXISTS idx_adverts_node_type ON adverts(is_chat_node, is_repeater, is_room_server, is_sensor);
 ```
+
+The parser stores the full raw advert payload and the first byte of the public key (`node_hash`) so every persisted row remains self-contained and can be replayed or inspected later. RSSI/SNR are not stored because the MeshCore advert payload does not contain them; they would need to be captured from the radio's frame metadata and threaded into the parser.
+
+The parser extracts the node type from the lower nibble of the appdata flags byte per the MeshCore spec:
+- `0x01` — chat node
+- `0x02` — repeater
+- `0x03` — room server
+- `0x04` — sensor
 
 ### Metrics and tuning knobs
 

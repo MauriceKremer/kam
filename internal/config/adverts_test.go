@@ -3,7 +3,6 @@ package config
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -28,16 +27,21 @@ func TestAdvertQueueEnqueueAndFlush(t *testing.T) {
 	now := time.Now()
 
 	advert := kiss.AdvertPacket{
+		NodeHash:         pub[0],
 		PublicKey:        pub,
 		Timestamp:        now,
 		Signature:        []byte("sig"),
 		SignatureValid:   true,
 		IsChatNode:       true,
+		IsRepeater:       false,
+		IsRoomServer:     false,
+		IsSensor:         false,
 		Nickname:         "test-node",
 		HasLocation:      true,
 		Latitude:         52.0,
 		Longitude:        4.0,
 		TimeDriftSeconds: 12,
+		RawPayload:       []byte("raw-advert-payload"),
 	}
 
 	if !q.Enqueue(advert) {
@@ -134,26 +138,36 @@ func TestAdvertBatchInsert(t *testing.T) {
 
 	records := []AdvertRecord{
 		{
+			NodeHash:         0xAB,
 			PublicKey:        []byte("key1"),
 			Timestamp:        1,
 			Signature:        []byte("sig1"),
 			SignatureValid:   true,
 			IsChatNode:       true,
+			IsRepeater:       false,
+			IsRoomServer:     false,
+			IsSensor:         false,
 			Nickname:         "a",
 			HasLocation:      false,
 			TimeDriftSeconds: 0,
+			RawPayload:       []byte("batch1"),
 		},
 		{
+			NodeHash:         0xCD,
 			PublicKey:        []byte("key2"),
 			Timestamp:        2,
 			Signature:        []byte("sig2"),
 			SignatureValid:   false,
 			IsChatNode:       false,
+			IsRepeater:       true,
+			IsRoomServer:     false,
+			IsSensor:         false,
 			Nickname:         "b",
 			HasLocation:      true,
 			Latitude:         1.0,
 			Longitude:        2.0,
 			TimeDriftSeconds: 3,
+			RawPayload:       []byte("batch2"),
 		},
 	}
 
@@ -183,6 +197,8 @@ func TestAdvertQueueGracefulShutdownFlush(t *testing.T) {
 		PublicKey: []byte("shutdown-key"),
 		Signature: []byte("sig"),
 		Timestamp: time.Now(),
+		RawPayload: []byte("shutdown-raw"),
+		NodeHash:  0xEF,
 	}
 	if !q.Enqueue(advert) {
 		t.Fatal("enqueue failed")
@@ -208,7 +224,7 @@ func TestAdvertQueueGracefulShutdownFlush(t *testing.T) {
 	}
 }
 
-func TestAdvertParseEnqueuePath(t *testing.T) {
+func TestAdvertEnqueue(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "adverts.db")
 
@@ -224,13 +240,18 @@ func TestAdvertParseEnqueuePath(t *testing.T) {
 	}
 
 	q.Enqueue(kiss.AdvertPacket{
+		NodeHash:         pub[0],
 		PublicKey:        pub,
 		Timestamp:        time.Now(),
 		Signature:        []byte("sig"),
 		SignatureValid:   true,
 		IsChatNode:       true,
+		IsRepeater:       false,
+		IsRoomServer:     false,
+		IsSensor:         false,
 		HasLocation:      false,
 		TimeDriftSeconds: 0,
+		RawPayload:       []byte("enqueue-raw"),
 	})
 
 	time.Sleep(200 * time.Millisecond)
@@ -238,10 +259,6 @@ func TestAdvertParseEnqueuePath(t *testing.T) {
 	if m.Enqueued != 1 {
 		t.Fatalf("expected enqueued=1, got %d", m.Enqueued)
 	}
-}
-
-func isPermissionError(err error) bool {
-	return os.IsPermission(err)
 }
 
 func TestAdvertToRecordConversion(t *testing.T) {
@@ -252,19 +269,27 @@ func TestAdvertToRecordConversion(t *testing.T) {
 	now := time.Unix(1234567890, 0)
 
 	a := kiss.AdvertPacket{
+		NodeHash:         pub[0],
 		PublicKey:        pub,
 		Timestamp:        now,
 		Signature:        []byte("signature"),
 		SignatureValid:   true,
 		IsChatNode:       true,
+		IsRepeater:       false,
+		IsRoomServer:     false,
+		IsSensor:         false,
 		Nickname:         "node-1",
 		HasLocation:      true,
 		Latitude:         12.34,
 		Longitude:        56.78,
 		TimeDriftSeconds: 7,
+		RawPayload:       []byte("raw-bytes"),
 	}
 
 	r := advertToRecord(a)
+	if r.NodeHash != pub[0] {
+		t.Fatalf("node hash mismatch: expected %x, got %x", pub[0], r.NodeHash)
+	}
 	if string(r.PublicKey) != string(pub) {
 		t.Fatal("public key mismatch")
 	}
@@ -279,5 +304,8 @@ func TestAdvertToRecordConversion(t *testing.T) {
 	}
 	if r.Nickname != "node-1" || r.Latitude != 12.34 || r.Longitude != 56.78 || r.TimeDriftSeconds != 7 {
 		t.Fatalf("field mismatch: %+v", r)
+	}
+	if string(r.RawPayload) != "raw-bytes" {
+		t.Fatalf("raw payload mismatch: %s", r.RawPayload)
 	}
 }
