@@ -225,8 +225,9 @@ func (pv PayloadVersion) String() string {
 }
 
 func (m *Manager) isDuplicate(payload []byte) bool {
-	// 1. Generate hash
-	hash := hex.EncodeToString(sha256.New().Sum(payload))
+	// 1. Generate hash from the raw bytes
+	h := sha256.Sum256(payload)
+	hash := hex.EncodeToString(h[:])
 
 	// 2. Check if we've seen it
 	for _, seen := range m.seenHashes {

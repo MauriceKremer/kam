@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -21,6 +22,21 @@ var PublicChannelSecret = func() []byte {
 	copy(s, psk)
 	return s
 }()
+
+func SetPublicChannelSecretHex(keyHex string) error {
+	psk, err := hex.DecodeString(strings.TrimSpace(keyHex))
+	if err != nil {
+		return fmt.Errorf("decode public key_hex: %w", err)
+	}
+	if len(psk) != 16 {
+		return fmt.Errorf("public key_hex must decode to 16 bytes, got %d", len(psk))
+	}
+
+	secret := make([]byte, 32)
+	copy(secret, psk)
+	PublicChannelSecret = secret
+	return nil
+}
 
 // GroupTextMessage represents a decrypted mesh chat message
 type GroupTextMessage struct {
@@ -40,11 +56,14 @@ var (
 	topicRegistry = make(map[uint32]topicStorage)
 )
 
+func ResetTopicRegistry() {
+	registryMutex.Lock()
+	topicRegistry = make(map[uint32]topicStorage)
+	registryMutex.Unlock()
+}
+
 func RegisterTopic(topicName string) uint32 {
-	cleanName := strings.ToLower(topicName)
-	if !strings.HasPrefix(cleanName, "#") {
-		cleanName = "#" + cleanName
-	}
+	cleanName := normalizeTopicName(topicName)
 
 	if cleanName == "#" || cleanName == "#public" {
 		return 0
@@ -64,6 +83,61 @@ func RegisterTopic(topicName string) uint32 {
 
 	slog.Info("[Topic Registry] Subscribed to new channel", "topic", cleanName, "id", topicID, "key_hex", hex.EncodeToString(secret[:16]))
 	return topicID
+}
+
+func RegisterTopicWithKeyHex(topicName, keyHex string) (uint32, error) {
+	cleanName := normalizeTopicName(topicName)
+	if cleanName == "#" || cleanName == "#public" {
+		return 0, fmt.Errorf("explicit key strategy is not valid for %q", cleanName)
+	}
+
+	keyBytes, err := hex.DecodeString(strings.TrimSpace(keyHex))
+	if err != nil {
+		return 0, fmt.Errorf("decode explicit channel key: %w", err)
+	}
+	if len(keyBytes) != 16 && len(keyBytes) != 32 {
+		return 0, fmt.Errorf("explicit channel key must decode to 16 or 32 bytes, got %d", len(keyBytes))
+	}
+
+	hash := sha256.Sum256([]byte(cleanName))
+	topicID := binary.LittleEndian.Uint32(hash[28:32])
+
+	secret := make([]byte, 32)
+	copy(secret, keyBytes)
+
+	registryMutex.Lock()
+	topicRegistry[topicID] = topicStorage{
+		name:   cleanName,
+		secret: secret,
+	}
+	registryMutex.Unlock()
+
+	slog.Info("[Topic Registry] Subscribed to explicit-key channel", "topic", cleanName, "id", topicID, "key_hex", hex.EncodeToString(secret[:16]))
+	return topicID, nil
+}
+
+func UnregisterTopic(topicName string) {
+	cleanName := normalizeTopicName(topicName)
+	if cleanName == "#" || cleanName == "#public" {
+		return
+	}
+
+	hash := sha256.Sum256([]byte(cleanName))
+	topicID := binary.LittleEndian.Uint32(hash[28:32])
+
+	registryMutex.Lock()
+	delete(topicRegistry, topicID)
+	registryMutex.Unlock()
+
+	slog.Info("[Topic Registry] Unsubscribed channel", "topic", cleanName, "id", topicID)
+}
+
+func normalizeTopicName(topicName string) string {
+	cleanName := strings.ToLower(strings.TrimSpace(topicName))
+	if !strings.HasPrefix(cleanName, "#") {
+		cleanName = "#" + cleanName
+	}
+	return cleanName
 }
 
 // aesECBDecrypt decrypts src block-by-block using AES-128-ECB with the given

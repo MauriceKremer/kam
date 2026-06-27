@@ -63,11 +63,6 @@ func (m *Manager) Start() {
 	go m.readLoop()                      // located in kiss_reader.go
 	go m.writeLoop()                     // located in kiss_writer.go
 	go m.routeLoop(context.Background()) // located in kiss_router.go
-
-	RegisterTopic("#mesh-dev") // Auto-subscribe to a default topic for testing/demo purposes
-	RegisterTopic("test")
-	RegisterTopic("public") // Reserved global topic, no encryption, ID=0
-	RegisterTopic("mc-radar")
 }
 
 func (m *Manager) Stop() {

@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"kam.bytecoder.nl/internal/config"
 	"kam.bytecoder.nl/internal/kiss"
 )
 
@@ -21,6 +22,15 @@ func main() {
 		Level: level,
 	}))
 	slog.SetDefault(logger)
+
+	channelsCfg, err := config.LoadChannelsConfig("channels.yml")
+	if err != nil {
+		log.Fatalf("Could not load channels.yml: %v", err)
+	}
+	if err := config.BootstrapChannels(channelsCfg, "channels.db"); err != nil {
+		log.Fatalf("Could not bootstrap channels from channels.yml: %v", err)
+	}
+	slog.Info("Loaded channels config", "count", len(channelsCfg.Channels))
 
 	// Initialize the KISS manager
 	manager, err := kiss.NewManager("/dev/cu.usbserial-0001", 115200)

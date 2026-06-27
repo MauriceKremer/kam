@@ -1,0 +1,18 @@
+version: 1
+channels:
+  - name: "#public"
+    key_strategy: "public"
+    key_hex: "8b3387e9c5cdea6ac9e5edbaa115cd72"
+    enabled: true
+
+  - name: "#mesh-dev"
+    key_strategy: "derived"
+    enabled: true
+
+  - name: "#test"
+    key_strategy: "derived"
+    enabled: true
+
+  - name: "#mc-radar"
+    key_strategy: "derived"
+    enabled: true
