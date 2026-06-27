@@ -25,7 +25,24 @@ func OpenChannelsDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("ping sqlite db: %w", err)
 	}
+	if err := ApplySQLiteTuning(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply sqlite tuning: %w", err)
+	}
 	return db, nil
+}
+
+func ApplySQLiteTuning(db *sql.DB) error {
+	if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
+		return fmt.Errorf("set wal mode: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA synchronous = NORMAL;"); err != nil {
+		return fmt.Errorf("set synchronous: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000;"); err != nil {
+		return fmt.Errorf("set busy timeout: %w", err)
+	}
+	return nil
 }
 
 func EnsureChannelsSchema(db *sql.DB) error {
@@ -66,7 +83,7 @@ ON CONFLICT(name) DO UPDATE SET
   key_strategy = excluded.key_strategy,
   key_hex = excluded.key_hex,
   enabled = excluded.enabled,
-	source = excluded.source,
+  source = excluded.source,
   updated_at = CURRENT_TIMESTAMP;
 `
 
@@ -158,4 +175,95 @@ func nullableKeyHex(v string) any {
 		return nil
 	}
 	return v
+}
+
+func EnsureAdvertsSchema(db *sql.DB) error {
+	const schema = `
+CREATE TABLE IF NOT EXISTS adverts (
+  id INTEGER PRIMARY KEY,
+  public_key BLOB NOT NULL,
+  advert_timestamp INTEGER NOT NULL,
+  signature BLOB NOT NULL,
+  signature_valid INTEGER NOT NULL,
+  is_chat_node INTEGER NOT NULL,
+  nickname TEXT,
+  has_location INTEGER NOT NULL,
+  latitude REAL,
+  longitude REAL,
+  time_drift_seconds INTEGER NOT NULL,
+  received_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_adverts_received_at ON adverts(received_at);
+CREATE INDEX IF NOT EXISTS idx_adverts_public_key ON adverts(public_key);
+`
+	if _, err := db.Exec(schema); err != nil {
+		return fmt.Errorf("ensure adverts schema: %w", err)
+	}
+	return nil
+}
+
+type AdvertRecord struct {
+	PublicKey        []byte
+	Timestamp        int64
+	Signature        []byte
+	SignatureValid   bool
+	IsChatNode       bool
+	Nickname         string
+	HasLocation      bool
+	Latitude         float32
+	Longitude        float32
+	TimeDriftSeconds int64
+}
+
+func InsertAdvertsBatch(db *sql.DB, records []AdvertRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	const query = `
+INSERT INTO adverts (
+  public_key, advert_timestamp, signature, signature_valid,
+  is_chat_node, nickname, has_location, latitude, longitude, time_drift_seconds
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+`
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin advert batch: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(query)
+	if err != nil {
+		return fmt.Errorf("prepare advert insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for i, r := range records {
+		if _, err := stmt.Exec(
+			r.PublicKey,
+			r.Timestamp,
+			r.Signature,
+			boolToInt(r.SignatureValid),
+			boolToInt(r.IsChatNode),
+			r.Nickname,
+			boolToInt(r.HasLocation),
+			r.Latitude,
+			r.Longitude,
+			r.TimeDriftSeconds,
+		); err != nil {
+			return fmt.Errorf("insert advert %d: %w", i, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit advert batch: %w", err)
+	}
+	return nil
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

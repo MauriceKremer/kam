@@ -122,3 +122,62 @@ type ChannelRecord struct {
 2. Runtime changes:
    - Insert/update rows in SQLite with `source='runtime'`.
    - Reload only changed channel(s) in memory without restart via `config.UpsertRuntimeChannelAndApply(...)`.
+
+## Advert Persistence
+
+Validated `ADVERT` packets are persisted to SQLite without blocking the packet router. A dedicated `AdvertQueue` decouples ingestion from storage.
+
+### Pipeline
+
+1. `kiss_router.go` dispatches `PAYLOAD_TYPE_ADVERT` to `kiss_parse_advert.go`.
+2. The parser validates the packet, including Ed25519 signature verification.
+3. The parser enqueues the `AdvertPacket` onto `AdvertQueue` via the `AdvertPersistence` interface.
+4. Enqueue is non-blocking; if the queue is full, the advert is dropped and a counter is incremented.
+5. A single background writer goroutine drains the queue, accumulates a batch, and inserts it transactionally on batch size or flush interval.
+6. `Manager.Stop()` flushes the remaining batch and closes the queue.
+
+### SQLite write tuning
+
+The same SQLite file (`channels.db`) is used for channels and adverts. WAL mode is enabled at open time, along with a 5-second busy timeout and NORMAL synchronous mode. This keeps reads responsive while allowing concurrent writes.
+
+### Adverts schema
+
+```sql
+CREATE TABLE IF NOT EXISTS adverts (
+  id INTEGER PRIMARY KEY,
+  public_key BLOB NOT NULL,
+  advert_timestamp INTEGER NOT NULL,
+  signature BLOB NOT NULL,
+  signature_valid INTEGER NOT NULL,
+  is_chat_node INTEGER NOT NULL,
+  nickname TEXT,
+  has_location INTEGER NOT NULL,
+  latitude REAL,
+  longitude REAL,
+  time_drift_seconds INTEGER NOT NULL,
+  received_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_adverts_received_at ON adverts(received_at);
+CREATE INDEX IF NOT EXISTS idx_adverts_public_key ON adverts(public_key);
+```
+
+### Metrics and tuning knobs
+
+`AdvertQueue.Metrics()` returns:
+- `Enqueued` — total adverts accepted by the queue.
+- `Dropped` — total adverts dropped because the queue was full.
+- `Flushed` — total adverts successfully persisted.
+- `Failed` — total adverts lost due to insert errors.
+- `Depth` — current queued items not yet flushed.
+
+Current defaults (hard-coded constants in `internal/config/adverts.go`):
+- Queue capacity: 256
+- Batch size: 50
+- Flush interval: 1 second
+
+If bursts consistently overflow the queue, increase capacity or reduce flush interval. If SQLite contention becomes the bottleneck, move the adverts table to a separate database file and adjust the store path in `main.go`.
+
+### Duplicate suppression note
+
+The router deduplicates packets by raw payload hash before dispatch. If the same advert is received twice, only the first reaches the parser and is persisted. This is intentional: the duplicate advert is not useful for mesh node tracking.

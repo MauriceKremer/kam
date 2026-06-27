@@ -30,6 +30,12 @@ func main() {
 	if err := config.BootstrapChannels(channelsCfg, "channels.db"); err != nil {
 		log.Fatalf("Could not bootstrap channels from channels.yml: %v", err)
 	}
+
+	advertQueue, err := config.NewAdvertQueue("channels.db")
+	if err != nil {
+		log.Fatalf("Could not open advert queue: %v", err)
+	}
+
 	slog.Info("Loaded channels config", "count", len(channelsCfg.Channels))
 
 	// Initialize the KISS manager
@@ -37,6 +43,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	manager.AdvertStore = advertQueue
 
 	// Start the KISS manager
 	manager.Start()
@@ -58,17 +65,17 @@ func main() {
 
 	slog.Info("Querying Heltec board for radio configuration...")
 	radio := kiss.NewRadioClient(manager)
-	config, err := radio.Get(queryCtx)
+	radioCfg, err := radio.Get(queryCtx)
 	if err != nil {
 		log.Fatalf("Could not get radio config: %v", err)
 	}
 
 	// Success! Print the parsed results
 	slog.Info("--- Radio Config ---\n")
-	slog.Info("Frequency", "MHz", float64(config.Frequency)/1000000.0)
-	slog.Info("Bandwidth", "kHz", float64(config.Bandwidth)/1000.0)
-	slog.Info("Spreading Factor", "SF", config.SpreadingFactor)
-	slog.Info("Coding Rate", "CR", config.CodingRate)
+	slog.Info("Frequency", "MHz", float64(radioCfg.Frequency)/1000000.0)
+	slog.Info("Bandwidth", "kHz", float64(radioCfg.Bandwidth)/1000.0)
+	slog.Info("Spreading Factor", "SF", radioCfg.SpreadingFactor)
+	slog.Info("Coding Rate", "CR", radioCfg.CodingRate)
 
 	slog.Info("Press Ctrl+C to stop")
 	sigChan := make(chan os.Signal, 1)

@@ -105,4 +105,8 @@ func (m *Manager) handleAdvert(payload []byte) {
 			"longitude", advert.Longitude,
 		)
 	}
+
+	if m.AdvertStore != nil {
+		m.AdvertStore.Enqueue(advert)
+	}
 }

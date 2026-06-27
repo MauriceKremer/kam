@@ -2,6 +2,7 @@ package kiss
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"go.bug.st/serial"
@@ -38,6 +39,9 @@ type Manager struct {
 
 	// The fixed-size FIFO queue of recently seen message hashes for duplicate suppression
 	seenHashes []string
+
+	// AdvertStore receives validated advert packets asynchronously. May be nil.
+	AdvertStore AdvertPersistence
 }
 
 func NewManager(portName string, baud int) (*Manager, error) {
@@ -68,6 +72,13 @@ func (m *Manager) Start() {
 func (m *Manager) Stop() {
 	// Signal the goroutines to stop
 	close(m.stopChan)
+
+	// Flush any pending advert writes before closing the database handle
+	if m.AdvertStore != nil {
+		if err := m.AdvertStore.Close(); err != nil {
+			slog.Error("[Manager] failed to close advert store", "error", err)
+		}
+	}
 
 	// Close the serial port
 	m.stream.Close()
