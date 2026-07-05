@@ -12,6 +12,7 @@ import (
 	"kam.bytecoder.nl/internal/config"
 	"kam.bytecoder.nl/internal/db"
 	"kam.bytecoder.nl/internal/kiss"
+	"kam.bytecoder.nl/internal/kiss/send"
 )
 
 func main() {
@@ -45,6 +46,7 @@ func main() {
 		panic(err)
 	}
 	manager.Store = persistence
+	manager.NodeName = kamCfg.NodeName
 
 	// Start the KISS manager
 	manager.Start()
@@ -79,6 +81,10 @@ func main() {
 	slog.Info("Coding Rate", "CR", radioCfg.CodingRate)
 
 	slog.Info("Press Ctrl+C to stop")
+
+	// Example: expose outbound sender (Phase 1 placeholder)
+	_ = send.NewForManager(manager)
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan

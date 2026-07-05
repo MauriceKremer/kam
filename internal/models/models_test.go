@@ -18,6 +18,7 @@ func TestLoadKamConfigValid(t *testing.T) {
 	path := filepath.Join(dir, "kam.yml")
 	writeConfig(t, path, `
 version: 1
+node_name: "kam"
 radio:
   port: "/dev/ttyUSB0"
   baud: 115200
@@ -68,6 +69,7 @@ func TestLoadKamConfigMissingRadioFields(t *testing.T) {
 	path := filepath.Join(dir, "kam.yml")
 	writeConfig(t, path, `
 version: 1
+node_name: "kam"
 radio:
   port: "/dev/ttyUSB0"
   baud: 115200
@@ -89,6 +91,7 @@ func TestLoadKamConfigMissingChannels(t *testing.T) {
 	path := filepath.Join(dir, "kam.yml")
 	writeConfig(t, path, `
 version: 1
+node_name: "kam"
 radio:
   port: "/dev/ttyUSB0"
   baud: 115200
@@ -110,6 +113,7 @@ func TestLoadKamConfigDuplicateChannels(t *testing.T) {
 	path := filepath.Join(dir, "kam.yml")
 	writeConfig(t, path, `
 version: 1
+node_name: "kam"
 radio:
   port: "/dev/ttyUSB0"
   baud: 115200

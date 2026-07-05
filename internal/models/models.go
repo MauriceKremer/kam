@@ -18,6 +18,7 @@ const (
 // KamConfig is the top-level configuration file for the application.
 type KamConfig struct {
 	Version  int             `yaml:"version"`
+	NodeName string          `yaml:"node_name"`
 	Radio    RadioConfig     `yaml:"radio"`
 	Channels []ChannelConfig `yaml:"channels"`
 }
@@ -89,6 +90,10 @@ func normalizeAndValidate(cfg *KamConfig) (*KamConfig, error) {
 	if cfg.Version != 1 {
 		return nil, fmt.Errorf("config version must be 1, got %d", cfg.Version)
 	}
+	if strings.TrimSpace(cfg.NodeName) == "" {
+		return nil, fmt.Errorf("node_name is required")
+	}
+
 	if len(cfg.Channels) == 0 {
 		return nil, fmt.Errorf("config must include at least one channel")
 	}
@@ -114,6 +119,7 @@ func normalizeAndValidate(cfg *KamConfig) (*KamConfig, error) {
 
 	out := &KamConfig{
 		Version:  cfg.Version,
+		NodeName: strings.TrimSpace(cfg.NodeName),
 		Radio:    cfg.Radio,
 		Channels: make([]ChannelConfig, 0, len(cfg.Channels)),
 	}

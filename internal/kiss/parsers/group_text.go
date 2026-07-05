@@ -52,10 +52,16 @@ type GroupTextMessage struct {
 	TimeDriftSeconds int64
 }
 
+// PublicChannelHash returns the channel hash for the currently configured public secret.
+func PublicChannelHash() byte {
+	return ChannelHash(PublicChannelSecret)
+}
+
 // topicStorage holds cryptographic parameters derived from a topic string name.
 type topicStorage struct {
 	name   string
-	secret []byte // 32-byte secret: full SHA256(channel_name)
+	secret []byte // 32-byte secret
+	hash   byte
 }
 
 var (
@@ -87,6 +93,7 @@ func RegisterTopic(topicName string) uint32 {
 	topicRegistry[topicID] = topicStorage{
 		name:   cleanName,
 		secret: secret,
+		hash:   ChannelHash(secret),
 	}
 	registryMutex.Unlock()
 
@@ -119,6 +126,7 @@ func RegisterTopicWithKeyHex(topicName, keyHex string) (uint32, error) {
 	topicRegistry[topicID] = topicStorage{
 		name:   cleanName,
 		secret: secret,
+		hash:   ChannelHash(secret),
 	}
 	registryMutex.Unlock()
 
@@ -151,9 +159,90 @@ func normalizeTopicName(topicName string) string {
 	return cleanName
 }
 
-// aesECBDecrypt decrypts src block-by-block using AES-128-ECB with the given
+// LookupTopic searches the registry and public channel by normalized name.
+// Returns secret, channel hash, channel name, and ok.
+func LookupTopic(topicName string) (secret []byte, hash byte, name string, ok bool) {
+	cleanName := normalizeTopicName(topicName)
+	if cleanName == "#public" {
+		return PublicChannelSecret, ChannelHash(PublicChannelSecret), "#public", true
+	}
+
+	want := sha256.Sum256([]byte(cleanName))
+	topicID := binary.LittleEndian.Uint32(want[28:32])
+
+	registryMutex.RLock()
+	topic, exists := topicRegistry[topicID]
+	registryMutex.RUnlock()
+
+	if !exists {
+		return nil, 0, "", false
+	}
+
+	return topic.secret, topic.hash, topic.name, true
+}
+
+// ChannelHash returns the first byte of SHA256(secret).
+// If the secret's upper 16 bytes are all zero, it hashes only the lower 16 bytes
+// to match BaseChatMesh::setChannel behavior for 16-byte keys.
+func ChannelHash(secret32 []byte) byte {
+	if len(secret32) != 32 {
+		return 0
+	}
+
+	isUpperZero := true
+	for _, b := range secret32[16:] {
+		if b != 0 {
+			isUpperZero = false
+			break
+		}
+	}
+
+	if isUpperZero {
+		sum := sha256.Sum256(secret32[:16])
+		return sum[0]
+	}
+	sum := sha256.Sum256(secret32)
+	return sum[0]
+}
+
+// AESECBEncrypt encrypts src block-by-block using AES-128-ECB with the given
 // 16-byte key. src must be a multiple of 16 bytes.
-func aesECBDecrypt(key, src []byte) ([]byte, error) {
+func AESECBEncrypt(key, src []byte) []byte {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil
+	}
+	dst := make([]byte, len(src))
+	for i := 0; i < len(src); i += 16 {
+		block.Encrypt(dst[i:], src[i:])
+	}
+	return dst
+}
+
+// EncryptThenMAC encrypts plaintext with AES-128-ECB and prepends a 2-byte
+// HMAC-SHA256 over the ciphertext. Key material uses the first 16 bytes of
+// secret32 for AES and the full 32 bytes for HMAC.
+func EncryptThenMAC(secret32, plaintext []byte) []byte {
+	const macSize = 2
+	if len(plaintext)%16 != 0 {
+		return nil
+	}
+
+	ciphertext := AESECBEncrypt(secret32[:16], plaintext)
+
+	h := hmac.New(sha256.New, secret32)
+	h.Write(ciphertext)
+	mac := h.Sum(nil)[:macSize]
+
+	out := make([]byte, macSize+len(ciphertext))
+	copy(out[:macSize], mac)
+	copy(out[macSize:], ciphertext)
+	return out
+}
+
+// AESECBDecrypt decrypts src block-by-block using AES-128-ECB with the given
+// 16-byte key. src must be a multiple of 16 bytes.
+func AESECBDecrypt(key, src []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
@@ -183,7 +272,7 @@ func macThenDecrypt(secret32, src []byte) []byte {
 		return nil
 	}
 
-	pt, err := aesECBDecrypt(secret32[:16], ciphertext)
+	pt, err := AESECBDecrypt(secret32[:16], ciphertext)
 	if err != nil {
 		return nil
 	}

@@ -2,6 +2,23 @@ package kiss
 
 import "log/slog"
 
+// Frame wraps a raw KISS payload with FEND framing and byte stuffing.
+func Frame(payload []byte) []byte {
+	framedData := []byte{FEND}
+	for _, b := range payload {
+		switch b {
+		case FEND:
+			framedData = append(framedData, FESC, TFEND)
+		case FESC:
+			framedData = append(framedData, FESC, TFESC)
+		default:
+			framedData = append(framedData, b)
+		}
+	}
+	framedData = append(framedData, FEND)
+	return framedData
+}
+
 func (m *Manager) writeLoop() {
 	for {
 		select {
@@ -14,20 +31,7 @@ func (m *Manager) writeLoop() {
 }
 
 func (m *Manager) writeFrame(frame []byte) error {
-
-	// Frame the data according to KISS protocol
-	framedData := []byte{FEND}
-	for _, b := range frame {
-		switch b {
-		case FEND:
-			framedData = append(framedData, FESC, TFEND)
-		case FESC:
-			framedData = append(framedData, FESC, TFESC)
-		default:
-			framedData = append(framedData, b)
-		}
-	}
-	framedData = append(framedData, FEND)
+	framedData := Frame(frame)
 
 	// Write the framed data to the serial port
 	_, err := m.stream.Write(framedData)

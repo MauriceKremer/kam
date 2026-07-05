@@ -37,6 +37,9 @@ type Manager struct {
 	// stopChan is used to signal the goroutines to stop
 	stopChan chan struct{}
 
+	// NodeName is the local sender name used in outbound group texts.
+	NodeName string
+
 	// The fixed-size FIFO queue of recently seen message hashes for duplicate suppression
 	seenHashes []string
 
@@ -67,6 +70,20 @@ func (m *Manager) Start() {
 	go m.readLoop()                      // located in kiss_reader.go
 	go m.writeLoop()                     // located in kiss_writer.go
 	go m.routeLoop(context.Background()) // located in kiss_router.go
+}
+
+func (m *Manager) TxChan() chan<- []byte {
+	return m.txChan
+}
+
+// TestInit initializes minimal internal channels for unit tests.
+func (m *Manager) TestInit() {
+	m.txChan = make(chan []byte, 1)
+}
+
+// TestTxChan returns the internal txChan for tests.
+func (m *Manager) TestTxChan() <-chan []byte {
+	return m.txChan
 }
 
 func (m *Manager) Stop() {
