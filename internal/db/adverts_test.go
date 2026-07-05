@@ -1,4 +1,4 @@
-package config
+package db
 
 import (
 	"crypto/ed25519"
@@ -14,11 +14,17 @@ func TestAdvertQueueEnqueueAndFlush(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "adverts.db")
 
-	q, err := NewAdvertQueue(dbPath)
+	db, err := OpenKamDB(dbPath)
 	if err != nil {
-		t.Fatalf("create advert queue: %v", err)
+		t.Fatalf("open db: %v", err)
 	}
-	defer q.Close()
+	defer db.Close()
+	if err := EnsureAdvertsSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	q := NewAdvertQueue(db)
+	defer q.Stop()
 
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -63,14 +69,14 @@ func TestAdvertQueueEnqueueAndFlush(t *testing.T) {
 	}
 
 	// Verify row persisted.
-	db, err := OpenChannelsDB(dbPath)
+	db2, err := OpenKamDB(dbPath)
 	if err != nil {
 		t.Fatalf("reopen db: %v", err)
 	}
-	defer db.Close()
+	defer db2.Close()
 
 	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM adverts").Scan(&count); err != nil {
+	if err := db2.QueryRow("SELECT COUNT(*) FROM adverts").Scan(&count); err != nil {
 		t.Fatalf("count adverts: %v", err)
 	}
 	if count != 1 {
@@ -82,22 +88,28 @@ func TestAdvertQueueDropOnFull(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "adverts.db")
 
-	// Use a tiny queue and a slow/no-op writer by replacing flush interval far
-	// in the future so queue fills.
-	q, err := NewAdvertQueue(dbPath)
+	db, err := OpenKamDB(dbPath)
 	if err != nil {
-		t.Fatalf("create advert queue: %v", err)
+		t.Fatalf("open db: %v", err)
 	}
-	defer q.Close()
+	defer db.Close()
+	if err := EnsureAdvertsSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	q := NewAdvertQueue(db)
+	defer q.Stop()
 
 	// Fill queue beyond capacity. Default capacity is 256.
 	sent := 0
 	dropped := 0
 	for i := 0; i < defaultAdvertQueueSize*2; i++ {
 		advert := kiss.AdvertPacket{
-			PublicKey: []byte{byte(i)},
-			Signature: []byte("x"),
-			Timestamp: time.Unix(int64(i), 0),
+			PublicKey:  []byte{byte(i)},
+			Signature:  []byte("x"),
+			Timestamp:  time.Unix(int64(i), 0),
+			RawPayload: []byte{byte(i)},
+			NodeHash:   byte(i),
 		}
 		if q.Enqueue(advert) {
 			sent++
@@ -126,7 +138,7 @@ func TestAdvertBatchInsert(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "adverts.db")
 
-	db, err := OpenChannelsDB(dbPath)
+	db, err := OpenKamDB(dbPath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
@@ -188,10 +200,16 @@ func TestAdvertQueueGracefulShutdownFlush(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "adverts.db")
 
-	q, err := NewAdvertQueue(dbPath)
+	db, err := OpenKamDB(dbPath)
 	if err != nil {
-		t.Fatalf("create advert queue: %v", err)
+		t.Fatalf("open db: %v", err)
 	}
+	defer db.Close()
+	if err := EnsureAdvertsSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	q := NewAdvertQueue(db)
 
 	advert := kiss.AdvertPacket{
 		PublicKey: []byte("shutdown-key"),
@@ -204,19 +222,17 @@ func TestAdvertQueueGracefulShutdownFlush(t *testing.T) {
 		t.Fatal("enqueue failed")
 	}
 
-	// Close before interval flush; should still persist queued advert.
-	if err := q.Close(); err != nil {
-		t.Fatalf("close queue: %v", err)
-	}
+	// Stop before interval flush; should still persist queued advert.
+	q.Stop()
 
-	db, err := OpenChannelsDB(dbPath)
+	db2, err := OpenKamDB(dbPath)
 	if err != nil {
 		t.Fatalf("reopen db: %v", err)
 	}
-	defer db.Close()
+	defer db2.Close()
 
 	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM adverts").Scan(&count); err != nil {
+	if err := db2.QueryRow("SELECT COUNT(*) FROM adverts").Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if count != 1 {
@@ -228,11 +244,17 @@ func TestAdvertEnqueue(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "adverts.db")
 
-	q, err := NewAdvertQueue(dbPath)
+	db, err := OpenKamDB(dbPath)
 	if err != nil {
-		t.Fatalf("create advert queue: %v", err)
+		t.Fatalf("open db: %v", err)
 	}
-	defer q.Close()
+	defer db.Close()
+	if err := EnsureAdvertsSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	q := NewAdvertQueue(db)
+	defer q.Stop()
 
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

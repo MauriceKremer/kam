@@ -124,8 +124,8 @@ func (m *Manager) handleAdvert(payload []byte) {
 		)
 	}
 
-	if m.AdvertStore != nil {
-		m.AdvertStore.Enqueue(advert)
+	if m.Store != nil {
+		m.Store.EnqueueAdvert(advert)
 	}
 }
 

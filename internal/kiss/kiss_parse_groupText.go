@@ -40,14 +40,15 @@ func SetPublicChannelSecretHex(keyHex string) error {
 
 // GroupTextMessage represents a decrypted mesh chat message
 type GroupTextMessage struct {
-	ChannelName     string
-	Timestamp       time.Time
-	Message         string
-	Sender          string
-	Body            string
-	TxtType         uint8
-	Attempt         uint8
-	PublicKeyPrefix []byte
+	ChannelName      string
+	Timestamp        time.Time
+	Message          string
+	Sender           string
+	Body             string
+	TxtType          uint8
+	Attempt          uint8
+	PublicKeyPrefix  []byte
+	TimeDriftSeconds int64
 }
 
 // topicStorage holds cryptographic parameters derived from a topic string name
@@ -254,14 +255,15 @@ func (m *Manager) handleGroupText(payload []byte) {
 	sender, body := splitGroupTextMessage(message)
 
 	successMsgPacket := GroupTextMessage{
-		ChannelName:     matchedChannelName,
-		Timestamp:       txTime,
-		Message:         message,
-		Sender:          sender,
-		Body:            body,
-		TxtType:         txtType,
-		Attempt:         attempt,
-		PublicKeyPrefix: pubKeyPrefix,
+		ChannelName:      matchedChannelName,
+		Timestamp:        txTime,
+		Message:          message,
+		Sender:           sender,
+		Body:             body,
+		TxtType:          txtType,
+		Attempt:          attempt,
+		PublicKeyPrefix:  pubKeyPrefix,
+		TimeDriftSeconds: int64(time.Since(txTime).Abs().Seconds()),
 	}
 
 	slog.Info("[Group Text] Broadcast Message Received",
@@ -273,6 +275,10 @@ func (m *Manager) handleGroupText(payload []byte) {
 		"body", successMsgPacket.Body,
 		"pubkey_prefix", hex.EncodeToString(successMsgPacket.PublicKeyPrefix),
 	)
+
+	if m.Store != nil {
+		m.Store.EnqueueGroupText(successMsgPacket)
+	}
 }
 
 func splitGroupTextMessage(message string) (sender, body string) {

@@ -1,8 +1,7 @@
-package config
+package db
 
 import (
 	"database/sql"
-	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -23,6 +22,7 @@ type AdvertQueue struct {
 
 	ch     chan kiss.AdvertPacket
 	stopCh chan struct{}
+	stopOnce sync.Once
 	done   sync.WaitGroup
 
 	batchSize     int
@@ -34,20 +34,10 @@ type AdvertQueue struct {
 	failed   atomic.Int64
 }
 
-// NewAdvertQueue opens a SQLite handle, ensures the advert schema, and starts
-// the background writer. Call Close before process exit to flush remaining
-// adverts.
-func NewAdvertQueue(dbPath string) (*AdvertQueue, error) {
-	db, err := OpenChannelsDB(dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("open advert db: %w", err)
-	}
-
-	if err := EnsureAdvertsSchema(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("ensure advert schema: %w", err)
-	}
-
+// NewAdvertQueue starts a batched advert writer against an already-open SQLite
+// handle. Call Stop to flush remaining items; the caller remains responsible for
+// closing the database handle.
+func NewAdvertQueue(db *sql.DB) *AdvertQueue {
 	q := &AdvertQueue{
 		db:            db,
 		ch:            make(chan kiss.AdvertPacket, defaultAdvertQueueSize),
@@ -59,8 +49,8 @@ func NewAdvertQueue(dbPath string) (*AdvertQueue, error) {
 	q.done.Add(1)
 	go q.writerLoop()
 
-	slog.Info("[AdvertQueue] started", "db", dbPath, "capacity", defaultAdvertQueueSize)
-	return q, nil
+	slog.Info("[AdvertQueue] started", "capacity", defaultAdvertQueueSize)
+	return q
 }
 
 // Enqueue attempts to store an advert for batched persistence. Returns false
@@ -77,16 +67,13 @@ func (q *AdvertQueue) Enqueue(advert kiss.AdvertPacket) bool {
 	}
 }
 
-// Close signals the writer to stop, flushes any buffered adverts, and closes
-// the database handle.
-func (q *AdvertQueue) Close() error {
-	close(q.stopCh)
+// Stop signals the writer to stop and flushes any buffered adverts. It is
+// safe to call multiple times and does not close the database handle.
+func (q *AdvertQueue) Stop() {
+	q.stopOnce.Do(func() {
+		close(q.stopCh)
+	})
 	q.done.Wait()
-
-	if err := q.db.Close(); err != nil {
-		return fmt.Errorf("close advert db: %w", err)
-	}
-	return nil
 }
 
 // Metrics returns a snapshot of queue counters.

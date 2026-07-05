@@ -209,6 +209,42 @@ The parser extracts the node type from the lower nibble of the appdata flags byt
 - `0x03` — room server
 - `0x04` — sensor
 
+## Group Text Persistence
+
+Decrypted `PAYLOAD_TYPE_GRP_TXT` messages are persisted to the same SQLite database via a batched, non-blocking queue. The pipeline mirrors the advert persistence path: parse, enqueue, batch, flush.
+
+### Group texts schema
+
+```sql
+CREATE TABLE IF NOT EXISTS group_texts (
+  id INTEGER PRIMARY KEY,
+  channel_name TEXT NOT NULL,
+  sender TEXT,
+  body TEXT,
+  txt_type INTEGER NOT NULL,
+  attempt INTEGER NOT NULL,
+  public_key_prefix BLOB,
+  message_timestamp INTEGER NOT NULL,
+  time_drift_seconds INTEGER NOT NULL,
+  received_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_texts_received_at ON group_texts(received_at);
+CREATE INDEX IF NOT EXISTS idx_group_texts_channel ON group_texts(channel_name);
+CREATE INDEX IF NOT EXISTS idx_group_texts_sender ON group_texts(sender);
+```
+
+Persisted fields include the channel name, sender/body split, plaintext flags (`txt_type` and `attempt`), the public-key prefix for signed messages, the message's own timestamp, and the local time drift.
+
+### Shared persistence interface
+
+`Manager.Store` implements `kiss.Persistence`, which exposes:
+- `EnqueueAdvert(advert)` — routes to the advert queue.
+- `EnqueueGroupText(msg)` — routes to the group-text queue.
+- `Close()` — flushes both queues and closes the shared database handle.
+
+This keeps both persistence paths over a single SQLite handle (`kam.db`) with WAL mode and a 5-second busy timeout.
+
 ### Metrics and tuning knobs
 
 `AdvertQueue.Metrics()` returns:

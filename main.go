@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"kam.bytecoder.nl/internal/config"
+	"kam.bytecoder.nl/internal/db"
 	"kam.bytecoder.nl/internal/kiss"
 )
 
@@ -31,9 +32,9 @@ func main() {
 		log.Fatalf("Could not bootstrap channels from kam.yml: %v", err)
 	}
 
-	advertQueue, err := config.NewAdvertQueue("kam.db")
+	persistence, err := db.NewPersistence("kam.db")
 	if err != nil {
-		log.Fatalf("Could not open advert queue: %v", err)
+		log.Fatalf("Could not open persistence: %v", err)
 	}
 
 	slog.Info("Loaded channels config", "count", len(kamCfg.Channels))
@@ -43,7 +44,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	manager.AdvertStore = advertQueue
+	manager.Store = persistence
 
 	// Start the KISS manager
 	manager.Start()
