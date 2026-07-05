@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"kam.bytecoder.nl/internal/kiss"
+	"kam.bytecoder.nl/internal/kiss/parsers"
 )
 
 const (
@@ -20,10 +20,10 @@ const (
 type GroupTextQueue struct {
 	db *sql.DB
 
-	ch     chan kiss.GroupTextMessage
-	stopCh chan struct{}
+	ch       chan parsers.GroupTextMessage
+	stopCh   chan struct{}
 	stopOnce sync.Once
-	done   sync.WaitGroup
+	done     sync.WaitGroup
 
 	batchSize     int
 	flushInterval time.Duration
@@ -40,7 +40,7 @@ type GroupTextQueue struct {
 func NewGroupTextQueue(db *sql.DB) *GroupTextQueue {
 	q := &GroupTextQueue{
 		db:            db,
-		ch:            make(chan kiss.GroupTextMessage, defaultGroupTextQueueSize),
+		ch:            make(chan parsers.GroupTextMessage, defaultGroupTextQueueSize),
 		stopCh:        make(chan struct{}),
 		batchSize:     defaultGroupTextBatchSize,
 		flushInterval: defaultGroupTextFlushInterval,
@@ -55,7 +55,7 @@ func NewGroupTextQueue(db *sql.DB) *GroupTextQueue {
 
 // Enqueue attempts to store a decrypted group text for batched persistence.
 // Returns false without blocking when the queue is full.
-func (q *GroupTextQueue) Enqueue(msg kiss.GroupTextMessage) bool {
+func (q *GroupTextQueue) Enqueue(msg parsers.GroupTextMessage) bool {
 	select {
 	case q.ch <- msg:
 		q.enqueued.Add(1)
@@ -144,7 +144,7 @@ func (q *GroupTextQueue) writerLoop() {
 	}
 }
 
-func groupTextToRecord(m kiss.GroupTextMessage) GroupTextRecord {
+func groupTextToRecord(m parsers.GroupTextMessage) GroupTextRecord {
 	return GroupTextRecord{
 		ChannelName:      m.ChannelName,
 		Sender:           m.Sender,

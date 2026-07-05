@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+
+	"kam.bytecoder.nl/internal/kiss/parsers"
 )
 
 type RouteType byte
@@ -151,9 +153,15 @@ func (m *Manager) routeLoop(ctx context.Context) {
 				// 2. Dispatch to the appropriate handler
 				switch payloadType {
 				case PAYLOAD_TYPE_ADVERT:
-					m.handleAdvert(appPayload)
+					advert := parsers.ParseAdvert(appPayload)
+					if m.Store != nil {
+						m.Store.EnqueueAdvert(advert)
+					}
 				case PAYLOAD_TYPE_GRP_TXT:
-					m.handleGroupText(appPayload)
+					msg, ok := parsers.ParseGroupText(appPayload)
+					if ok && m.Store != nil {
+						m.Store.EnqueueGroupText(msg)
+					}
 				default:
 					slog.Info("[Router] Warning: Received unhandled payload type", "payloadType", PayloadType(payloadType))
 				} // Closes switch payloadType

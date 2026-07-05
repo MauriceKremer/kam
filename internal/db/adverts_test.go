@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"kam.bytecoder.nl/internal/kiss"
+	"kam.bytecoder.nl/internal/kiss/parsers"
 )
 
 func TestAdvertQueueEnqueueAndFlush(t *testing.T) {
@@ -32,7 +32,7 @@ func TestAdvertQueueEnqueueAndFlush(t *testing.T) {
 	}
 	now := time.Now()
 
-	advert := kiss.AdvertPacket{
+	advert := parsers.AdvertPacket{
 		NodeHash:         pub[0],
 		PublicKey:        pub,
 		Timestamp:        now,
@@ -104,7 +104,7 @@ func TestAdvertQueueDropOnFull(t *testing.T) {
 	sent := 0
 	dropped := 0
 	for i := 0; i < defaultAdvertQueueSize*2; i++ {
-		advert := kiss.AdvertPacket{
+		advert := parsers.AdvertPacket{
 			PublicKey:  []byte{byte(i)},
 			Signature:  []byte("x"),
 			Timestamp:  time.Unix(int64(i), 0),
@@ -211,12 +211,12 @@ func TestAdvertQueueGracefulShutdownFlush(t *testing.T) {
 
 	q := NewAdvertQueue(db)
 
-	advert := kiss.AdvertPacket{
-		PublicKey: []byte("shutdown-key"),
-		Signature: []byte("sig"),
-		Timestamp: time.Now(),
+	advert := parsers.AdvertPacket{
+		PublicKey:  []byte("shutdown-key"),
+		Signature:  []byte("sig"),
+		Timestamp:  time.Now(),
 		RawPayload: []byte("shutdown-raw"),
-		NodeHash:  0xEF,
+		NodeHash:   0xEF,
 	}
 	if !q.Enqueue(advert) {
 		t.Fatal("enqueue failed")
@@ -261,7 +261,7 @@ func TestAdvertEnqueue(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	q.Enqueue(kiss.AdvertPacket{
+	q.Enqueue(parsers.AdvertPacket{
 		NodeHash:         pub[0],
 		PublicKey:        pub,
 		Timestamp:        time.Now(),
@@ -290,7 +290,7 @@ func TestAdvertToRecordConversion(t *testing.T) {
 	}
 	now := time.Unix(1234567890, 0)
 
-	a := kiss.AdvertPacket{
+	a := parsers.AdvertPacket{
 		NodeHash:         pub[0],
 		PublicKey:        pub,
 		Timestamp:        now,

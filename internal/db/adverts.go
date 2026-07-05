@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"kam.bytecoder.nl/internal/kiss"
+	"kam.bytecoder.nl/internal/kiss/parsers"
 )
 
 const (
@@ -20,10 +20,10 @@ const (
 type AdvertQueue struct {
 	db *sql.DB
 
-	ch     chan kiss.AdvertPacket
-	stopCh chan struct{}
+	ch       chan parsers.AdvertPacket
+	stopCh   chan struct{}
 	stopOnce sync.Once
-	done   sync.WaitGroup
+	done     sync.WaitGroup
 
 	batchSize     int
 	flushInterval time.Duration
@@ -40,7 +40,7 @@ type AdvertQueue struct {
 func NewAdvertQueue(db *sql.DB) *AdvertQueue {
 	q := &AdvertQueue{
 		db:            db,
-		ch:            make(chan kiss.AdvertPacket, defaultAdvertQueueSize),
+		ch:            make(chan parsers.AdvertPacket, defaultAdvertQueueSize),
 		stopCh:        make(chan struct{}),
 		batchSize:     defaultAdvertBatchSize,
 		flushInterval: defaultAdvertFlushInterval,
@@ -55,7 +55,7 @@ func NewAdvertQueue(db *sql.DB) *AdvertQueue {
 
 // Enqueue attempts to store an advert for batched persistence. Returns false
 // without blocking when the queue is full. Metrics counter is incremented.
-func (q *AdvertQueue) Enqueue(advert kiss.AdvertPacket) bool {
+func (q *AdvertQueue) Enqueue(advert parsers.AdvertPacket) bool {
 	select {
 	case q.ch <- advert:
 		q.enqueued.Add(1)
@@ -145,7 +145,7 @@ func (q *AdvertQueue) writerLoop() {
 	}
 }
 
-func advertToRecord(a kiss.AdvertPacket) AdvertRecord {
+func advertToRecord(a parsers.AdvertPacket) AdvertRecord {
 	return AdvertRecord{
 		NodeHash:         a.NodeHash,
 		PublicKey:        a.PublicKey,

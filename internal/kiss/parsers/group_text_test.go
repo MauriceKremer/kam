@@ -1,4 +1,4 @@
-package kiss
+package parsers
 
 import (
 	"crypto/aes"
@@ -39,15 +39,12 @@ func buildGroupTextPayload(secret32 []byte, timestamp uint32, flags byte, messag
 	return payload
 }
 
-func TestHandleGroupTextPlain(t *testing.T) {
+func TestParseGroupTextPlain(t *testing.T) {
 	secret := make([]byte, 32)
 	psk, _ := hex.DecodeString("8b3387e9c5cdea6ac9e5edbaa115cd72")
 	copy(secret, psk)
 
 	SetPublicChannelSecretHex("8b3387e9c5cdea6ac9e5edbaa115cd72")
-
-	m := &Manager{}
-	_ = m
 
 	payload := buildGroupTextPayload(secret, 0x12345678, 0x00, "user123: I'm on my way")
 
@@ -70,7 +67,7 @@ func TestHandleGroupTextPlain(t *testing.T) {
 	}
 }
 
-func TestHandleGroupTextSigned(t *testing.T) {
+func TestParseGroupTextSigned(t *testing.T) {
 	secret := make([]byte, 32)
 	psk, _ := hex.DecodeString("8b3387e9c5cdea6ac9e5edbaa115cd72")
 	copy(secret, psk)
@@ -104,9 +101,8 @@ func TestSplitGroupTextMessage(t *testing.T) {
 	}
 }
 
-func TestHandleGroupTextShortPayload(t *testing.T) {
-	m := &Manager{}
-	m.handleGroupText([]byte{0x00, 0x00, 0x00}) // too short
+func TestParseGroupTextShortPayload(t *testing.T) {
+	ParseGroupText([]byte{0x00, 0x00, 0x00}) // too short; should not panic
 }
 
 func decryptGroupTextForTest(secret32, payload []byte) GroupTextMessage {

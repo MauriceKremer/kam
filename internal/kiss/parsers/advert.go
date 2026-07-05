@@ -1,4 +1,4 @@
-package kiss
+package parsers
 
 import (
 	"crypto/ed25519"
@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// AdvertPacket represents a parsed node advertisement.
 type AdvertPacket struct {
 	PublicKey        []byte
 	Timestamp        time.Time
@@ -25,18 +26,19 @@ type AdvertPacket struct {
 	NodeHash         byte
 }
 
-func (m *Manager) handleAdvert(payload []byte) {
+// ParseAdvert decodes and verifies a MeshCore ADVERT payload.
+func ParseAdvert(payload []byte) AdvertPacket {
 	if len(payload) < 100 {
 		slog.Warn("[Parse Advert] Dropping malformed ADVERT packet: payload too short",
 			"expected_min", 100,
 			"actual", len(payload),
 		)
-		return
+		return AdvertPacket{}
 	}
 
 	// Unpack core crypto layer components
 	pubKey := payload[0:32]
-	rawTimestampBytes := payload[32:36] // FIXED: Maintain slice reference for verification
+	rawTimestampBytes := payload[32:36]
 	signature := payload[36:100]
 
 	// Convert timestamp to time entity separately
@@ -87,7 +89,6 @@ func (m *Manager) handleAdvert(payload []byte) {
 			advert.IsSensor = true
 		}
 
-
 		if (flags & 0x10) != 0 {
 			advert.HasLocation = true
 			if len(payload) >= cursor+8 {
@@ -124,9 +125,7 @@ func (m *Manager) handleAdvert(payload []byte) {
 		)
 	}
 
-	if m.Store != nil {
-		m.Store.EnqueueAdvert(advert)
-	}
+	return advert
 }
 
 func advertNodeTypeString(a AdvertPacket) string {

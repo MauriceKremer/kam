@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"kam.bytecoder.nl/internal/kiss"
+	"kam.bytecoder.nl/internal/kiss/parsers"
 )
 
 // Persistence combines advert and group-text queues over a single SQLite
@@ -46,12 +46,12 @@ func NewPersistence(dbPath string) (*Persistence, error) {
 }
 
 // EnqueueAdvert forwards the advert to the advert queue.
-func (p *Persistence) EnqueueAdvert(advert kiss.AdvertPacket) bool {
+func (p *Persistence) EnqueueAdvert(advert parsers.AdvertPacket) bool {
 	return p.AdvertQueue.Enqueue(advert)
 }
 
 // EnqueueGroupText forwards the message to the group-text queue.
-func (p *Persistence) EnqueueGroupText(msg kiss.GroupTextMessage) bool {
+func (p *Persistence) EnqueueGroupText(msg parsers.GroupTextMessage) bool {
 	return p.GroupTextQueue.Enqueue(msg)
 }
 

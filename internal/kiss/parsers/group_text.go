@@ -1,4 +1,4 @@
-package kiss
+package parsers
 
 import (
 	"bytes"
@@ -23,6 +23,7 @@ var PublicChannelSecret = func() []byte {
 	return s
 }()
 
+// SetPublicChannelSecretHex overrides the default public channel secret.
 func SetPublicChannelSecretHex(keyHex string) error {
 	psk, err := hex.DecodeString(strings.TrimSpace(keyHex))
 	if err != nil {
@@ -38,7 +39,7 @@ func SetPublicChannelSecretHex(keyHex string) error {
 	return nil
 }
 
-// GroupTextMessage represents a decrypted mesh chat message
+// GroupTextMessage represents a decrypted mesh chat message.
 type GroupTextMessage struct {
 	ChannelName      string
 	Timestamp        time.Time
@@ -51,7 +52,7 @@ type GroupTextMessage struct {
 	TimeDriftSeconds int64
 }
 
-// topicStorage holds cryptographic parameters derived from a topic string name
+// topicStorage holds cryptographic parameters derived from a topic string name.
 type topicStorage struct {
 	name   string
 	secret []byte // 32-byte secret: full SHA256(channel_name)
@@ -62,12 +63,14 @@ var (
 	topicRegistry = make(map[uint32]topicStorage)
 )
 
+// ResetTopicRegistry clears all registered topic channels.
 func ResetTopicRegistry() {
 	registryMutex.Lock()
 	topicRegistry = make(map[uint32]topicStorage)
 	registryMutex.Unlock()
 }
 
+// RegisterTopic derives and registers a channel secret from the topic name.
 func RegisterTopic(topicName string) uint32 {
 	cleanName := normalizeTopicName(topicName)
 
@@ -91,6 +94,7 @@ func RegisterTopic(topicName string) uint32 {
 	return topicID
 }
 
+// RegisterTopicWithKeyHex registers a topic with an explicit 16 or 32 byte key.
 func RegisterTopicWithKeyHex(topicName, keyHex string) (uint32, error) {
 	cleanName := normalizeTopicName(topicName)
 	if cleanName == "#" || cleanName == "#public" {
@@ -122,6 +126,7 @@ func RegisterTopicWithKeyHex(topicName, keyHex string) (uint32, error) {
 	return topicID, nil
 }
 
+// UnregisterTopic removes a topic from the registry.
 func UnregisterTopic(topicName string) {
 	cleanName := normalizeTopicName(topicName)
 	if cleanName == "#" || cleanName == "#public" {
@@ -185,13 +190,14 @@ func macThenDecrypt(secret32, src []byte) []byte {
 	return pt
 }
 
-func (m *Manager) handleGroupText(payload []byte) {
+// ParseGroupText decrypts and decodes a MeshCore group text payload.
+func ParseGroupText(payload []byte) (GroupTextMessage, bool) {
 	slog.Info("[Group Text] Received packet", "payload_len", len(payload))
 
 	// Minimum: 1 (channel_hash) + 2 (MAC) + 16 (one AES block) = 19 bytes
 	if len(payload) < 19 {
 		slog.Warn("[Group Text] Dropping packet: payload too short")
-		return
+		return GroupTextMessage{}, false
 	}
 
 	macAndData := payload[1:] // [2-byte HMAC] + [AES-128-ECB ciphertext]
@@ -222,7 +228,7 @@ func (m *Manager) handleGroupText(payload []byte) {
 
 	if len(decryptedPlaintext) < 5 {
 		slog.Warn("[Group Text] Dropping packet: decryption failed or plaintext too short")
-		return
+		return GroupTextMessage{}, false
 	}
 
 	rawTimestamp := binary.LittleEndian.Uint32(decryptedPlaintext[0:4])
@@ -231,7 +237,7 @@ func (m *Manager) handleGroupText(payload []byte) {
 	timeWindow := 30 * time.Minute
 	if time.Since(txTime) > timeWindow || time.Until(txTime) > timeWindow {
 		slog.Warn("[Group Text] Dropping message: failed anti-replay freshness check")
-		return
+		return GroupTextMessage{}, false
 	}
 
 	flagsByte := decryptedPlaintext[4]
@@ -276,9 +282,7 @@ func (m *Manager) handleGroupText(payload []byte) {
 		"pubkey_prefix", hex.EncodeToString(successMsgPacket.PublicKeyPrefix),
 	)
 
-	if m.Store != nil {
-		m.Store.EnqueueGroupText(successMsgPacket)
-	}
+	return successMsgPacket, true
 }
 
 func splitGroupTextMessage(message string) (sender, body string) {

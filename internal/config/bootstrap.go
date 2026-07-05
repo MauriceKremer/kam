@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"kam.bytecoder.nl/internal/db"
-	"kam.bytecoder.nl/internal/kiss"
+	"kam.bytecoder.nl/internal/kiss/parsers"
 	"kam.bytecoder.nl/internal/models"
 )
 
@@ -30,11 +30,11 @@ func BootstrapChannels(cfg *models.KamConfig, dbPath string) error {
 	if publicChannel.KeyStrategy != models.KeyStrategyPublic {
 		return fmt.Errorf("#public in db must use %q strategy", models.KeyStrategyPublic)
 	}
-	if err := kiss.SetPublicChannelSecretHex(publicChannel.KeyHex); err != nil {
+	if err := parsers.SetPublicChannelSecretHex(publicChannel.KeyHex); err != nil {
 		return fmt.Errorf("apply #public key: %w", err)
 	}
 
-	kiss.ResetTopicRegistry()
+	parsers.ResetTopicRegistry()
 
 	channels, err := db.ListEnabledNonPublicChannels(d)
 	if err != nil {
@@ -90,22 +90,22 @@ func applyChannelRecord(channel db.ChannelRecord) error {
 		if !channel.Enabled {
 			return fmt.Errorf("#public cannot be disabled")
 		}
-		if err := kiss.SetPublicChannelSecretHex(channel.KeyHex); err != nil {
+		if err := parsers.SetPublicChannelSecretHex(channel.KeyHex); err != nil {
 			return fmt.Errorf("apply #public key: %w", err)
 		}
 		return nil
 	}
 
 	if !channel.Enabled {
-		kiss.UnregisterTopic(channel.Name)
+		parsers.UnregisterTopic(channel.Name)
 		return nil
 	}
 
 	switch channel.KeyStrategy {
 	case models.KeyStrategyDerived:
-		kiss.RegisterTopic(channel.Name)
+		parsers.RegisterTopic(channel.Name)
 	case models.KeyStrategyExplicit:
-		if _, err := kiss.RegisterTopicWithKeyHex(channel.Name, channel.KeyHex); err != nil {
+		if _, err := parsers.RegisterTopicWithKeyHex(channel.Name, channel.KeyHex); err != nil {
 			return fmt.Errorf("register explicit-key channel %q: %w", channel.Name, err)
 		}
 	default:

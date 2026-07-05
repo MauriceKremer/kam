@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"kam.bytecoder.nl/internal/kiss"
+	"kam.bytecoder.nl/internal/kiss/parsers"
 )
 
 func TestGroupTextQueueEnqueueAndFlush(t *testing.T) {
@@ -24,7 +24,7 @@ func TestGroupTextQueueEnqueueAndFlush(t *testing.T) {
 	q := NewGroupTextQueue(db)
 	defer q.Stop()
 
-	msg := kiss.GroupTextMessage{
+	msg := parsers.GroupTextMessage{
 		ChannelName:      "#mesh-dev",
 		Timestamp:        time.Now(),
 		Message:          "alice: hello world",
@@ -77,7 +77,7 @@ func TestGroupTextQueueSignedMessage(t *testing.T) {
 	q := NewGroupTextQueue(db)
 	defer q.Stop()
 
-	msg := kiss.GroupTextMessage{
+	msg := parsers.GroupTextMessage{
 		ChannelName:      "#public",
 		Timestamp:        time.Unix(1234567890, 0),
 		Message:          "signed body",
@@ -117,7 +117,7 @@ func TestGroupTextQueueSignedMessage(t *testing.T) {
 }
 
 func TestGroupTextRecordConversion(t *testing.T) {
-	msg := kiss.GroupTextMessage{
+	msg := parsers.GroupTextMessage{
 		ChannelName:      "#test",
 		Timestamp:        time.Unix(1234567890, 0),
 		Message:          "bob: hi",
