@@ -3,3 +3,5 @@ kam.bytecoder.nl
 *.db-shm
 *.db-wal
 
+/.agents/skills
+/skills-lock.json
