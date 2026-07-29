@@ -8,6 +8,12 @@ import (
 	"kam.bytecoder.nl/internal/models"
 )
 
+// BootstrapChannels initializes the channel database and loads all configured
+// channels into the parser topic registry at startup.
+//
+// It opens (or creates) the channel DB, ensures its schema, upserts the seed
+// channels from cfg, then verifies and applies the #public channel before
+// registering every other enabled channel via applyChannelRecord.
 func BootstrapChannels(cfg *models.KamConfig, dbPath string) error {
 	d, err := db.OpenKamDB(dbPath)
 	if err != nil {
@@ -50,6 +56,11 @@ func BootstrapChannels(cfg *models.KamConfig, dbPath string) error {
 	return nil
 }
 
+// UpsertRuntimeChannelAndApply persists a runtime-provided channel to the DB
+// and immediately applies it to the parser topic registry, so the new or
+// updated channel takes effect without a full restart. The channel is
+// normalized before persistence and reloaded from the DB after upsert so the
+// applied record matches what is stored.
 func UpsertRuntimeChannelAndApply(dbPath string, channel models.ChannelConfig) error {
 	normalized, err := models.NormalizeChannelConfig(channel)
 	if err != nil {
@@ -82,6 +93,14 @@ func UpsertRuntimeChannelAndApply(dbPath string, channel models.ChannelConfig) e
 	return nil
 }
 
+// applyChannelRecord reconciles the parser topic registry with a single
+// channel DB record.
+//
+// The #public channel is special-cased: it must use the public key strategy,
+// cannot be disabled, and its secret hex is pushed into the parsers package.
+// For any other channel, a disabled record is unregistered, while an enabled
+// record is registered with either a derived or explicit key depending on its
+// KeyStrategy.
 func applyChannelRecord(channel db.ChannelRecord) error {
 	if channel.Name == "#public" {
 		if channel.KeyStrategy != models.KeyStrategyPublic {

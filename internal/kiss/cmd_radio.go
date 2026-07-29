@@ -44,6 +44,20 @@ func (c *RadioClient) Get(ctx context.Context) (*RadioConfig, error) {
 	}
 }
 
+// ApplyRadioConfig pushes cfg to the radio, then reads it back to confirm the
+// hardware accepted it. Both KISS exchanges share ctx. Returns the verified
+// configuration as reported by the board.
+func (c *RadioClient) ApplyRadioConfig(ctx context.Context, cfg RadioConfig) (*RadioConfig, error) {
+	if err := c.Set(ctx, &cfg); err != nil {
+		return nil, fmt.Errorf("set radio config: %w", err)
+	}
+	verified, err := c.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("verify radio config: %w", err)
+	}
+	return verified, nil
+}
+
 // Set updates radio settings.
 func (c *RadioClient) Set(ctx context.Context, config *RadioConfig) error {
 
