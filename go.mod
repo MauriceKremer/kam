@@ -1,6 +1,6 @@
 module kam.bytecoder.nl
 
-go 1.26.3
+go 1.25.0
 
 require (
 	go.bug.st/serial v1.7.1
