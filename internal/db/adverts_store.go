@@ -33,13 +33,19 @@ CREATE INDEX IF NOT EXISTS idx_adverts_received_at ON adverts(received_at);
 CREATE INDEX IF NOT EXISTS idx_adverts_public_key ON adverts(public_key);
 CREATE INDEX IF NOT EXISTS idx_adverts_node_hash ON adverts(node_hash);
 CREATE INDEX IF NOT EXISTS idx_adverts_node_type ON adverts(is_chat_node, is_repeater, is_room_server, is_sensor);
-CREATE INDEX IF NOT EXISTS idx_adverts_hop_count ON adverts(hop_count);
 `
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("ensure adverts schema: %w", err)
 	}
 	if err := migrateAdvertsColumns(db); err != nil {
 		return fmt.Errorf("migrate adverts columns: %w", err)
+	}
+	// idx_adverts_hop_count references hop_count, which may have just been
+	// added by migrateAdvertsColumns on legacy databases. Create it after
+	// migration so the index build never runs against a table missing the
+	// column.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_adverts_hop_count ON adverts(hop_count);`); err != nil {
+		return fmt.Errorf("create idx_adverts_hop_count: %w", err)
 	}
 	return nil
 }

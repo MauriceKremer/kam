@@ -379,3 +379,67 @@ func TestAdvertToRecordConversion(t *testing.T) {
 		t.Fatalf("hop stations mismatch: got %s", r.HopStations)
 	}
 }
+
+// TestEnsureAdvertsSchemaMigratesLegacyTable reproduces the startup failure
+// where an existing adverts table (created before hop_count/hop_stations
+// existed) caused EnsureAdvertsSchema to fail building idx_adverts_hop_count
+// because the index was created before the migration ALTER added the column.
+func TestEnsureAdvertsSchemaMigratesLegacyTable(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "adverts.db")
+
+	db, err := OpenKamDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	// Simulate a legacy schema from before hop_count/hop_stations existed.
+	const legacy = `
+CREATE TABLE IF NOT EXISTS adverts (
+  id INTEGER PRIMARY KEY,
+  node_hash INTEGER NOT NULL,
+  public_key BLOB NOT NULL,
+  advert_timestamp INTEGER NOT NULL,
+  signature BLOB NOT NULL,
+  signature_valid INTEGER NOT NULL,
+  is_chat_node INTEGER NOT NULL,
+  is_repeater INTEGER NOT NULL,
+  is_room_server INTEGER NOT NULL,
+  is_sensor INTEGER NOT NULL,
+  nickname TEXT,
+  has_location INTEGER NOT NULL,
+  latitude REAL,
+  longitude REAL,
+  time_drift_seconds INTEGER NOT NULL,
+  raw_payload BLOB NOT NULL,
+  received_at INTEGER NOT NULL DEFAULT (unixepoch())
+);`
+	if _, err := db.Exec(legacy); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+
+	// Running EnsureAdvertsSchema on the legacy table must not error and must
+	// add the columns + build the hop_count index. It must also be fully
+	// idempotent: a second call (columns + index already present) is a no-op.
+	if err := EnsureAdvertsSchema(db); err != nil {
+		t.Fatalf("ensure schema on legacy table (1st): %v", err)
+	}
+	if err := EnsureAdvertsSchema(db); err != nil {
+		t.Fatalf("ensure schema on legacy table (2nd/idempotent): %v", err)
+	}
+
+	cols, err := tableColumns(db, "adverts")
+	if err != nil {
+		t.Fatalf("table columns: %v", err)
+	}
+	if !cols["hop_count"] || !cols["hop_stations"] {
+		t.Fatalf("migration did not add hop columns: %v", cols)
+	}
+
+	// Index must exist and be usable against the migrated column.
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM adverts WHERE hop_count = 0`).Scan(&n); err != nil {
+		t.Fatalf("query via hop_count index: %v", err)
+	}
+}
