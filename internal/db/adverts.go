@@ -162,5 +162,7 @@ func advertToRecord(a parsers.AdvertPacket) AdvertRecord {
 		Longitude:        a.Longitude,
 		TimeDriftSeconds: a.TimeDriftSeconds,
 		RawPayload:       a.RawPayload,
+		HopCount:         a.HopCount,
+		HopStations:      marshalHopStations(a.HopStations),
 	}
 }

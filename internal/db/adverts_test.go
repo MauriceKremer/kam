@@ -196,6 +196,46 @@ func TestAdvertBatchInsert(t *testing.T) {
 	}
 }
 
+func TestAdvertBatchInsertPersistsHopColumns(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "adverts.db")
+
+	db, err := OpenKamDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	if err := EnsureAdvertsSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	records := []AdvertRecord{{
+		NodeHash:    0x01,
+		PublicKey:   []byte("k"),
+		Timestamp:   1,
+		Signature:   []byte("s"),
+		RawPayload:  []byte("r"),
+		HopCount:    2,
+		HopStations: `["aa","bb"]`,
+	}}
+	if err := InsertAdvertsBatch(db, records); err != nil {
+		t.Fatalf("insert batch: %v", err)
+	}
+
+	var hopCount int
+	var hopStations string
+	if err := db.QueryRow("SELECT hop_count, hop_stations FROM adverts WHERE node_hash = 1").Scan(&hopCount, &hopStations); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if hopCount != 2 {
+		t.Fatalf("hop_count mismatch: expected 2, got %d", hopCount)
+	}
+	if hopStations != `["aa","bb"]` {
+		t.Fatalf("hop_stations mismatch: got %s", hopStations)
+	}
+}
+
 func TestAdvertQueueGracefulShutdownFlush(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "adverts.db")
@@ -306,6 +346,8 @@ func TestAdvertToRecordConversion(t *testing.T) {
 		Longitude:        56.78,
 		TimeDriftSeconds: 7,
 		RawPayload:       []byte("raw-bytes"),
+		HopCount:         3,
+		HopStations:      [][]byte{{0xaa}, {0xbb}, {0xcc, 0xdd}},
 	}
 
 	r := advertToRecord(a)
@@ -329,5 +371,11 @@ func TestAdvertToRecordConversion(t *testing.T) {
 	}
 	if string(r.RawPayload) != "raw-bytes" {
 		t.Fatalf("raw payload mismatch: %s", r.RawPayload)
+	}
+	if r.HopCount != 3 {
+		t.Fatalf("hop count mismatch: expected 3, got %d", r.HopCount)
+	}
+	if r.HopStations != `["aa","bb","ccdd"]` {
+		t.Fatalf("hop stations mismatch: got %s", r.HopStations)
 	}
 }

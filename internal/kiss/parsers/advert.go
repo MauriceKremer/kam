@@ -24,6 +24,16 @@ type AdvertPacket struct {
 	SignatureValid   bool
 	RawPayload       []byte
 	NodeHash         byte
+
+	// HopCount is the number of relay hops recorded in the inbound packet's
+	// path field. Populated by the router, not the parser, since it is a
+	// network-layer attribute parsed from the path frame outside the advert
+	// payload.
+	HopCount int
+
+	// HopStations is the list of per-hop path hashes (raw bytes, size per the
+	// packet's path hash size code). Populated by the router.
+	HopStations [][]byte
 }
 
 // ParseAdvert decodes and verifies a MeshCore ADVERT payload.

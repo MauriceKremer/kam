@@ -255,7 +255,9 @@ exited.
 ```
 radio ──bytes──> readLoop ──KISS frame──> rxChan ──> routeLoop
    |-> ParseAdvert (Ed25519 verify)
+   |-> advert.HopCount = numHops; advert.HopStations = pathStations  (from path frame)
    |-> Store.EnqueueAdvert  ──> AdvertQueue.ch ──> writerLoop ──> SQLite adverts
+                                                              (hop_count, hop_stations)
 ```
 
 ### 4.2 Inbound group text
@@ -352,7 +354,7 @@ they can understand actual network behaviour — not just decode traffic, but
 |---|---|---|
 | Payload type (advert / group text / …) | `routeLoop` header decode | advert + group-text rows; other types logged only |
 | Route type (flood / direct / transport) | header bits | not persisted |
-| Hop count + per-hop path hashes | path frame | group-text rows (`HopCount`, `HopStations`) |
+| Hop count + per-hop path hashes | path frame | advert rows (`hop_count`, `hop_stations`) + group-text rows (`HopCount`, `HopStations`) |
 | Radio RX quality (SNR, RSSI) | `SUB_RX_META` (0xF9) | group-text rows (`SNR`, `RSSI`, `HasRxMeta`) |
 | Clock drift | advert/group-text parser | both row types (`time_drift_seconds`) |
 | Sender / channel / body | group-text parser | group-text rows |
@@ -426,3 +428,213 @@ architecture is shaped to allow**, not commitments:
 8. **Multi-radio / multi-channel ingestion** — one process, several
    `*kiss.Manager` instances. `Node` currently holds one; the struct shape
    does not forbid more.
+
+---
+
+## 10. MeshCore room-server protocol (reference)
+
+MeshCore has **no single room-server spec doc**. The behaviour is defined by
+three sources that must be read together:
+
+1. `docs/payloads.md` — advert flag `0x03 is room server`, and the **Room
+   server login** payload under *Anonymous request*.
+2. `docs/companion_protocol.md` — client side: `CMD_SEND_LOGIN` (0x1A) and
+   `PUSH_CODE_LOGIN_SUCCESS`/`FAIL`.
+3. Reference firmware `examples/simple_room_server/MyMesh.cpp` — the actual
+   server state machine (the authoritative source; this section tracks the
+   `main`-branch version).
+
+A room server is a MeshCore node advertising `ADV_TYPE_ROOM`. It is a **BBS**:
+persists posts in a cyclic queue, pushes new posts to logged-in clients, and
+also selectively forwards mesh packets. Traffic is **direct**
+(ECDH-derived shared secret, `PAYLOAD_TYPE_ANON_REQ`/`REQ`/`RESPONSE`/
+`TXT_MSG`) — *not* group text. KAM's group-text path does not capture it.
+
+### 10.1 Constants (main-branch)
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `MAX_UNSYNCED_POSTS` | 32 | cyclic post queue size |
+| `MAX_POST_TEXT_LEN` | 151 | 160 − 9-byte overhead |
+| `POST_SYNC_DELAY_SECS` | 6 | settle before a post is pushable |
+| `PUSH_NOTIFY_DELAY_MILLIS` | 2000 | post-add → first push window |
+| `SYNC_PUSH_INTERVAL` | 1200 | round-robin push cadence |
+| `PUSH_ACK_TIMEOUT_FLOOD` | 12000 ms | ACK wait when pushing via flood |
+| `PUSH_TIMEOUT_BASE` / `FACTOR` | 4000 / 2000 | direct ACK wait = base + factor×(hops+1) |
+| `flood_max` / `flood_max_unscoped` / `flood_max_advert` | 64 / 64 / 8 | forward caps |
+| `flood_advert_interval` | 47h | flood advert cadence |
+| `LAZY_CONTACTS_WRITE_DELAY` | 5000 ms | ACL flash-write debounce |
+
+### 10.2 Permission model
+
+| Role | Granted by | Perm constant | Capabilities |
+|---|---|---|---|
+| Admin | `_prefs.password` | `PERM_ACL_ADMIN` | full CLI, post, telemetry, ACL mgmt |
+| Read-write | `_prefs.guest_password` ("room password") | `PERM_ACL_READ_WRITE` | post + read |
+| Read-only | no password, `_prefs.allow_read_only` | `PERM_ACL_GUEST` | read only, no ACK on posts |
+
+Note the counter-intuitive naming: the **guest password** grants
+**read-write**, and a passwordless login is the true **guest/read-only**.
+
+### 10.3 Login flow
+
+Client → server: `PAYLOAD_TYPE_ANON_REQ`, ciphertext plaintext = Room server
+login:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | sender timestamp (replay nonce) |
+| 4 | 4 | `sync_since` (client's last-synced watermark) |
+| 8 | N | password (null-terminated) |
+
+Server (`onAnonDataRecv`):
+1. **Blank-password fast path**: `password==""` and sender already in ACL →
+   accept as re-key/re-handshake (no password check).
+2. Else match `password`→admin, `guest_password`→read-write, else (if
+   `allow_read_only`)→guest. Mismatch → **no response** (client times out).
+3. Replay guard: `sender_timestamp <= client->last_timestamp` → reject.
+4. `acl.putClient`; store ECDH `shared_secret`; set `sync_since`, reset
+   `pending_ack`/`push_failures`; mark ACL dirty (lazy 5s write).
+5. If request was flood, `out_path_len = OUT_PATH_UNKNOWN` (force rediscovery).
+6. Reply `PAYLOAD_TYPE_RESPONSE`:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | server timestamp (clock sync) |
+| 4 | 1 | `RESP_SERVER_LOGIN_OK` (0) |
+| 5 | 1 | legacy keep-alive interval |
+| 6 | 1 | admin? 1 : (permissions==0 ? 2 : 0) |
+| 7 | 1 | permissions bitmask |
+| 8 | 4 | random blob (packet uniqueness) |
+| 12 | 1 | `FIRMWARE_VER_LEVEL` |
+
+If the login arrived via **flood**, the reply is wrapped in a **Returned
+Path** (`PAYLOAD_TYPE_PATH`) so the client learns the route to the server and
+can switch to `sendDirect`. Flood replies are **region-scoped**
+(`sendFloodReply` reuses the request's region transport codes when known).
+
+### 10.4 Post submission (client → server)
+
+Client → server: `PAYLOAD_TYPE_TXT_MSG` (encrypted with shared secret),
+plaintext = plain-text-message: `timestamp(4) | (txt_type<<2)|attempt(1) | msg`.
+
+Server `onPeerDataRecv` decodes `txt_type`:
+- `TXT_TYPE_PLAIN` (0) → `addPost()` into cyclic queue (admin/read-write
+  only; read-only → no ACK, rejected). Schedules `next_push`.
+- `TXT_TYPE_CLI_DATA` (1) → admin-only CLI command; reply sent back as
+  `TXT_MSG`. Non-admin → no ACK, no reply.
+- `TXT_TYPE_SIGNED_PLAIN` (2) → server-side only (used for pushes, §10.5).
+
+Replay rule for `TXT_MSG`: `sender_timestamp >= last_timestamp` (equal =
+retry → ACK but do **not** re-add the post). `REQ` uses the stricter
+`sender_timestamp < last_timestamp` → reject.
+
+Server ACKs with 4-byte truncated SHA256 of `{timestamp, text, sender
+pubkey}`. Direct if `out_path` known (optionally a 2nd `createMultiAck`
++300ms when `multi_acks` enabled), else region-scoped flood.
+
+### 10.5 Push sync (server → client)
+
+Server **actively pushes**; clients do not poll. `loop()` round-robins over
+ACL clients (`next_client_idx`). For each client with `pending_ack==0`,
+`last_activity!=0`, `push_failures<3`:
+
+Scan cyclic posts for one where `post_timestamp > client.sync_since` AND
+`author != client` (don't echo own posts) AND `now >= post_timestamp +
+POST_SYNC_DELAY_SECS`. `pushPostToClient` builds `PAYLOAD_TYPE_TXT_MSG`:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | original `post_timestamp` |
+| 4 | 1 | `(TXT_TYPE_SIGNED_PLAIN<<2)|attempt` |
+| 5 | 4 | author pubkey prefix (first 4 bytes) |
+| 9 | N | post text |
+
+`pending_ack = SHA256(payload ‖ client.pubkey)` (4-byte truncated). Send:
+`sendDirect` via `out_path` if known (ACK wait `4000+2000×(hash_count+1)` ms,
+`hash_count = out_path_len & 63`), else `sendFloodScoped(default_scope)`
+(ACK wait 12000 ms). Round-robin advances; next pass in 1200 ms after a push,
+else 150 ms (skip to next client fast).
+
+### 10.6 ACK → sync advancement
+
+Client ACKs with the 4-byte hash. `processAck` matches against `pending_ack`:
+1. `pending_ack = 0` (allow next push).
+2. `push_failures = 0`.
+3. **`sync_since = push_post_timestamp`** — post marked delivered.
+
+ACK timeout before next iteration → `push_failures++`, `pending_ack=0`.
+After 3 failures the client starves; `out_path` reset to `OUT_PATH_UNKNOWN`
+on next flood contact triggers path rediscovery. Inactive clients evicted
+(LRU) when the ACL table fills.
+
+### 10.7 Keep-alive + status/telemetry
+
+`REQ_TYPE_KEEP_ALIVE` (0x02, direct only): refreshes `last_activity`,
+optionally force-sets `sync_since`, clears `pending_ack`, and the ACK appends
+an unsynced-count byte so the client learns its backlog.
+
+Other `REQ` types handled by `handleRequest`:
+- `GET_STATUS` (0x01) → `ServerStats` struct: battery, TX queue, noise floor,
+  last RSSI/SNR, RX/TX packet counts, flood/direct sent+recv, dup counts,
+  err flags, `n_posted`, `n_post_push`, uptime, airtime. **This is exactly
+  the operator-metrics payload KAM wants to aggregate (§8).**
+- `GET_TELEMETRY_DATA` (0x03) → CayenneLPP (guests get base-only mask).
+- `GET_ACCESS_LIST` (0x05, admin only) → admin entries (6-byte pubkey prefix
+  + perms).
+
+### 10.8 Region / flood scoping
+
+Newer firmware adds a region map (`region_map`, `TransportKey`,
+`default_scope`). `ROUTE_TYPE_TRANSPORT_FLOOD` packets carry 2 transport
+codes; `filterRecvFloodPacket` resolves the packet's region and
+`sendFloodReply`/`sendFloodScoped` reuse the request's scope for replies so
+floods stay within a region. `allowPacketForward` enforces `flood_max`,
+`flood_max_unscoped`, and `flood_max_advert` (adverts capped at 8 hops to
+limit propagation). KAM's router already slices the transport-codes block;
+room-server replies must preserve scoping.
+
+### 10.9 Compact sequence
+
+```
+Client                                 Server (ADV_TYPE_ROOM, region-scoped)
+  | --- ANON_REQ login(t, since, pw) -->|  ECDH shared secret; replay check
+  | <-- RESPONSE(t,OK,perm,fw_ver) ----|  + Returned Path if login was flood
+  |                                    |
+  | --- TXT_MSG(plain) post ----------->|  addPost() -> cyclic queue; sched push
+  | <-- ACK(sha256) -------------------|  hash = SHA256(ts+text+pubkey)
+  |                                    |
+  |                  [loop round-robin]|  pick unsynced post for this client
+  | <-- TXT_MSG(signed) post ----------|  pending_ack = SHA256(payload|pubkey)
+  | --- ACK(sha256) ------------------>|  sync_since = post_timestamp; next push
+  |                                    |
+  | --- REQ(KEEP_ALIVE, since?) ------->|  ACK + unsynced_count (direct only)
+  | --- REQ(GET_STATUS) -------------->|  ServerStats  -> operator metrics (§8)
+```
+
+### 10.10 Implications for KAM
+
+Acting as a room server in KAM means implementing, on the Go side over the
+existing `kiss.Manager` + `send.Sender`:
+
+1. **ANON_REQ handling + ECDH session** — `PAYLOAD_TYPE_ANON_REQ` (payload
+   type 0x07) is not yet routed in `kiss_router.go` (only advert + group
+   text). Add a parser + a client/session table (the ACL analogue).
+2. **Crypto offload to the modem** — the KISS `SetHardware` extensions
+   (`kiss_modem_protocol.md`) already expose `KeyExchange` (X25519, 0x07),
+   `EncryptData`/`DecryptData` (AES-128 + 2-byte HMAC-SHA256 MAC, 0x05/0x06),
+   `SignData`/`VerifySignature` (Ed25519, 0x04/0x03), and `Hash` (SHA-256,
+   0x08). A Go room-server can drive these via `Manager.registry` request/response
+   instead of reimplementing the crypto natively. This keeps KAM a thin,
+   auditable bridge.
+3. **Post store + push state machine** — cyclic buffer + per-client
+   `sync_since`/`pending_ack`/`push_failures` + round-robin push loop. A
+   natural new goroutine alongside the echo worker (§2, goroutine 8).
+4. **Path learning** — `onPeerPathRecv` stores `out_path`; KAM must handle
+   `PAYLOAD_TYPE_PATH` (0x08) and `PAYLOAD_TYPE_ACK` (0x03) to advance sync.
+5. **Region scoping** — preserve transport codes on flood replies so a KAM
+   room server's traffic stays within its region.
+6. **Operator metrics** — a KAM client can `REQ_TYPE_GET_STATUS` to room
+   servers/repeaters it sees and aggregate `ServerStats` into the §8 surface,
+   giving cross-node congestion/airtime/dup visibility without each node
+   self-reporting.

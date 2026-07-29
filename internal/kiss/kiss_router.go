@@ -178,6 +178,8 @@ func (m *Manager) routeLoop(ctx context.Context) {
 				switch payloadType {
 				case PAYLOAD_TYPE_ADVERT:
 					advert := parsers.ParseAdvert(appPayload)
+					advert.HopCount = numHops
+					advert.HopStations = pathStations
 					if m.Store != nil {
 						m.Store.EnqueueAdvert(advert)
 					}

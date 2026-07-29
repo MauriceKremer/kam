@@ -32,5 +32,5 @@ channels:
 
 echo:
   enabled: true
-  channels: ["#kam-test"]
+  channels: ["kam-test"]
   mention: "@kam"
