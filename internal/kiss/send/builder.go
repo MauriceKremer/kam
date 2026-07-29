@@ -12,9 +12,23 @@ import (
 )
 
 const (
+	// MaxPacketPayload is the firmware MAX_PACKET_PAYLOAD: the application-layer
+	// payload (after header + path) of a MeshCore packet. See docs/packet_format.md.
 	MaxPacketPayload = 184
-	PlaintextHeader  = 5                        // 4 bytes timestamp + 1 byte flags
-	PlaintextMaxLen  = MaxPacketPayload - 1 - 2 // 168
+
+	// CipherBudget is the max ciphertext bytes: MAX_PACKET_PAYLOAD minus the
+	// 1-byte channel_hash and 2-byte MAC that prefix the ciphertext.
+	CipherBudget = MaxPacketPayload - 1 - 2 // 181
+
+	// PlaintextMaxLen is the largest padded plaintext that fits CipherBudget.
+	// AES-128 block size is 16, so the padded plaintext must be a multiple of
+	// 16 <= CipherBudget. 181 -> 176. Capping the UNPADDED plaintext here would
+	// let a 181-byte plaintext pad to 192 bytes and blow the radio limit.
+	PlaintextMaxLen = (CipherBudget / 16) * 16 // 176
+
+	// PlaintextHeader is the fixed prefix of the plaintext: 4-byte LE timestamp
+	// + 1-byte flags.
+	PlaintextHeader = 5
 )
 
 // Builder creates raw MeshCore group-text radio packets.
@@ -75,6 +89,12 @@ func (b *Builder) Build(channelName, body string) ([]byte, error) {
 	)
 	raw = append(raw, macAndCipher...)
 
+	// Defense in depth: the plaintext cap above should keep the application
+	// payload within the radio limit, but assert both bounds explicitly so a
+	// future constant change cannot silently produce packets the firmware drops.
+	if appPayload := len(raw) - 2; appPayload > MaxPacketPayload {
+		return nil, fmt.Errorf("app payload %d exceeds MAX_PACKET_PAYLOAD %d", appPayload, MaxPacketPayload)
+	}
 	if len(raw) > 255 {
 		return nil, errors.New("raw packet exceeds 255 bytes")
 	}

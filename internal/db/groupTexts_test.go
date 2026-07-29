@@ -116,6 +116,108 @@ func TestGroupTextQueueSignedMessage(t *testing.T) {
 	}
 }
 
+func TestGroupTextBatchInsertHopStations(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "group.db")
+
+	db, err := OpenKamDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := EnsureGroupTextsSchema(db); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	records := []GroupTextRecord{
+		{
+			ChannelName:      "#public",
+			Sender:           "alice",
+			Body:             "hi",
+			TxtType:          0,
+			Attempt:          0,
+			Timestamp:        1,
+			TimeDriftSeconds: 0,
+			HopCount:         2,
+			HopStations:      `["a1","b2"]`,
+		},
+	}
+	if err := InsertGroupTextsBatch(db, records); err != nil {
+		t.Fatalf("insert batch: %v", err)
+	}
+
+	var hopCount int
+	var hopStations string
+	if err := db.QueryRow("SELECT hop_count, hop_stations FROM group_texts WHERE channel_name = '#public'").Scan(&hopCount, &hopStations); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if hopCount != 2 {
+		t.Fatalf("hop_count: got %d, want 2", hopCount)
+	}
+	if hopStations != `["a1","b2"]` {
+		t.Fatalf("hop_stations: got %q, want %q", hopStations, `["a1","b2"]`)
+	}
+}
+
+func TestGroupTextsSchemaMigratesExistingTable(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "group.db")
+
+	db, err := OpenKamDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	// Create a legacy table without the new hop columns.
+	const legacy = `
+CREATE TABLE group_texts (
+  id INTEGER PRIMARY KEY,
+  channel_name TEXT NOT NULL,
+  sender TEXT,
+  body TEXT,
+  txt_type INTEGER NOT NULL,
+  attempt INTEGER NOT NULL,
+  public_key_prefix BLOB,
+  message_timestamp INTEGER NOT NULL,
+  time_drift_seconds INTEGER NOT NULL,
+  received_at INTEGER NOT NULL DEFAULT (unixepoch())
+);`
+	if _, err := db.Exec(legacy); err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+
+	// Running the current schema helper must add the missing columns idempotently.
+	if err := EnsureGroupTextsSchema(db); err != nil {
+		t.Fatalf("ensure schema on legacy db: %v", err)
+	}
+
+	records := []GroupTextRecord{
+		{
+			ChannelName: "#mesh-dev", Sender: "bob", Body: "migrated",
+			TxtType: 0, Attempt: 0, Timestamp: 2, TimeDriftSeconds: 0,
+			HopCount: 3, HopStations: `["aabb","ccdd","ee"]`,
+		},
+	}
+	if err := InsertGroupTextsBatch(db, records); err != nil {
+		t.Fatalf("insert batch: %v", err)
+	}
+
+	var hopCount int
+	var hopStations string
+	if err := db.QueryRow("SELECT hop_count, hop_stations FROM group_texts WHERE channel_name = '#mesh-dev'").Scan(&hopCount, &hopStations); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if hopCount != 3 || hopStations != `["aabb","ccdd","ee"]` {
+		t.Fatalf("migration result: hop_count=%d hop_stations=%q", hopCount, hopStations)
+	}
+
+	// Idempotent: running again must not error.
+	if err := EnsureGroupTextsSchema(db); err != nil {
+		t.Fatalf("ensure schema second run: %v", err)
+	}
+}
+
 func TestGroupTextRecordConversion(t *testing.T) {
 	msg := parsers.GroupTextMessage{
 		ChannelName:      "#test",

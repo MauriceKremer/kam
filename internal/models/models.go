@@ -22,6 +22,15 @@ type KamConfig struct {
 	DBPath   string          `yaml:"db_path"`
 	Radio    RadioConfig     `yaml:"radio"`
 	Channels []ChannelConfig `yaml:"channels"`
+	Echo     EchoConfig      `yaml:"echo"`
+}
+
+// EchoConfig controls the optional echo liveness service that replies to
+// group-text messages mentioning the local node on monitored channels.
+type EchoConfig struct {
+	Enabled  bool     `yaml:"enabled"`
+	Channels []string `yaml:"channels"`
+	Mention  string   `yaml:"mention,omitempty"`
 }
 
 // RadioConfig defines the default serial and RF settings.
@@ -179,6 +188,26 @@ func normalizeAndValidate(cfg *KamConfig) (*KamConfig, error) {
 			Enabled:     ch.Enabled,
 		})
 	}
+
+	// Normalize and validate the optional echo service config. Echo channels
+	// must be a subset of the configured channels so inbound messages on
+	// them can actually be decrypted.
+	echo := EchoConfig{Enabled: cfg.Echo.Enabled}
+	for _, ec := range cfg.Echo.Channels {
+		name := normalizeChannelName(ec)
+		if name == "" || name == "#" {
+			return nil, fmt.Errorf("echo: invalid channel %q", ec)
+		}
+		if _, ok := seen[name]; !ok {
+			return nil, fmt.Errorf("echo: channel %q is not in channels", name)
+		}
+		echo.Channels = append(echo.Channels, name)
+	}
+	if echo.Enabled && len(echo.Channels) == 0 {
+		return nil, fmt.Errorf("echo: enabled but no channels configured")
+	}
+	echo.Mention = strings.TrimSpace(cfg.Echo.Mention)
+	out.Echo = echo
 
 	return out, nil
 }

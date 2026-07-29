@@ -50,6 +50,27 @@ type GroupTextMessage struct {
 	Attempt          uint8
 	PublicKeyPrefix  []byte
 	TimeDriftSeconds int64
+
+	// HopCount is the number of relay hops recorded in the inbound packet's
+	// path field. Populated by the router, not the parser, since it is a
+	// network-layer attribute outside the encrypted payload.
+	HopCount int
+
+	// HopStations is the list of per-hop path hashes (raw bytes, size per the
+	// packet's path hash size code). Populated by the router.
+	HopStations [][]byte
+
+	// HasRxMeta reports whether the modem emitted an RxMeta (0xF9) frame for
+	// this packet. When false, SNR/RSSI are zero and should be treated as
+	// absent rather than measured-zero.
+	HasRxMeta bool
+
+	// SNR is the raw RxMeta SNR value (signed, quarter-dB units: divide by 4
+	// for dB). Populated by the router from the modem's RxMeta frame.
+	SNR int
+
+	// RSSI is the RxMeta RSSI in dBm (signed). Populated by the router.
+	RSSI int
 }
 
 // PublicChannelHash returns the channel hash for the currently configured public secret.

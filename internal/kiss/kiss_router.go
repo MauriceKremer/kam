@@ -71,6 +71,13 @@ func (m *Manager) routeLoop(ctx context.Context) {
 				}
 				subCmd := payload[0]
 				subPayload := payload[1:]
+				// RxMeta (0xF9) is sent unsolicited right after each data frame;
+				// attach it to the pending group text instead of routing to the
+				// response registry.
+				if subCmd == SUB_RX_META && len(subPayload) >= 2 {
+					m.attachRxMeta(int(int8(subPayload[0])), int(int8(subPayload[1])))
+					continue
+				}
 				// Dispatch by sub-command for SetHardware extensions
 				m.registry.Dispatch(subCmd, subPayload)
 
@@ -106,16 +113,21 @@ func (m *Manager) routeLoop(ctx context.Context) {
 					cursor += 4
 				}
 
-				// Parse the variable-length path frame present for all route types
+				// Parse the variable-length path frame present for all route types.
+				// Hop count and per-hop hashes are hoisted out of the if-block so
+				// they remain in scope for GRP_TXT dispatch and tap delivery.
+				numHops := 0
+				hashSize := 1
+				var pathStations [][]byte
 				if cursor < len(payload) {
 					pathFlags := payload[cursor]
 					cursor++ // Consume the path flags byte
 
 					// Extract number of hops from the lower 6 bits
-					numHops := int(pathFlags & 0x3F)
+					numHops = int(pathFlags & 0x3F)
 
 					// Determine the hash size per hop from the upper 2 bits
-					hashSize := 1
+					hashSize = 1
 					switch (pathFlags >> 6) & 0x03 {
 					case 0:
 						hashSize = 1
@@ -126,6 +138,18 @@ func (m *Manager) routeLoop(ctx context.Context) {
 					case 3:
 						slog.Warn("[Router] Invalid path hash size code 0b11, dropping packet")
 						continue
+					}
+
+					// Capture the per-hop path hashes (relay node identity hashes)
+					// before skipping them, so handlers and persistence can report
+					// which stations relayed the packet.
+					pathLen := numHops * hashSize
+					if pathLen > 0 && cursor+pathLen <= len(payload) {
+						pathStations = make([][]byte, 0, numHops)
+						for i := 0; i < numHops; i++ {
+							start := cursor + i*hashSize
+							pathStations = append(pathStations, append([]byte(nil), payload[start:start+hashSize]...))
+						}
 					}
 
 					// Skip the accumulated node hop hashes
@@ -159,8 +183,14 @@ func (m *Manager) routeLoop(ctx context.Context) {
 					}
 				case PAYLOAD_TYPE_GRP_TXT:
 					msg, ok := parsers.ParseGroupText(appPayload)
-					if ok && m.Store != nil {
-						m.Store.EnqueueGroupText(msg)
+					if ok {
+						msg.HopCount = numHops
+						msg.HopStations = pathStations
+						// Stage for dispatch and wait briefly for the modem's RxMeta
+						// (0xF9) frame so SNR/RSSI can be attached. holdGroupText
+						// enqueues to Store and fires the tap once meta arrives or the
+						// timeout elapses.
+						m.holdGroupText(msg)
 					}
 				default:
 					slog.Info("[Router] Warning: Received unhandled payload type", "payloadType", PayloadType(payloadType))

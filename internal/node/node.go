@@ -8,10 +8,12 @@ package node
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"kam.bytecoder.nl/internal/config"
 	"kam.bytecoder.nl/internal/db"
+	"kam.bytecoder.nl/internal/echo"
 	"kam.bytecoder.nl/internal/kiss"
 	"kam.bytecoder.nl/internal/kiss/send"
 	"kam.bytecoder.nl/internal/models"
@@ -27,6 +29,7 @@ type Node struct {
 	manager *kiss.Manager
 	radio   *kiss.RadioClient
 	sender  *send.Sender
+	echo    *echo.Service
 
 	// RadioConfig is the configuration read back from the hardware after New
 	// applied it. Use it to report the live radio state at startup.
@@ -76,10 +79,23 @@ func New(cfg *models.KamConfig, dbPath string) (*Node, error) {
 		return nil, fmt.Errorf("apply radio config: %w", err)
 	}
 
+	sender := send.NewForManager(manager)
+
+	// Wire the optional echo liveness service: it subscribes to inbound group
+	// texts and replies to mentions of the local node on monitored channels.
+	var echoService *echo.Service
+	if cfg.Echo.Enabled {
+		echoService = echo.New(sender, cfg.NodeName, cfg.Echo.Channels, cfg.Echo.Mention)
+		manager.SubscribeGroupText(echoService.Handle)
+		slog.Info("[Node] echo service enabled",
+			"channels", cfg.Echo.Channels, "mention", cfg.Echo.Mention)
+	}
+
 	return &Node{
 		manager:     manager,
 		radio:       radio,
-		sender:      send.NewForManager(manager),
+		sender:      sender,
+		echo:        echoService,
 		RadioConfig: verified,
 	}, nil
 }
@@ -95,6 +111,9 @@ func (n *Node) Run(ctx context.Context) error {
 // Sender returns the outbound group-text sender. It is safe to use after New
 // returns and until Run has stopped the manager.
 func (n *Node) Sender() *send.Sender { return n.sender }
+
+// Echo returns the optional echo liveness service, or nil if disabled.
+func (n *Node) Echo() *echo.Service { return n.echo }
 
 // Radio returns the radio client for direct hardware interaction.
 func (n *Node) Radio() *kiss.RadioClient { return n.radio }

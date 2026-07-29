@@ -138,6 +138,52 @@ func TestBuilderRawPacketMaxSize(t *testing.T) {
 	}
 }
 
+// TestBuilderAppPayloadFitsRadioLimit guards the AES-128 block-padding budget.
+// The radio firmware drops packets whose payload (after header+path) exceeds
+// MAX_PACKET_PAYLOAD (184). channel_hash(1)+mac(2)+ciphertext must stay <= 184,
+// so the padded plaintext must be the largest multiple of 16 <= 181 = 176.
+// A naive cap of 181 on the unpadded plaintext lets a 176-byte message pad to
+// 192 bytes of ciphertext -> 195-byte payload -> firmware drop.
+func TestBuilderAppPayloadFitsRadioLimit(t *testing.T) {
+	parsers.ResetTopicRegistry()
+	parsers.SetPublicChannelSecretHex("8b3387e9c5cdea6ac9e5edbaa115cd72")
+
+	b := NewBuilder("kam")
+	raw, err := b.Build("#public", strings.Repeat("x", 300))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	appPayload := raw[2:] // skip header + path_length
+	if len(appPayload) > MaxPacketPayload {
+		t.Fatalf("appPayload %d exceeds MAX_PACKET_PAYLOAD %d; firmware would drop this packet",
+			len(appPayload), MaxPacketPayload)
+	}
+}
+
+func TestBuilderMaxMessageRoundTripFitsLimit(t *testing.T) {
+	parsers.ResetTopicRegistry()
+	parsers.SetPublicChannelSecretHex("8b3387e9c5cdea6ac9e5edbaa115cd72")
+
+	b := NewBuilder("kam")
+	raw, err := b.Build("#public", strings.Repeat("x", 300))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	appPayload := raw[2:]
+	// At the cap, padded plaintext = 176, ciphertext = 176, appPayload = 1+2+176 = 179.
+	if len(appPayload) != 1+2+176 {
+		t.Fatalf("expected appPayload 179 at cap, got %d", len(appPayload))
+	}
+	// Round-trip must still succeed.
+	msg, ok := parsers.ParseGroupText(appPayload)
+	if !ok {
+		t.Fatal("round-trip parse failed at max length")
+	}
+	if msg.Sender != "kam" {
+		t.Fatalf("sender: got %q", msg.Sender)
+	}
+}
+
 func TestBuilderFlagsAndTimestampEncoding(t *testing.T) {
 	parsers.ResetTopicRegistry()
 	parsers.SetPublicChannelSecretHex("8b3387e9c5cdea6ac9e5edbaa115cd72")

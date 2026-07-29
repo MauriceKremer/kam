@@ -2,6 +2,8 @@ package db
 
 import (
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -154,5 +156,24 @@ func groupTextToRecord(m parsers.GroupTextMessage) GroupTextRecord {
 		PublicKeyPrefix:  m.PublicKeyPrefix,
 		Timestamp:        m.Timestamp.Unix(),
 		TimeDriftSeconds: m.TimeDriftSeconds,
+		HopCount:         m.HopCount,
+		HopStations:      marshalHopStations(m.HopStations),
 	}
+}
+
+// marshalHopStations renders per-hop path hashes as a JSON array of hex strings
+// for storage in the hop_stations column. Returns "[]" when no hops were
+// recorded. Malformed bytes are still hex-encoded; they never break JSON.
+func marshalHopStations(stations [][]byte) string {
+	hexes := make([]string, len(stations))
+	for i, s := range stations {
+		hexes[i] = hex.EncodeToString(s)
+	}
+	b, err := json.Marshal(hexes)
+	if err != nil {
+		// Cannot fail for []string, but guard against regressions.
+		slog.Warn("[GroupTextQueue] marshal hop stations failed", "error", err)
+		return "[]"
+	}
+	return string(b)
 }

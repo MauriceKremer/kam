@@ -25,3 +25,12 @@ channels:
   - name: "#mc-radar"
     key_strategy: "derived"
     enabled: true
+
+  - name: "#kam-test"
+    key_strategy: "derived"
+    enabled: true
+
+echo:
+  enabled: true
+  channels: ["#kam-test"]
+  mention: "@kam"

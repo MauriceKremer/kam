@@ -137,6 +137,108 @@ channels:
 	}
 }
 
+func TestLoadKamConfigEchoValid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kam.yml")
+	writeConfig(t, path, `
+version: 1
+node_name: "kam"
+radio:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+  frequency_hz: 869618000
+  bandwidth_hz: 62500
+  spreading_factor: 7
+  coding_rate: 5
+channels:
+  - name: "#public"
+    key_strategy: "public"
+    key_hex: "8b3387e9c5cdea6ac9e5edbaa115cd72"
+    enabled: true
+  - name: "mesh-dev"
+    key_strategy: "derived"
+    enabled: true
+echo:
+  enabled: true
+  channels: ["#public", "mesh-dev"]
+  mention: "@kam"
+`)
+
+	cfg, err := LoadKamConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.Echo.Enabled {
+		t.Fatal("echo should be enabled")
+	}
+	if cfg.Echo.Mention != "@kam" {
+		t.Fatalf("mention: got %q, want @kam", cfg.Echo.Mention)
+	}
+	if len(cfg.Echo.Channels) != 2 {
+		t.Fatalf("echo channels: got %d, want 2", len(cfg.Echo.Channels))
+	}
+	if cfg.Echo.Channels[0] != "#public" || cfg.Echo.Channels[1] != "#mesh-dev" {
+		t.Fatalf("echo channels normalized mismatch: %+v", cfg.Echo.Channels)
+	}
+}
+
+func TestLoadKamConfigEchoChannelNotConfigured(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kam.yml")
+	writeConfig(t, path, `
+version: 1
+node_name: "kam"
+radio:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+  frequency_hz: 869618000
+  bandwidth_hz: 62500
+  spreading_factor: 7
+  coding_rate: 5
+channels:
+  - name: "#public"
+    key_strategy: "public"
+    key_hex: "8b3387e9c5cdea6ac9e5edbaa115cd72"
+    enabled: true
+echo:
+  enabled: true
+  channels: ["#ghost"]
+`)
+
+	_, err := LoadKamConfig(path)
+	if err == nil {
+		t.Fatal("expected error for echo channel not in channels")
+	}
+}
+
+func TestLoadKamConfigEchoEnabledNoChannels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kam.yml")
+	writeConfig(t, path, `
+version: 1
+node_name: "kam"
+radio:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+  frequency_hz: 869618000
+  bandwidth_hz: 62500
+  spreading_factor: 7
+  coding_rate: 5
+channels:
+  - name: "#public"
+    key_strategy: "public"
+    key_hex: "8b3387e9c5cdea6ac9e5edbaa115cd72"
+    enabled: true
+echo:
+  enabled: true
+`)
+
+	_, err := LoadKamConfig(path)
+	if err == nil {
+		t.Fatal("expected error for echo enabled without channels")
+	}
+}
+
 func TestPublicChannelKeyHex(t *testing.T) {
 	cfg := &KamConfig{
 		Version: 1,
