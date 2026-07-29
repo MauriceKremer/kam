@@ -2,17 +2,19 @@ package echo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"kam.bytecoder.nl/internal/kiss/parsers"
 )
 
-// errSentinel is exposed for tests that need a stable sender error.
-var errSentinel = errors.New("echo: send failed")
+const (
+	defaultQueueSize   = 16
+	defaultSendTimeout = 500 * time.Millisecond
+)
 
 // Sender sends an outbound group text on a channel. The concrete
 // *kiss/send.Sender satisfies this.
@@ -21,39 +23,59 @@ type Sender interface {
 }
 
 // Service replies to group-text messages that mention the local node, as a
-// liveness test for end-to-end messaging. It is fire-and-forget: a reply is
-// best-effort and sender errors are logged, not propagated.
+// liveness test for end-to-end messaging. It is fire-and-forget and fully
+// decoupled from the router: Handle only applies cheap filters and enqueues
+// the message to a bounded queue; a dedicated worker goroutine does the
+// (potentially blocking) Build+Send. This guarantees Handle never blocks the
+// route loop, even when the radio TX path is backed up.
 type Service struct {
 	sender      Sender
 	nodeName    string
 	mention     string
 	channels    map[string]bool
 	sendTimeout time.Duration
+
+	queue  chan parsers.GroupTextMessage
+	stopCh chan struct{}
+	doneCh chan struct{}
+	once   sync.Once
 }
 
-// New creates an echo Service. channels is the set of monitored channel names
-// (normalized with a leading '#'). If mention is empty it defaults to
-// "@"+nodeName.
+// New creates an echo Service and starts its worker goroutine. channels is the
+// set of monitored channel names (normalized with a leading '#'). If mention
+// is empty it defaults to "@"+nodeName. Call Stop to shut down the worker.
 func New(sender Sender, nodeName string, channels []string, mention string) *Service {
+	return newService(sender, nodeName, channels, mention, defaultQueueSize, defaultSendTimeout)
+}
+
+// newService is the testable constructor with explicit queue size and send
+// timeout. It starts the worker goroutine.
+func newService(sender Sender, nodeName string, channels []string, mention string, queueSize int, sendTimeout time.Duration) *Service {
 	ch := make(map[string]bool, len(channels))
 	for _, c := range channels {
 		ch[normalizeChannel(c)] = true
 	}
-	if mention == "" {
-		mention = "@" + nodeName
+	m := mention
+	if m == "" {
+		m = "@" + nodeName
 	}
-	return &Service{
+	s := &Service{
 		sender:      sender,
-		nodeName:    nodeName,
-		mention:     mention,
+		nodeName:    strings.TrimSpace(nodeName),
+		mention:     m,
 		channels:    ch,
-		sendTimeout: 2 * time.Second,
+		sendTimeout: sendTimeout,
+		queue:       make(chan parsers.GroupTextMessage, queueSize),
+		stopCh:      make(chan struct{}),
+		doneCh:      make(chan struct{}),
 	}
+	go s.worker()
+	return s
 }
 
-// Handle observes an inbound group text and replies if it mentions the local
-// node on a monitored channel. It never blocks longer than sendTimeout and
-// never panics on sender errors.
+// Handle observes an inbound group text. It applies cheap filters (channel,
+// self, mention) and enqueues the message non-blocking. If the worker queue is
+// full the reply is dropped with a log line. Handle never blocks on Send.
 func (s *Service) Handle(msg parsers.GroupTextMessage) {
 	if !s.channels[normalizeChannel(msg.ChannelName)] {
 		return
@@ -64,7 +86,32 @@ func (s *Service) Handle(msg parsers.GroupTextMessage) {
 	if !containsMention(msg.Body, s.mention) {
 		return
 	}
+	select {
+	case s.queue <- msg:
+	default:
+		slog.Warn("[Echo] reply dropped: worker queue full",
+			"channel", msg.ChannelName, "sender", msg.Sender)
+	}
+}
 
+// worker drains the queue and processes replies sequentially. It exits when
+// Stop is called. Sequential processing avoids concurrent crypto (Build) and
+// serializes Send against the radio TX path.
+func (s *Service) worker() {
+	defer close(s.doneCh)
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case msg := <-s.queue:
+			s.process(msg)
+		}
+	}
+}
+
+// process builds and sends a single echo reply. Errors are logged, not
+// propagated; echo is best-effort liveness.
+func (s *Service) process(msg parsers.GroupTextMessage) {
 	sender := msg.Sender
 	if sender == "" {
 		sender = "someone"
@@ -88,6 +135,14 @@ func (s *Service) Handle(msg parsers.GroupTextMessage) {
 		"rssi", msg.RSSI,
 		"has_rx_meta", msg.HasRxMeta,
 		"drift_seconds", msg.TimeDriftSeconds)
+}
+
+// Stop signals the worker to exit and blocks until it has. Safe to call
+// multiple times. Must be called before the KISS manager is stopped so the
+// worker cannot enqueue TX frames into a drained write loop.
+func (s *Service) Stop() {
+	s.once.Do(func() { close(s.stopCh) })
+	<-s.doneCh
 }
 
 // formatReply builds the echo reply body (without the "<nodeName>: " prefix,

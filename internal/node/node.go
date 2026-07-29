@@ -101,9 +101,14 @@ func New(cfg *models.KamConfig, dbPath string) (*Node, error) {
 }
 
 // Run blocks until ctx is cancelled (e.g. by SIGINT/SIGTERM), then stops the
-// KISS manager and closes persistence. It always returns nil.
+// echo worker (if any) and the KISS manager and closes persistence. It always
+// returns nil. Echo is stopped first so its worker cannot enqueue TX frames
+// into a manager whose write loop has already exited.
 func (n *Node) Run(ctx context.Context) error {
 	<-ctx.Done()
+	if n.echo != nil {
+		n.echo.Stop()
+	}
 	n.manager.Stop()
 	return nil
 }
