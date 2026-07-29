@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"log"
+	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -16,6 +17,11 @@ import (
 )
 
 func main() {
+	configPath := flag.String("config", "kam.yml", "path to kam.yml configuration file")
+	dbPath := flag.String("db", "", "SQLite database path (overrides kam.yml db_path; default kam.db)")
+	portOverride := flag.String("port", "", "override radio serial port from config (e.g. /dev/ttyUSB0)")
+	flag.Parse()
+
 	level := slog.LevelInfo
 	if os.Getenv("DEBUG") == "1" {
 		level = slog.LevelDebug
@@ -25,17 +31,34 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	kamCfg, err := config.LoadKamConfig("kam.yml")
+	kamCfg, err := config.LoadKamConfig(*configPath)
 	if err != nil {
-		log.Fatalf("Could not load kam.yml: %v", err)
+		slog.Error("Could not load config", "path", *configPath, "error", err)
+		os.Exit(1)
 	}
-	if err := config.BootstrapChannels(kamCfg, "kam.db"); err != nil {
-		log.Fatalf("Could not bootstrap channels from kam.yml: %v", err)
+	if *portOverride != "" {
+		kamCfg.Radio.Port = *portOverride
 	}
 
-	persistence, err := db.NewPersistence("kam.db")
+	// Resolve DB path: -db flag > kam.yml db_path > default "kam.db".
+	resolvedDBPath := *dbPath
+	if resolvedDBPath == "" {
+		if kamCfg.DBPath != "" {
+			resolvedDBPath = kamCfg.DBPath
+		} else {
+			resolvedDBPath = "kam.db"
+		}
+	}
+
+	if err := config.BootstrapChannels(kamCfg, resolvedDBPath); err != nil {
+		slog.Error("Could not bootstrap channels", "error", err)
+		os.Exit(1)
+	}
+
+	persistence, err := db.NewPersistence(resolvedDBPath)
 	if err != nil {
-		log.Fatalf("Could not open persistence: %v", err)
+		slog.Error("Could not open persistence", "path", resolvedDBPath, "error", err)
+		os.Exit(1)
 	}
 
 	slog.Info("Loaded channels config", "count", len(kamCfg.Channels))
@@ -43,7 +66,13 @@ func main() {
 	// Initialize the KISS manager
 	manager, err := kiss.NewManager(kamCfg.Radio.Port, kamCfg.Radio.Baud)
 	if err != nil {
-		panic(err)
+		slog.Error("Could not open serial port",
+			"port", kamCfg.Radio.Port,
+			"baud", kamCfg.Radio.Baud,
+			"error", err,
+			"hint", "connect a MeshCore-compatible radio or pass -port /dev/...",
+		)
+		os.Exit(1)
 	}
 	manager.Store = persistence
 	manager.NodeName = kamCfg.NodeName
@@ -51,38 +80,41 @@ func main() {
 	// Start the KISS manager
 	manager.Start()
 
-	// Create a short 3-second deadline specifically for this hardware query
-	queryCtx, queryCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer queryCancel()
+	radio := kiss.NewRadioClient(manager)
 
-	err = kiss.NewRadioClient(manager).Set(queryCtx, &kiss.RadioConfig{
+	// Push radio configuration to the hardware
+	setCtx, setCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	err = radio.Set(setCtx, &kiss.RadioConfig{
 		Frequency:       kamCfg.Radio.FrequencyHz,
 		Bandwidth:       kamCfg.Radio.BandwidthHz,
 		SpreadingFactor: kamCfg.Radio.SpreadingFactor,
 		CodingRate:      kamCfg.Radio.CodingRate,
 	})
+	setCancel()
 	if err != nil {
-		log.Fatalf("Could not set radio config: %v", err)
+		slog.Error("Could not set radio config", "error", err)
+		os.Exit(1)
 	}
-	slog.Info("Radio configuration set successfully!")
+	slog.Info("Radio configuration set successfully")
 
-	slog.Info("Querying Heltec board for radio configuration...")
-	radio := kiss.NewRadioClient(manager)
-	radioCfg, err := radio.Get(queryCtx)
+	// Query the board back to confirm
+	getCtx, getCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	radioCfg, err := radio.Get(getCtx)
+	getCancel()
 	if err != nil {
-		log.Fatalf("Could not get radio config: %v", err)
+		slog.Error("Could not get radio config", "error", err)
+		os.Exit(1)
 	}
 
-	// Success! Print the parsed results
-	slog.Info("--- Radio Config ---\n")
-	slog.Info("Frequency", "MHz", float64(radioCfg.Frequency)/1000000.0)
-	slog.Info("Bandwidth", "kHz", float64(radioCfg.Bandwidth)/1000.0)
+	slog.Info("--- Radio Config ---")
+	slog.Info("Frequency", "MHz", fmt.Sprintf("%.3f", float64(radioCfg.Frequency)/1000000.0))
+	slog.Info("Bandwidth", "kHz", fmt.Sprintf("%.1f", float64(radioCfg.Bandwidth)/1000.0))
 	slog.Info("Spreading Factor", "SF", radioCfg.SpreadingFactor)
 	slog.Info("Coding Rate", "CR", radioCfg.CodingRate)
 
 	slog.Info("Press Ctrl+C to stop")
 
-	// Example: expose outbound sender (Phase 1 placeholder)
+	// Outbound group-text sender (Phase 1 placeholder)
 	_ = send.NewForManager(manager)
 
 	sigChan := make(chan os.Signal, 1)

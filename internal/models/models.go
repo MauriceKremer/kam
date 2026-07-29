@@ -19,6 +19,7 @@ const (
 type KamConfig struct {
 	Version  int             `yaml:"version"`
 	NodeName string          `yaml:"node_name"`
+	DBPath   string          `yaml:"db_path"`
 	Radio    RadioConfig     `yaml:"radio"`
 	Channels []ChannelConfig `yaml:"channels"`
 }
@@ -120,6 +121,7 @@ func normalizeAndValidate(cfg *KamConfig) (*KamConfig, error) {
 	out := &KamConfig{
 		Version:  cfg.Version,
 		NodeName: strings.TrimSpace(cfg.NodeName),
+		DBPath:   strings.TrimSpace(cfg.DBPath),
 		Radio:    cfg.Radio,
 		Channels: make([]ChannelConfig, 0, len(cfg.Channels)),
 	}

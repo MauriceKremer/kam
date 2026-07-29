@@ -1,5 +1,6 @@
 version: 1
 node_name: "kam"
+db_path: "kam.db"
 radio:
   port: "/dev/cu.usbserial-0001"
   baud: 115200

@@ -1,5 +1,93 @@
 # kam
 
+MIT-licensed Go bridge for MeshCore KISS TNC / LoRa radios. Decodes
+adverts and group texts, verifies Ed25519 signatures, persists to SQLite.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Quickstart
+
+### Prerequisites
+
+- Go 1.22+ (matches `go.mod` directive)
+- A MeshCore-compatible KISS TNC / LoRa radio (e.g. Heltec) connected over USB serial
+- OS serial driver present (most platforms auto-load; Linux may need the `dialout` group: `sudo usermod -aG dialout $USER`)
+
+### Install
+
+```sh
+git clone https://github.com/<you>/kam.git
+cd kam
+go build .
+```
+
+Or, if the module path is resolvable from your GOPROXY:
+
+```sh
+go install kam.bytecoder.nl@latest
+```
+
+### Configure
+
+Copy the example config and edit the radio port for your OS:
+
+```sh
+cp kam.yml kam.yml.local   # or edit kam.yml in place
+```
+
+```yaml
+version: 1
+node_name: "kam"
+db_path: "kam.db"
+radio:
+  port: "/dev/cu.usbserial-0001"   # macOS; Linux usually /dev/ttyUSB0
+  baud: 115200
+  frequency_hz: 869618000
+  bandwidth_hz: 62500
+  spreading_factor: 7
+  coding_rate: 5
+channels:
+  - name: "#public"
+    key_strategy: "public"
+    key_hex: "8b3387e9c5cdea6ac9e5edbaa115cd72"  # MeshCore public PSK, public by design
+    enabled: true
+```
+
+See [Channel Credentials Storage Design](#channel-credentials-storage-design-step-1) below for the full `key_strategy` semantics (`public` / `derived` / `explicit`).
+
+### Run
+
+```sh
+./kam                       # uses ./kam.yml and ./kam.db
+./kam -port /dev/ttyUSB0    # override serial port for this run
+./kam -db /tmp/kam.db        # override SQLite path for this run
+./kam -config ~/kam-prod.yml
+DEBUG=1 ./kam               # enable debug logs
+```
+
+Press `Ctrl+C` to stop. The manager flushes pending SQLite batches and closes the port on shutdown.
+
+### Run tests
+
+```sh
+go test ./...               # all packages
+go test -race ./...         # with race detector (CI runs this)
+gofmt -l .                  # should print nothing
+go vet ./...
+```
+
+### Flags
+
+| Flag      | Default     | Description |
+|-----------|-------------|-------------|
+| `-config` | `kam.yml`   | Path to YAML config file |
+| `-db`     | _empty_     | SQLite path; overrides `kam.yml db_path`; falls back to `kam.db` |
+| `-port`   | _empty_     | Override `radio.port` for this run |
+
+DB path precedence: `-db` flag > `kam.yml db_path` > `kam.db`.
+
 ## Architecture TL;DR
 
 ### Device Limitations
@@ -13,10 +101,10 @@ To provide a clean, thread-safe, and asynchronous Go API (e.g., `cmd_radio.go`),
 1. **Hardware Mutex (`hwTxMutex`)**: The `Manager` holds a `sync.Mutex` that locks access to the hardware. Any API call requesting bidirectional interaction with the hardware must acquire this lock. 
    - *Impact*: Enforces that only one command is "in-flight" at a time, protecting the hardware buffer from overrun.
    - *Impact*: Alleviates the need for transaction IDs, as any incoming hardware response (e.g., `OK` or `Error`) is guaranteed to belong to the single goroutine currently holding the lock.
-2. **Event-Driven Response Registry (`kiss_registry.go`)**: Incoming serial frames are processed continuously by a background parser loop. When a response byte is detected, the parser uses a registry map (`waiters map[byte]chan []byte`) to route the payload. 
+2. **Event-Driven Response Registry (`internal/kiss/registry.go`)**: Incoming serial frames are processed continuously by a background parser loop. When a response byte is detected, the parser uses a registry map (`waiters map[byte]chan []byte`) to route the payload. 
    - *Safety*: The registry uses buffered channels (`make(chan []byte, 1)`) to ensure the fast-running parser loop never blocks, even if the API caller abandoned the request due to a context timeout.
 3. **Context-Aware API**: High-level Go clients interact via synchronous interfaces using standard `context.Context` semantics (`func Set(ctx, ...)`). If the hardware lock cannot be acquired or the hardware fails to respond within the expected deadline, the API quickly unwinds and returns an error without stalling the caller.
-4. **Payload Router (`kiss_router.go`)**: Incoming `CMD_DATA` frames are decoded and dispatched by `routeLoop`. It extracts the header bits (`routeType`, `payloadType`, `version`) and routes to a dedicated per-type handler (e.g., `kiss_parse_advert.go`). `kiss_router.go` owns no parsing logic itself — it is a pure dispatcher. Each payload type lives in its own `kiss_parse_<type>.go` file, keeping parsing isolated and individually testable.
+4. **Payload Router (`internal/kiss/kiss_router.go`)**: Incoming `CMD_DATA` frames are decoded and dispatched by `routeLoop`. It extracts the header bits (`routeType`, `payloadType`, `version`) and routes to a dedicated per-type handler (e.g., `internal/kiss/parsers/advert.go`). `kiss_router.go` owns no parsing logic itself — it is a pure dispatcher. Each payload type lives in its own `internal/kiss/parsers/<type>.go` file, keeping parsing isolated and individually testable.
 
 ## Channel Credentials Storage Design (Step 1)
 
@@ -33,6 +121,8 @@ File name: `kam.yml`
 
 ```yaml
 version: 1
+node_name: "kam"
+db_path: "kam.db"
 radio:
   port: "/dev/cu.usbserial-0001"
   baud: 115200
@@ -84,11 +174,12 @@ These values are pushed to the hardware during `main.go` initialization.
 
 ### Normalization and validation rules
 
-1. Channel names are trimmed, lowercased, and must start with `#`.
-2. Empty name and bare `#` are invalid.
-3. `#public` must use `key_strategy: public`.
-4. Names are unique after normalization.
-5. `enabled: false` keeps records in DB but excludes them from in-memory decryption registry.
+1. `node_name` is required (trimmed, non-empty).
+2. Channel names are trimmed, lowercased, and must start with `#`.
+3. Empty name and bare `#` are invalid.
+4. `#public` must use `key_strategy: public`.
+5. Names are unique after normalization.
+6. `enabled: false` keeps records in DB but excludes them from in-memory decryption registry.
 
 ### SQLite schema
 
@@ -112,6 +203,7 @@ CREATE INDEX IF NOT EXISTS idx_channels_enabled ON channels(enabled);
 ```go
 type KamConfig struct {
     Version  int             `yaml:"version"`
+    NodeName string          `yaml:"node_name"`
     Radio    RadioConfig     `yaml:"radio"`
     Channels []ChannelConfig `yaml:"channels"`
 }
@@ -161,9 +253,9 @@ Validated `ADVERT` packets are persisted to SQLite without blocking the packet r
 
 ### Pipeline
 
-1. `kiss_router.go` dispatches `PAYLOAD_TYPE_ADVERT` to `kiss_parse_advert.go`.
+1. `internal/kiss/kiss_router.go` dispatches `PAYLOAD_TYPE_ADVERT` to `internal/kiss/parsers/advert.go`.
 2. The parser validates the packet, including Ed25519 signature verification.
-3. The parser enqueues the `AdvertPacket` onto `AdvertQueue` via the `AdvertPersistence` interface.
+3. The parser enqueues the `AdvertPacket` onto `AdvertQueue` via the `kiss.Persistence` interface.
 4. Enqueue is non-blocking; if the queue is full, the advert is dropped and a counter is incremented.
 5. A single background writer goroutine drains the queue, accumulates a batch, and inserts it transactionally on batch size or flush interval.
 6. `Manager.Stop()` flushes the remaining batch and closes the queue.
@@ -254,7 +346,7 @@ This keeps both persistence paths over a single SQLite handle (`kam.db`) with WA
 - `Failed` — total adverts lost due to insert errors.
 - `Depth` — current queued items not yet flushed.
 
-Current defaults (hard-coded constants in `internal/config/adverts.go`):
+Current defaults (hard-coded constants in `internal/db/adverts.go`):
 - Queue capacity: 256
 - Batch size: 50
 - Flush interval: 1 second
