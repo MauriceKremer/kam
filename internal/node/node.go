@@ -26,22 +26,25 @@ const radioApplyTimeout = 3 * time.Second
 // Node is a running KAM node. A Node is constructed by New and run by Run;
 // zero values are not valid.
 type Node struct {
-	manager *kiss.Manager
-	radio   *kiss.RadioClient
-	sender  *send.Sender
-	echo    *echo.Service
+	manager    *kiss.Manager
+	radio      *kiss.RadioClient
+	sender     *send.Sender
+	echo       *echo.Service
+	configPath string
 
 	// RadioConfig is the configuration read back from the hardware after New
 	// applied it. Use it to report the live radio state at startup.
 	RadioConfig *kiss.RadioConfig
 }
 
-// New bootstraps the channel database, opens persistence, opens and starts the
-// KISS manager, and pushes + verifies the radio configuration. On success the
-// returned Node is ready to Run. On failure any opened resources are torn down
-// and a wrapped error is returned.
-func New(cfg *models.KamConfig, dbPath string) (*Node, error) {
-	if err := config.BootstrapChannels(cfg, dbPath); err != nil {
+// New bootstraps the channel registry from kam.yml, opens persistence,
+// opens and starts the KISS manager, and pushes + verifies the radio
+// configuration. configPath is the YAML file used as the single source of
+// truth for system configuration; runtime channel additions are written back
+// to it. On success the returned Node is ready to Run. On failure any opened
+// resources are torn down and a wrapped error is returned.
+func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
+	if err := config.BootstrapChannels(cfg); err != nil {
 		return nil, fmt.Errorf("bootstrap channels: %w", err)
 	}
 
@@ -96,6 +99,7 @@ func New(cfg *models.KamConfig, dbPath string) (*Node, error) {
 		radio:       radio,
 		sender:      sender,
 		echo:        echoService,
+		configPath:  configPath,
 		RadioConfig: verified,
 	}, nil
 }
@@ -122,3 +126,16 @@ func (n *Node) Echo() *echo.Service { return n.echo }
 
 // Radio returns the radio client for direct hardware interaction.
 func (n *Node) Radio() *kiss.RadioClient { return n.radio }
+
+// ConfigPath returns the YAML config file this node uses as the single source
+// of truth for system configuration.
+func (n *Node) ConfigPath() string { return n.configPath }
+
+// UpsertChannel persists a channel to the YAML config file and applies it to
+// the parser registry without a restart. It is the runtime path for adding or
+// updating system configuration, so new config is written by the application
+// into the YAML file when needed. #public is rejected (edit the file
+// directly).
+func (n *Node) UpsertChannel(channel models.ChannelConfig) error {
+	return config.UpsertRuntimeChannelAndApply(n.configPath, channel)
+}

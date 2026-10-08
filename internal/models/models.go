@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -51,15 +52,112 @@ type ChannelConfig struct {
 }
 
 func NormalizeChannelConfig(ch ChannelConfig) (ChannelConfig, error) {
-	cfg := &KamConfig{
-		Version:  1,
-		Channels: []ChannelConfig{ch},
+	return normalizeChannelEntry(0, ch, make(map[string]struct{}))
+}
+
+func normalizeChannelEntry(i int, ch ChannelConfig, seen map[string]struct{}) (ChannelConfig, error) {
+	name := normalizeChannelName(ch.Name)
+	if name == "" || name == "#" {
+		return ChannelConfig{}, fmt.Errorf("channel[%d]: invalid name %q", i, ch.Name)
 	}
-	normalized, err := normalizeAndValidate(cfg)
+
+	if _, exists := seen[name]; exists {
+		return ChannelConfig{}, fmt.Errorf("channel[%d]: duplicate normalized name %q", i, name)
+	}
+	seen[name] = struct{}{}
+
+	strategy := strings.ToLower(strings.TrimSpace(ch.KeyStrategy))
+	if strategy != KeyStrategyPublic && strategy != KeyStrategyDerived && strategy != KeyStrategyExplicit {
+		return ChannelConfig{}, fmt.Errorf("channel[%d]: invalid key_strategy %q", i, ch.KeyStrategy)
+	}
+
+	keyHex := strings.ToLower(strings.TrimSpace(ch.KeyHex))
+	switch strategy {
+	case KeyStrategyPublic:
+		if name != "#public" {
+			return ChannelConfig{}, fmt.Errorf("channel[%d]: key_strategy public is only valid for #public", i)
+		}
+		if keyHex == "" {
+			return ChannelConfig{}, fmt.Errorf("channel[%d]: key_hex is required for public strategy", i)
+		}
+		if err := validateHexLen(keyHex, 16); err != nil {
+			return ChannelConfig{}, fmt.Errorf("channel[%d]: %w", i, err)
+		}
+	case KeyStrategyDerived:
+		if keyHex != "" {
+			return ChannelConfig{}, fmt.Errorf("channel[%d]: key_hex must be empty for derived strategy", i)
+		}
+	case KeyStrategyExplicit:
+		if keyHex == "" {
+			return ChannelConfig{}, fmt.Errorf("channel[%d]: key_hex is required for explicit strategy", i)
+		}
+		if err := validateHexLenEither(keyHex, 16, 32); err != nil {
+			return ChannelConfig{}, fmt.Errorf("channel[%d]: %w", i, err)
+		}
+	}
+
+	if name == "#public" && strategy != KeyStrategyPublic {
+		return ChannelConfig{}, fmt.Errorf("channel[%d]: #public must use key_strategy public", i)
+	}
+
+	return ChannelConfig{
+		Name:        name,
+		KeyStrategy: strategy,
+		KeyHex:      keyHex,
+		Enabled:     ch.Enabled,
+	}, nil
+}
+
+// SaveKamConfig writes cfg to path as YAML. The write is atomic: it writes
+// to a temp file in the same directory and renames it over the target, so a
+// crash mid-write never leaves a half-written config. The normalized in-memory
+// representation is what gets persisted; original file comments are not
+// preserved.
+func SaveKamConfig(path string, cfg *KamConfig) error {
+	data, err := yaml.Marshal(cfg)
 	if err != nil {
-		return ChannelConfig{}, err
+		return fmt.Errorf("marshal kam config: %w", err)
 	}
-	return normalized.Channels[0], nil
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".kam.yml.*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp config file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if tmp != nil {
+			tmp.Close()
+			os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp config: %w", err)
+	}
+	tmp = nil
+
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return fmt.Errorf("chmod temp config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("rename temp config to %q: %w", path, err)
+	}
+	return nil
+}
+
+// ChannelIndex returns the index of the channel with the given normalized
+// name, or -1 if not present.
+func (cfg *KamConfig) ChannelIndex(name string) int {
+	for i, ch := range cfg.Channels {
+		if ch.Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func (cfg *KamConfig) PublicChannelKeyHex() (string, error) {
@@ -137,56 +235,11 @@ func normalizeAndValidate(cfg *KamConfig) (*KamConfig, error) {
 	seen := make(map[string]struct{}, len(cfg.Channels))
 
 	for i, ch := range cfg.Channels {
-		name := normalizeChannelName(ch.Name)
-		if name == "" || name == "#" {
-			return nil, fmt.Errorf("channel[%d]: invalid name %q", i, ch.Name)
+		normalized, err := normalizeChannelEntry(i, ch, seen)
+		if err != nil {
+			return nil, err
 		}
-
-		if _, exists := seen[name]; exists {
-			return nil, fmt.Errorf("channel[%d]: duplicate normalized name %q", i, name)
-		}
-		seen[name] = struct{}{}
-
-		strategy := strings.ToLower(strings.TrimSpace(ch.KeyStrategy))
-		if strategy != KeyStrategyPublic && strategy != KeyStrategyDerived && strategy != KeyStrategyExplicit {
-			return nil, fmt.Errorf("channel[%d]: invalid key_strategy %q", i, ch.KeyStrategy)
-		}
-
-		keyHex := strings.ToLower(strings.TrimSpace(ch.KeyHex))
-		switch strategy {
-		case KeyStrategyPublic:
-			if name != "#public" {
-				return nil, fmt.Errorf("channel[%d]: key_strategy public is only valid for #public", i)
-			}
-			if keyHex == "" {
-				return nil, fmt.Errorf("channel[%d]: key_hex is required for public strategy", i)
-			}
-			if err := validateHexLen(keyHex, 16); err != nil {
-				return nil, fmt.Errorf("channel[%d]: %w", i, err)
-			}
-		case KeyStrategyDerived:
-			if keyHex != "" {
-				return nil, fmt.Errorf("channel[%d]: key_hex must be empty for derived strategy", i)
-			}
-		case KeyStrategyExplicit:
-			if keyHex == "" {
-				return nil, fmt.Errorf("channel[%d]: key_hex is required for explicit strategy", i)
-			}
-			if err := validateHexLenEither(keyHex, 16, 32); err != nil {
-				return nil, fmt.Errorf("channel[%d]: %w", i, err)
-			}
-		}
-
-		if name == "#public" && strategy != KeyStrategyPublic {
-			return nil, fmt.Errorf("channel[%d]: #public must use key_strategy public", i)
-		}
-
-		out.Channels = append(out.Channels, ChannelConfig{
-			Name:        name,
-			KeyStrategy: strategy,
-			KeyHex:      keyHex,
-			Enabled:     ch.Enabled,
-		})
+		out.Channels = append(out.Channels, normalized)
 	}
 
 	// Normalize and validate the optional echo service config. Echo channels

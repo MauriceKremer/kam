@@ -155,6 +155,21 @@ func RegisterTopicWithKeyHex(topicName, keyHex string) (uint32, error) {
 	return topicID, nil
 }
 
+// TopicRegistered reports whether a non-public channel is currently
+// registered in the in-memory topic registry. Intended for tests.
+func TopicRegistered(topicName string) bool {
+	cleanName := normalizeTopicName(topicName)
+	if cleanName == "#" || cleanName == "#public" {
+		return false
+	}
+	hash := sha256.Sum256([]byte(cleanName))
+	topicID := binary.LittleEndian.Uint32(hash[28:32])
+	registryMutex.RLock()
+	_, ok := topicRegistry[topicID]
+	registryMutex.RUnlock()
+	return ok
+}
+
 // UnregisterTopic removes a topic from the registry.
 func UnregisterTopic(topicName string) {
 	cleanName := normalizeTopicName(topicName)

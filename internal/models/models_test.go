@@ -260,3 +260,63 @@ func TestPublicChannelKeyHex(t *testing.T) {
 		t.Fatalf("unexpected key hex: %s", key)
 	}
 }
+
+func TestSaveKamConfigRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kam.yml")
+	writeConfig(t, path, `
+version: 1
+node_name: "kam"
+radio:
+  port: "/dev/ttyUSB0"
+  baud: 115200
+  frequency_hz: 869618000
+  bandwidth_hz: 62500
+  spreading_factor: 7
+  coding_rate: 5
+channels:
+  - name: "#public"
+    key_strategy: "public"
+    key_hex: "8b3387e9c5cdea6ac9e5edbaa115cd72"
+    enabled: true
+  - name: "#mesh-dev"
+    key_strategy: "derived"
+    enabled: true
+`)
+	cfg, err := LoadKamConfig(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	out := filepath.Join(dir, "out.yml")
+	if err := SaveKamConfig(out, cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	reloaded, err := LoadKamConfig(out)
+	if err != nil {
+		t.Fatalf("reload saved: %v", err)
+	}
+	if len(reloaded.Channels) != 2 {
+		t.Fatalf("expected 2 channels after round-trip, got %d", len(reloaded.Channels))
+	}
+	if reloaded.Channels[1].Name != "#mesh-dev" || reloaded.Channels[1].KeyStrategy != KeyStrategyDerived {
+		t.Fatalf("derived channel not preserved: %+v", reloaded.Channels[1])
+	}
+	if _, err := LoadKamConfig(path); err != nil {
+		t.Fatalf("original still readable: %v", err)
+	}
+}
+
+func TestChannelIndex(t *testing.T) {
+	cfg := &KamConfig{Channels: []ChannelConfig{
+		{Name: "#public"},
+		{Name: "#mesh-dev"},
+	}}
+	if cfg.ChannelIndex("#mesh-dev") != 1 {
+		t.Fatalf("expected index 1 for #mesh-dev, got %d", cfg.ChannelIndex("#mesh-dev"))
+	}
+	if cfg.ChannelIndex("#missing") != -1 {
+		t.Fatalf("expected -1 for missing channel")
+	}
+}

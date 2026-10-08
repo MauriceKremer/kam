@@ -90,6 +90,10 @@ DB path precedence: `-db` flag > `kam.yml db_path` > `kam.db`.
 
 ## Architecture TL;DR
 
+For the full, language-agnostic runtime architecture (with Mermaid diagrams),
+see [`docs/DESIGN.md`](docs/DESIGN.md). The Go-specific module/goroutine map
+lives in [`docs/SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md).
+
 ### Device Limitations
 The KISS infrastructure interfaces with constrained hardware devices (e.g., TNCs, LoRa radios). The primary limitations are:
 1. **Queue Overload Prevention**: While the hardware device may maintain an internal queue, sending too many commands in rapid succession before responses are received can overwhelm its limited memory buffer. Furthermore, because this API is specifically designed to service a single primary consumer at a time, enforcing an application-level bottleneck acts as a strict preventative measure against inadvertent queue flooding.
@@ -108,12 +112,16 @@ To provide a clean, thread-safe, and asynchronous Go API (e.g., `cmd_radio.go`),
 
 ## Channel Credentials Storage Design (Step 1)
 
-This project will use a two-layer model:
-1. A human-editable YAML bootstrap file for defaults and seed data.
-2. SQLite as the runtime source of truth.
+System configuration lives in **one place**: the human-editable YAML file
+`kam.yml`. There is no channel state in SQLite — the durable store is used
+only for ingested traffic (adverts, group texts).
 
-At startup, the YAML file is parsed and upserted into SQLite.
-During operation, additions/updates are written to SQLite and then reloaded into the in-memory parser registry.
+At startup the YAML file is parsed, normalized, and validated, and the
+configured channels are loaded directly into the in-memory parser topic
+registry. When the application needs to add or change a channel at runtime,
+it **writes the change back into the YAML file** (atomically) and applies it
+to the registry without a restart. The YAML file is therefore both the
+bootstrap and the runtime source of truth.
 
 ### YAML file format
 
@@ -179,24 +187,17 @@ These values are pushed to the hardware during `main.go` initialization.
 3. Empty name and bare `#` are invalid.
 4. `#public` must use `key_strategy: public`.
 5. Names are unique after normalization.
-6. `enabled: false` keeps records in DB but excludes them from in-memory decryption registry.
+6. `enabled: false` keeps the channel in the YAML file but excludes it from the in-memory decryption registry.
 
-### SQLite schema
+### Runtime channel upsert
 
-```sql
-CREATE TABLE IF NOT EXISTS channels (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  key_strategy TEXT NOT NULL CHECK (key_strategy IN ('public', 'derived', 'explicit')),
-  key_hex TEXT,
-  enabled INTEGER NOT NULL DEFAULT 1,
-  source TEXT NOT NULL DEFAULT 'runtime',
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_channels_enabled ON channels(enabled);
-```
+Channels can be added or updated at runtime via `node.UpsertChannel(...)`
+(or `config.UpsertRuntimeChannelAndApply(configPath, channel)` directly).
+The channel is normalized, merged into the loaded config (inserted or
+replaced by normalized name), and the whole `kam.yml` is rewritten atomically
+(temp file + rename). The updated channel is then applied to the parser
+registry live. `#public` is structural and cannot be upserted at runtime —
+edit the file directly.
 
 ### Planned Go models
 
@@ -223,15 +224,6 @@ type ChannelConfig struct {
     KeyHex      string `yaml:"key_hex,omitempty"`
     Enabled     bool   `yaml:"enabled"`
 }
-
-type ChannelRecord struct {
-    ID          int64
-    Name        string
-    KeyStrategy string
-    KeyHex      string
-    Enabled     bool
-    Source      string
-}
 ```
 
 ### Startup and runtime behavior
@@ -239,13 +231,13 @@ type ChannelRecord struct {
 1. Startup:
    - Parse `kam.yml`.
    - Normalize + validate channels and radio settings.
-   - Upsert channels into SQLite (`kam.db`) with `source='seed'` for YAML-provided rows.
-   - Load #public key and all `enabled=1` non-public rows from SQLite into the in-memory topic registry.
-   - Open the advert queue against the same SQLite file.
+   - Load `#public` key and all enabled non-public channels from the config directly into the in-memory topic registry (no DB involved).
+   - Open the advert queue against the SQLite file (`kam.db`).
    - Open the KISS manager using the configured `radio.port` and `radio.baud`, then push `radio.frequency_hz`, `radio.bandwidth_hz`, `radio.spreading_factor`, and `radio.coding_rate` to the hardware.
 2. Runtime changes:
-   - Insert/update channel rows in SQLite with `source='runtime'`.
-   - Reload only changed channel(s) in memory without restart via `config.UpsertRuntimeChannelAndApply(...)`.
+   - Normalize the channel and merge it into `kam.yml` (inserted or replaced by name).
+   - Rewrite `kam.yml` atomically.
+   - Apply only the changed channel in memory without restart via `config.UpsertRuntimeChannelAndApply(configPath, ...)` (exposed on the node as `node.UpsertChannel(...)`).
 
 ## Advert Persistence
 
@@ -262,7 +254,7 @@ Validated `ADVERT` packets are persisted to SQLite without blocking the packet r
 
 ### SQLite write tuning
 
-The same SQLite file (`kam.db`) is used for channels and adverts. WAL mode is enabled at open time, along with a 5-second busy timeout and NORMAL synchronous mode. This keeps reads responsive while allowing concurrent writes.
+The SQLite file (`kam.db`) is used for adverts and group texts. WAL mode is enabled at open time, along with a 5-second busy timeout and NORMAL synchronous mode. This keeps reads responsive while allowing concurrent writes. Channel configuration is **not** stored here — it lives only in `kam.yml`.
 
 ### Adverts schema
 

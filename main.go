@@ -53,7 +53,7 @@ func main() {
 
 	slog.Info("Loaded channels config", "count", len(kamCfg.Channels))
 
-	n, err := node.New(kamCfg, resolvedDBPath)
+	n, err := node.New(kamCfg, resolvedDBPath, *configPath)
 	if err != nil {
 		slog.Error("Could not start node", "error", err,
 			"hint", "connect a MeshCore-compatible radio or pass -port /dev/...",

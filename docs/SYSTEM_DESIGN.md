@@ -94,7 +94,7 @@ internal/config    internal/kiss             internal/db   internal/echo
                            |
                            v
                   internal/models  (KamConfig, RadioConfig, ChannelConfig,
-                                    EchoConfig, ChannelRecord)
+                                    EchoConfig)
 ```
 
 ### Responsibilities
@@ -102,13 +102,13 @@ internal/config    internal/kiss             internal/db   internal/echo
 | Package | Role |
 |---|---|
 | `main` | Flag parse, slog setup, load `kam.yml`, build `Node`, block on SIGINT/SIGTERM. |
-| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*send.Sender`, `*echo.Service`. `New` bootstraps DB, opens serial, pushes+verifies radio cfg. `Run` blocks until ctx cancelled, then stops echo before manager. |
-| `internal/config` | `LoadKamConfig` (YAML + normalize/validate), `BootstrapChannels` (upsert seed channels into SQLite, load `#public` + enabled channels into parser topic registry), `ResolveDBPath`. |
+| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*send.Sender`, `*echo.Service`. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg. `Run` blocks until ctx cancelled, then stops echo before manager. |
+| `internal/config` | `LoadKamConfig` (YAML + normalize/validate), `BootstrapChannels` (load `#public` + enabled channels from the config into parser topic registry), `UpsertRuntimeChannelAndApply` (write a runtime channel back into the YAML file + apply live), `ResolveDBPath`. |
 | `internal/models` | Pure config + record structs. Validation lives here. |
 | `internal/kiss` | KISS TNC protocol core: `Manager`, reader/writer/router loops, `ResponseRegistry`, `RadioClient`, dedup filter, RxMeta hold/attach/flush. |
 | `internal/kiss/parsers` | Per-payload-type parsers: `ParseAdvert` (Ed25519 verify), `ParseGroupText` (decrypt via channel secret), public-channel secret registry. |
 | `internal/kiss/send` | `Builder` constructs outbound group-text frames; `Sender` enqueues them onto `Manager.txChan`. |
-| `internal/db` | SQLite handle + WAL. `Persistence` implements `kiss.Persistence`. `AdvertQueue` + `GroupTextQueue` = batched background writers. Channel/advert/group-text schemas. |
+| `internal/db` | SQLite handle + WAL. `Persistence` implements `kiss.Persistence`. `AdvertQueue` + `GroupTextQueue` = batched background writers. Advert/group-text schemas only (channel config lives in YAML). |
 | `internal/echo` | `Service` subscribes to inbound group texts, replies to mentions via a dedicated worker. First example of a *consumer* of the group-text tap; the operator analytics/metrics surface is expected to subscribe the same way. |
 
 > **Extensibility seam.** `Manager.SubscribeGroupText` is the integration point
@@ -129,7 +129,7 @@ request goroutines on the radio-control path. All long-lived loops exit on
 main goroutine
   |
   | node.New(...)
-  |   |- config.BootstrapChannels  (sync: open DB, upsert seeds, load registry)
+  |   |- config.BootstrapChannels  (sync: load channels from YAML, load registry)
   |   |- db.NewPersistence  -----> [advert writer goroutine]  (db.AdvertQueue)
   |   |                       \--> [group-text writer goroutine] (db.GroupTextQueue)
   |   |- kiss.NewManager (opens serial)
@@ -337,7 +337,9 @@ DB close before serial close.
 
 ## 7. SQLite
 
-One file (`kam.db`) holds `channels`, `adverts`, `group_texts`. Opened with
+One file (`kam.db`) holds `adverts` and `group_texts` only. Channel
+configuration is **not** persisted here — it lives in `kam.yml` (see
+`internal/config`). Opened with
 WAL mode, 5s busy timeout, NORMAL synchronous mode. Schemas and tuning
 constants live in `internal/db` (see README "Advert Persistence" and
 "Group Text Persistence" for full DDL and metrics).

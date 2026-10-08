@@ -24,10 +24,6 @@ func NewPersistence(dbPath string) (*Persistence, error) {
 		return nil, fmt.Errorf("open persistence db: %w", err)
 	}
 
-	if err := EnsureChannelsSchema(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("ensure channels schema: %w", err)
-	}
 	if err := EnsureAdvertsSchema(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ensure adverts schema: %w", err)
