@@ -1,11 +1,19 @@
 # kam
 
-MIT-licensed Go bridge for MeshCore KISS TNC / LoRa radios. Decodes
-adverts and group texts, verifies Ed25519 signatures, persists to SQLite.
+MIT-licensed Go bridge for MeshCore KISS TNC / LoRa radios. Built to make MeshCore truly KickAss (KAM) by providing a robust, local brain for decoding, persistence, and automation.
+
+New to KAM or MeshCore? Start with the [KAM manual](manuals/KAM.html) for
+purpose, design philosophy, radio-network basics, setup, and everyday operation.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Philosophy & Intent
+
+KAM is built for enthusiasts. We take a down-to-earth approach: we prioritize ease of setup and maintenance so you can spend your time on the mesh, not fighting your software.
+
+We value pragmatism over overly strict design or extreme security hardening. KAM is meant to be a reliable, local "brain" for your radio—not a fortified vault. It's built to be tinkered with, extended, and used to contribute to something bigger.
 
 ## Quickstart
 
@@ -87,6 +95,116 @@ go vet ./...
 | `-port`   | _empty_     | Override `radio.port` for this run |
 
 DB path precedence: `-db` flag > `kam.yml db_path` > `kam.db`.
+
+Other commands: `kam channel upsert ...` (add or change a channel in `kam.yml`) and `kam room show` (print room keys and adverts, see [Room servers](#room-servers)).
+
+## Automation (Starlark scripts)
+
+KAM runs operator-managed [Starlark](https://github.com/google/starlark-go) scripts for every decoded group text. Scripts live in SQLite (`automation_scripts`), not in `kam.yml`, and are managed at runtime through a local HTTP API. Design and status: [`docs/FeatureStarlark.md`](docs/FeatureStarlark.md).
+
+```python
+def on_group_text(message):
+    if message["channel"] == "#public" and "ping" in message["body"]:
+        reply(message["channel"], "pong, %d hops" % message["hop_count"])
+```
+
+- `message` is a read-only dict: `channel`, `sender`, `body`, `timestamp_unix`, `hop_count`, `hop_stations`, `has_rx_meta`, `snr_quarter_db`, `rssi_dbm`, `time_drift_seconds`.
+- `reply(channel, text)` is the only host function. Scripts have no filesystem, network, or process access, and keep no state between events.
+- Events are queued (128) and run one at a time, so a slow script never blocks packet routing; a full queue drops events and logs them.
+- Each script has a `timeout_ms` (default 500). A script that exceeds it becomes `FROZEN`; one that fails to compile on load becomes `BROKEN`. Neither runs until you recover or fix it. Other script errors are only logged.
+
+### Local Management API
+
+`127.0.0.1:8765`, loopback only, no authentication. Requests need a loopback `Host` header and, for `POST`/`PUT`, `Content-Type: application/json`. Updates carry the revision you last read (`expected_revision`; `0`/omitted when creating) and fail with `409` if it is stale.
+
+```sh
+curl -s localhost:8765/scripts
+curl -s -X POST localhost:8765/scripts -H 'Content-Type: application/json' \
+  -d '{"script":{"id":"ping","name":"ping","enabled":true,"source":"def on_group_text(message):\n    reply(message[\"channel\"], \"pong\")\n"}}'
+curl -s -X POST localhost:8765/scripts/ping/disable -H 'Content-Type: application/json' -d '{"expected_revision":1}'
+```
+
+| Method and path | Purpose |
+|---|---|
+| `GET /scripts`, `GET /scripts/{id}` | List or read scripts, including `runtime_status` and `last_error`. |
+| `POST /scripts/validate` | Compile a source without saving it. |
+| `POST /scripts`, `PUT /scripts/{id}` | Create or replace a script (`{"script": {...}, "expected_revision": N}`); invalid source is rejected and never activated. |
+| `POST /scripts/{id}/enable`, `.../disable` | Change the desired state only; a `FROZEN` or `BROKEN` script stays inactive. |
+| `POST /scripts/{id}/recover` | Recompile the stored source, return to `READY`, optionally set a new `timeout_ms`. |
+| `DELETE /scripts/{id}?revision=N` | Delete a script. |
+
+### ECHO as a script
+
+The mention responder (`heard alice in 2 hops, SNR 7.25 dB, RSSI -64 dBm, drift 3s`) is the example script [`docs/examples/echo.star`](docs/examples/echo.star), not a built-in service, and `kam.yml` has no `echo:` section (an old block is ignored). Edit the three settings at the top of the file (`CHANNELS`, `MENTION`, `NODE_NAME`), then install it:
+
+```sh
+jq -n --rawfile source docs/examples/echo.star '{script: {id: "echo", name: "echo", enabled: true, source: $source}}' \
+  | curl -s -X POST localhost:8765/scripts -H 'Content-Type: application/json' -d @-
+```
+
+A database that already ran the former one-time migration keeps its `builtin.echo` script; it is an ordinary script you can edit or delete.
+
+### Backups
+
+`kam.db` now holds your script source and room posts. Include it in backups, using `sqlite3 kam.db ".backup kam-backup.db"` while running, or copying `kam.db` with its `-wal` and `-shm` files while stopped. If you run room servers, also back up the `rooms/` directory next to the database: it holds each room's identity key, and losing it changes the room's address.
+
+## Room servers
+
+KAM can host one or more MeshCore **room servers**: bulletin boards that stock MeshCore apps and radios can find, log in to, post in, and receive pushed posts from. Requirements, decisions and the places where KAM differs from the reference firmware are in [`docs/FeatureRoomServer.md`](docs/FeatureRoomServer.md); the [room server manual](manuals/FeatureRoomServer.html) is the beginner-friendly version.
+
+Add a `rooms:` list (and optionally a `mesh:` block) to `kam.yml` and restart KAM; room settings are read at start-up only.
+
+```yaml
+mesh:
+  default_scope: "#region"     # region for adverts; leave out to send unscoped floods
+  duty_cycle_percent: 10       # airtime cap for pushes and adverts (0 = off)
+rooms:
+  - id: lobby
+    name: "KAM Lobby"
+    admin_password: "change-me-now"
+    guest_password: "letmein"     # read-write; or set open_room: true and leave it out
+    allow_read_only: false        # any other password logs in as a guest who can read but not post
+```
+
+```sh
+./kam room show              # prints each room's public key, contact URI and signed advert
+./kam room show -config ~/kam-prod.yml -db /var/lib/kam/kam.db
+```
+
+`kam room show` creates a missing identity key, so you can run it before the first start. Import the room into a MeshCore client with the printed `meshcore://contact/add?...` URI (as a QR code or link) or let it discover the advert; KAM sends one advert at start-up, a zero-hop advert every 2 minutes and a flood advert every 47 hours by default.
+
+| Role | How a client gets it | Can read | Can post |
+|---|---|---|---|
+| Admin | `admin_password` | yes | yes |
+| Read-write | `guest_password` (or a blank password with `open_room: true`) | yes | yes |
+| Guest | any other password, only with `allow_read_only: true` | yes | no |
+
+A wrong password gets no answer at all (the client times out); that is how MeshCore works.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `id` | required | Lowercase letters, digits, `-`, `_` (at most 32). Names the identity file `rooms/<id>.key`. |
+| `name` | required | Advert name, at most 31 bytes (23 when a `location` is set). |
+| `admin_password` | required | At most 15 bytes (clients truncate longer ones); never `password`. |
+| `guest_password`, `open_room`, `allow_read_only` | none / `false` / `false` | See the table above. `open_room: true` needs an empty `guest_password`. |
+| `location` | none | `latitude` and `longitude` advertised to clients. |
+| `max_clients` | 20 | Client table size (1-100). The least recently active non-admin is evicted when full. |
+| `advert_interval_min` | 2 | Zero-hop advert interval; 0 turns it off. |
+| `flood_advert_interval_hours` | 47 | Flood advert interval; 0 turns it off, otherwise 3-168. |
+| `max_posts`, `max_age_days` | 1000, 30 | Retention; 0 means unlimited. A background job prunes every 10 minutes. |
+| `backlog_posts` | 32 | The newest posts a returning client is sent, however old its cursor is (1-256). |
+| `mesh.path_hash_size` | 1 | Bytes per path hash on floods KAM sends. Keep 1 unless every repeater runs firmware 1.14 or newer. |
+| `mesh.default_scope`, `mesh.regions` | none | Region used for adverts and for replies whose request scope is unknown; extra regions recognised on inbound floods. |
+| `mesh.duty_cycle_percent` | 10 | Estimated airtime per hour allowed for pushes and adverts. ACKs and login replies are never held back. |
+
+At most 4 rooms run. A room with invalid settings is reported in the log and stays disabled; the other rooms and radio ingestion keep running.
+
+Things to know:
+
+- Passwords live in plain text in `kam.yml`, the same as explicit channel keys. The only secret outside `kam.yml` is each room's identity key, a file KAM generates in `rooms/` next to the database. Back it up with the database: if it is lost, the room gets a new address. `.gitignore` excludes it.
+- A post is stored before it is acknowledged, so an acknowledged post survives a restart or power loss. Posts are limited to 150 bytes, a client receives one push at a time, and each push costs roughly half a second of airtime at SF7 / 62.5 kHz, so a 32-post catch-up takes about 17 seconds per client.
+- KAM trusts the host clock. Run NTP or an RTC: if the clock steps back across a restart, clients ignore adverts and posts that are not newer than the last ones they stored, and nothing on KAM's side shows it.
+- Not yet implemented: status, telemetry and access-list requests (no reply), the over-the-air CLI, role changes and forced adverts through the Local Management API, and `mesh` changes without a restart.
 
 ## Architecture TL;DR
 
@@ -199,6 +317,23 @@ replaced by normalized name), and the whole `kam.yml` is rewritten atomically
 registry live. `#public` is structural and cannot be upserted at runtime —
 edit the file directly.
 
+To update channels from a separate terminal while KAM is running, use the CLI
+subcommand. The running node watches the YAML file and applies valid channel
+changes without restarting the radio or database:
+
+```sh
+./kam channel upsert -config kam.yml -name '#ops' -key-strategy derived
+./kam channel upsert -config kam.yml -name '#ops' -key-strategy explicit \
+  -key-hex 00112233445566778899aabbccddeeff -enabled=true
+./kam channel upsert -config kam.yml -name '#ops' -key-strategy derived -enabled=false
+```
+
+The watcher checks for changes every 500 ms, validates the full YAML, then
+replaces the in-memory channel registry atomically. Invalid YAML is logged and
+ignored, so the last valid channel registry remains active. This live reload
+currently applies channel settings only; radio, node, database, and echo
+settings still require a restart. `#public` must still be edited directly.
+
 ### Planned Go models
 
 ```go
@@ -235,9 +370,9 @@ type ChannelConfig struct {
    - Open the advert queue against the SQLite file (`kam.db`).
    - Open the KISS manager using the configured `radio.port` and `radio.baud`, then push `radio.frequency_hz`, `radio.bandwidth_hz`, `radio.spreading_factor`, and `radio.coding_rate` to the hardware.
 2. Runtime changes:
-   - Normalize the channel and merge it into `kam.yml` (inserted or replaced by name).
-   - Rewrite `kam.yml` atomically.
-   - Apply only the changed channel in memory without restart via `config.UpsertRuntimeChannelAndApply(configPath, ...)` (exposed on the node as `node.UpsertChannel(...)`).
+  - Normalize the channel and merge it into `kam.yml` (inserted or replaced by name).
+  - Rewrite `kam.yml` atomically, either through `node.UpsertChannel(...)` or `kam channel upsert`.
+  - The running node detects the change, validates the YAML, and atomically replaces the in-memory channel registry.
 
 ## Advert Persistence
 

@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Starlark Automation Manual</title>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: true, theme: 'base', themeVariables: {
+            darkMode: true, background: '#101012', primaryColor: '#222225',
+            primaryTextColor: '#F5F5F7', primaryBorderColor: '#A1A1A8',
+            lineColor: '#A1A1A8', secondaryColor: '#18181B', tertiaryColor: '#2C2C30',
+            textColor: '#F5F5F7', edgeLabelBackground: '#18181B',
+            actorBkg: '#222225', actorBorder: '#A1A1A8', actorTextColor: '#F5F5F7',
+            signalColor: '#C5C5CA', signalTextColor: '#F5F5F7',
+            labelBoxBkgColor: '#18181B', labelBoxBorderColor: '#A1A1A8',
+            labelTextColor: '#F5F5F7', loopTextColor: '#F5F5F7',
+            noteBkgColor: '#2C2C30', noteTextColor: '#F5F5F7', noteBorderColor: '#A1A1A8',
+            fontFamily: '-apple-system, BlinkMacSystemFont, Helvetica Neue, Segoe UI, sans-serif'
+        } });
+    </script>
+    <link href="manuals.css" rel="stylesheet">
+    <script src="manuals.js" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <!-- Sidebar -->
+    <aside>
+        <div class="manual-brand"><strong>KAM</strong><span>Documentation</span></div>
+        <details class="manual-navigation" open>
+        <summary>Contents</summary>
+        <details class="navigation-section" open>
+        <summary>On this page</summary>
+        <nav class="space-y-3" aria-label="On this page">
+            <a href="#overview" class="block text-sm text-slate-600 hover:text-blue-600 transition">Overview</a>
+            <a href="#quickstart" class="block text-sm text-slate-600 hover:text-blue-600 transition">Quick Start</a>
+            <a href="#lifecycle" class="block text-sm text-slate-600 hover:text-blue-600 transition">Lifecycle</a>
+            <a href="#environment" class="block text-sm text-slate-600 hover:text-blue-600 transition">Writing a Script</a>
+            <a href="#capabilities" class="block text-sm text-slate-600 hover:text-blue-600 transition">Capabilities</a>
+            <a href="#management" class="block text-sm text-slate-600 hover:text-blue-600 transition">Management API</a>
+            <a href="#security" class="block text-sm text-slate-600 hover:text-blue-600 transition">Security</a>
+            <a href="#troubleshooting" class="block text-sm text-slate-600 hover:text-blue-600 transition">Troubleshooting</a>
+            <a href="#technical" class="block text-sm text-slate-600 hover:text-blue-600 transition">Technical Deep Dive</a>
+        </nav>
+        </details>
+        <details class="navigation-section" open>
+        <summary>Manuals</summary>
+        <nav class="space-y-3" aria-label="Manuals">
+            <a href="KAM.html">KAM Guide</a>
+            <a href="FeatureStarlark.html" aria-current="page">Starlark Automations</a>
+            <a href="FeatureKissModem.html" class="block text-sm text-slate-600 hover:text-blue-600 transition">KISS Modem</a>
+            <a href="FeatureRoomServer.html" class="block text-sm text-slate-600 hover:text-blue-600 transition">Room Server</a>
+        </nav>
+        </details>
+        </details>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main-content" tabindex="-1">
+        <header>
+            <span>Feature Manual</span>
+            <h1>Starlark Automations</h1>
+            <p>Extending KAM functionality with custom, safe, sandboxed scripts.</p>
+            <p class="mt-4"><span class="badge badge-green">Implemented (v1)</span> <span class="text-sm text-slate-500 ml-2">Only the weather capability is still planned. Design: <code>docs/FeatureStarlark.md</code></span></p>
+        </header>
+
+        <article class="prose prose-slate max-w-none">
+
+            <!-- Overview -->
+            <section id="overview">
+                <h2>Overview</h2>
+                <p>Starlark Automation lets an operator write small scripts that react to events on the radio. In this release the only event is a <strong class="text-blue-600">decoded group text</strong> (a message on a channel KAM can decrypt). Instead of compiling new Go code each time a behaviour changes, you install or edit a <strong class="text-blue-600">Starlark</strong> script through the Local Management API, and the change takes effect without restarting KAM.</p>
+
+                <div class="info-box info-box-blue">
+                    <strong class="text-blue-700">What is Starlark?</strong> Starlark is a small dialect of Python designed for configuration and automation. It is deterministic and has no built-in access to files, the network or the operating system, which is why it is safe to run operator-supplied code in-process.
+                </div>
+
+                <p>Scripts are stored in the SQLite database (table <code>automation_scripts</code>), not in <code>kam.yml</code>. The former built-in ECHO responder is now just an example script (<code>docs/examples/echo.star</code>); a fresh install has no ECHO until you install it.</p>
+
+                <div class="mermaid">
+                    graph LR
+                        Radio["Radio"] --> Router["KAM router"]
+                        Router -->|"decoded group text"| Queue["Event queue (128)"]
+                        Queue --> Worker["Automation worker"]
+                        Worker --> Script["Your scripts, one at a time"]
+                        Script -->|"reply(channel, text)"| Sender["Sender"]
+                        Sender --> Radio
+                        Operator["Operator"] -->|"Local Management API"| DB[("SQLite scripts")]
+                        DB --> Worker
+                </div>
+            </section>
+
+            <!-- Quick start -->
+            <section id="quickstart">
+                <h2>Quick Start</h2>
+                <p>KAM must be running (the API starts with it). The example installs a script that answers <code>ping</code> on <code>#public</code>:</p>
+                <pre><code class="language-bash">curl -s -X POST localhost:8765/scripts \
+  -H 'Content-Type: application/json' \
+  -d '{"script":{"id":"ping","name":"ping","enabled":true,
+       "source":"def on_group_text(message):\n    if message[\"channel\"] == \"#public\" and \"ping\" in message[\"body\"] and message[\"sender\"] != \"kam\":\n        reply(message[\"channel\"], \"pong, %d hops\" % message[\"hop_count\"])\n"}}'</code></pre>
+                <p>To install the bundled ECHO example, edit its three settings (<code>CHANNELS</code>, <code>MENTION</code>, <code>NODE_NAME</code>) and post it:</p>
+                <pre><code class="language-bash">jq -n --rawfile source docs/examples/echo.star \
+  '{script: {id: "echo", name: "echo", enabled: true, source: $source}}' \
+  | curl -s -X POST localhost:8765/scripts -H 'Content-Type: application/json' -d @-</code></pre>
+
+                <div class="info-box info-box-amber">
+                    <strong>Do not forget <code>"enabled": true</code>.</strong> A script created without it is stored but never runs. The same applies to updates: <code>PUT</code> replaces the whole script, so leave out <code>enabled</code> and you disable it.
+                </div>
+            </section>
+
+            <!-- Lifecycle -->
+            <section id="lifecycle">
+                <h2>The Automation Lifecycle</h2>
+                <p>Two independent settings decide whether a script runs: <code>enabled</code> (what the operator wants) and <code>runtime_status</code> (what KAM has detected). A script runs only when it is <strong>enabled and <code>READY</code></strong>.</p>
+                <ul class="space-y-2">
+                    <li><strong class="text-green-600">READY:</strong> The script compiled and has not misbehaved. It runs for each event if it is also enabled.</li>
+                    <li><strong class="text-red-600">BROKEN:</strong> A stored script failed to compile or validate when KAM loaded it at startup (for example because the host function set changed). It is inactive and <code>last_error</code> holds the reason.</li>
+                    <li><strong class="text-amber-600">FROZEN:</strong> A run exceeded the script's <code>timeout_ms</code> (default 500). KAM stopped dispatching to it, saved the error and waits for an operator to recover it.</li>
+                </ul>
+
+                <div class="mermaid">
+                    graph TD
+                        A["Save via API"] --> B{"Compiles and has on_group_text?"}
+                        B -->|"No"| R["Rejected with 422, nothing changes"]
+                        B -->|"Yes"| D["READY"]
+                        S["KAM startup: load stored script"] --> C{"Compiles?"}
+                        C -->|"No"| BR["BROKEN"]
+                        C -->|"Yes"| D
+                        D --> E["Event received"]
+                        E --> F{"Over timeout_ms?"}
+                        F -->|"Yes"| G["FROZEN"]
+                        F -->|"No"| D
+                        G -->|"recover, or save new source"| D
+                        BR -->|"recover, or save fixed source"| D
+                </div>
+
+                <h3>What changes the status</h3>
+                <table>
+                    <thead><tr><th>Event</th><th>Result</th></tr></thead>
+                    <tbody>
+                        <tr><td>Source fails to compile through the API</td><td>Request rejected with <code>422</code>. The previous version, if any, keeps running. The script never becomes <code>BROKEN</code> this way.</td></tr>
+                        <tr><td>Stored script fails to compile at startup</td><td><code>BROKEN</code>, saved with <code>last_error</code>. KAM still starts and keeps receiving.</td></tr>
+                        <tr><td>Run exceeds <code>timeout_ms</code></td><td><code>FROZEN</code> immediately in memory, then saved. If saving fails, it is logged and the script stays frozen until restart.</td></tr>
+                        <tr><td>Run raises another error (bad call, <code>reply</code> failure)</td><td>Logged only. Status stays <code>READY</code>; the next event runs normally and later scripts still run.</td></tr>
+                        <tr><td><code>enable</code> / <code>disable</code></td><td>Changes <code>enabled</code> only. A <code>FROZEN</code> or <code>BROKEN</code> script stays inactive.</td></tr>
+                        <tr><td><code>recover</code></td><td>Recompiles the stored source; on success status becomes <code>READY</code> and <code>last_error</code> is cleared. May also set a new <code>timeout_ms</code>.</td></tr>
+                        <tr><td>Saving new source</td><td>Compiles first, then stores it as <code>READY</code> with <code>last_error</code> cleared, and swaps it in.</td></tr>
+                    </tbody>
+                </table>
+                <p><code>BROKEN</code> and <code>FROZEN</code> survive a restart; a successful compile alone never re-activates them.</p>
+            </section>
+
+            <!-- Environment -->
+            <section id="environment">
+                <h2>Writing a Script</h2>
+                <p>Every script defines one entry point, which KAM calls once per group text:</p>
+                <pre><code class="language-python">def on_group_text(message):
+    ...</code></pre>
+                <p>A script without a callable <code>on_group_text</code> is rejected. Each event gets a <strong>fresh</strong> interpreter state: the top level of the file runs again on every event, and nothing you assign survives to the next message. Treat every message as a brand-new interaction; there is no persistent storage for scripts.</p>
+
+                <h3>The <code>message</code> dictionary</h3>
+                <p>The argument is a read-only (frozen) dictionary:</p>
+                <table>
+                    <thead>
+                        <tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>channel</code></td><td>string</td><td>Normalised channel name: lowercase with a leading <code>#</code>, e.g. <code>"#public"</code>.</td></tr>
+                        <tr><td><code>sender</code></td><td>string</td><td>Sender name parsed from the message; may be empty.</td></tr>
+                        <tr><td><code>body</code></td><td>string</td><td>The text after the <code>sender: </code> prefix.</td></tr>
+                        <tr><td><code>timestamp_unix</code></td><td>int</td><td>The sender's own timestamp, Unix seconds.</td></tr>
+                        <tr><td><code>hop_count</code></td><td>int</td><td>Number of relays the packet passed through.</td></tr>
+                        <tr><td><code>hop_stations</code></td><td>list of strings</td><td>Hex-encoded identity hashes of the relays, in path order.</td></tr>
+                        <tr><td><code>has_rx_meta</code></td><td>bool</td><td>True when the modem reported signal quality for this packet.</td></tr>
+                        <tr><td><code>snr_quarter_db</code></td><td>int</td><td>Signal-to-noise ratio in quarter-dB units (divide by 4 for dB). Meaningful only when <code>has_rx_meta</code> is true.</td></tr>
+                        <tr><td><code>rssi_dbm</code></td><td>int</td><td>Signal strength in dBm. Meaningful only when <code>has_rx_meta</code> is true.</td></tr>
+                        <tr><td><code>time_drift_seconds</code></td><td>int</td><td>Absolute difference between the sender's timestamp and KAM's clock, in seconds. Never negative.</td></tr>
+                    </tbody>
+                </table>
+                <p>KAM waits up to 200 ms for the modem's signal report; if it does not arrive, the event is delivered with <code>has_rx_meta</code> false (and <code>snr_quarter_db</code> and <code>rssi_dbm</code> at 0).</p>
+                <p>Scripts only see messages from channels KAM can decrypt, i.e. channels that are enabled in <code>kam.yml</code>.</p>
+
+                <h3>Language limits worth knowing</h3>
+                <ul>
+                    <li>No <code>while</code> loops; use <code>for</code> over a range or collection.</li>
+                    <li><code>if</code>/<code>for</code> statements are only allowed inside functions, not at the top level of the file.</li>
+                    <li>Global variables cannot be reassigned once defined.</li>
+                    <li><code>load()</code> is not available: a script is a single file.</li>
+                    <li>Calling a name that is neither defined nor a host function is a compile error, so typos are caught when you save.</li>
+                </ul>
+
+                <h3>Example: reply to a mention</h3>
+                <pre><code class="language-python">NODE_NAME = "kam"          # must match node_name in kam.yml
+
+def on_group_text(message):
+    if message["channel"] != "#test" or message["sender"] == NODE_NAME:
+        return
+    if "@kam" in message["body"]:
+        reply(message["channel"], "hello %s" % (message["sender"] or "someone"))</code></pre>
+                <div class="info-box info-box-red">
+                    <strong>Avoid reply loops.</strong> A repeater may relay KAM's own reply back to KAM. A script that answers every message on a channel, without ignoring its own <code>node_name</code> as sender, will then answer itself indefinitely and flood the channel. Always filter on the sender and require a trigger such as a mention. The bundled <code>echo.star</code> does both.
+                </div>
+            </section>
+
+            <!-- Capabilities -->
+            <section id="capabilities">
+                <h2>Capabilities (Host Functions)</h2>
+                <p>Scripts cannot touch the network, the filesystem or the radio directly. They can only call the functions KAM predeclares. Anything else is an "undefined" compile error.</p>
+
+                <table>
+                    <thead><tr><th>Function</th><th>Status</th><th>What it does</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td><code>reply(channel, text)</code></td>
+                            <td><span class="badge badge-green">Implemented</span></td>
+                            <td>Sends a group text to a channel (flood route).</td>
+                        </tr>
+                        <tr>
+                            <td><code>gps_coordinates(text)</code></td>
+                            <td><span class="badge badge-slate">Planned</span></td>
+                            <td>Would parse latitude/longitude from text. No I/O.</td>
+                        </tr>
+                        <tr>
+                            <td><code>weather_forecast(lat, lon)</code></td>
+                            <td><span class="badge badge-slate">Planned</span></td>
+                            <td>Would return a small normalised forecast from a KAM-configured provider. Scripts will not choose URLs.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>How <code>reply</code> behaves</h3>
+                <ul>
+                    <li><strong>Channel:</strong> must be a channel configured and enabled in <code>kam.yml</code>. Names are normalised, so <code>"Public"</code> and <code>"#public"</code> are the same. An unknown channel raises an error that is logged.</li>
+                    <li><strong>Format:</strong> the message is sent as <code>&lt;node_name&gt;: &lt;text&gt;</code>. Text is trimmed, and the whole message is truncated to fit one radio packet (about 170 characters including the name prefix).</li>
+                    <li><strong>Queued, not delivered:</strong> <code>reply</code> returns once the packet is queued for transmission, within a best-effort 500 ms send budget that is also bounded by the script's own deadline. It does not wait for the radio, and there is no delivery confirmation.</li>
+                    <li><strong>Rapid replies:</strong> the modem holds one transmission at a time and KAM does not yet pace transmissions on the modem's <code>TxDone</code> event, so several replies in quick succession can lose the later ones. See the <a class="text-blue-600" href="FeatureKissModem.html">KISS Modem manual</a>.</li>
+                    <li><strong>Scope:</strong> scripts cannot send raw frames or change radio settings; <code>reply</code> is the only way out.</li>
+                </ul>
+
+                <div class="info-box info-box-amber">
+                    <strong>Deadlines:</strong> every host function receives the script's remaining time budget. A function that overruns it freezes the script, so slow work can never stall the single worker for long.
+                </div>
+            </section>
+
+            <!-- Management -->
+            <section id="management">
+                <h2>Management via the Local Management API</h2>
+                <p>Scripts are managed over HTTP at <code class="text-blue-600">127.0.0.1:8765</code> (the address is fixed). The API is reachable only from the KAM machine and has <strong>no authentication</strong>: anyone who can log in to that machine can change scripts.</p>
+
+                <h3>Rules for every request</h3>
+                <ul>
+                    <li>The <code>Host</code> header must be a loopback name (<code>localhost</code>, <code>127.0.0.1</code>, <code>[::1]</code>), otherwise <code>403</code>.</li>
+                    <li><code>POST</code> and <code>PUT</code> need <code>Content-Type: application/json</code>, otherwise <code>415</code>.</li>
+                    <li>Unknown JSON fields are rejected with <code>400</code>, so a misspelt field name is an error rather than silently ignored.</li>
+                    <li><strong>Revisions:</strong> each script has a <code>revision</code> that increases on every save. Updates, enable, disable, recover and delete must send the revision you last read; a stale value returns <code>409</code>. Create uses <code>0</code> (or omits it). A freeze or <code>BROKEN</code> status change does not bump the revision.</li>
+                </ul>
+
+                <h3>Endpoints</h3>
+                <table>
+                    <thead><tr><th>Request</th><th>Purpose</th><th>Success</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>GET /scripts</code></td><td>List all scripts with status and <code>last_error</code>.</td><td><code>200</code></td></tr>
+                        <tr><td><code>GET /scripts/{id}</code></td><td>Read one script.</td><td><code>200</code> (<code>404</code> if unknown)</td></tr>
+                        <tr><td><code>POST /scripts/validate</code></td><td>Compile source without saving. Body: <code>{"id", "source", "timeout_ms"}</code>.</td><td><code>200 {"valid":true}</code> (<code>422</code> with the compile error)</td></tr>
+                        <tr><td><code>POST /scripts</code></td><td>Create. Body: <code>{"script": {...}}</code>. <code>id</code>, <code>name</code> and <code>source</code> are required; <code>timeout_ms</code> defaults to 500; <code>enabled</code> defaults to false.</td><td><code>201</code> (<code>409</code> if the id or name exists)</td></tr>
+                        <tr><td><code>PUT /scripts/{id}</code></td><td>Replace the whole script. Body: <code>{"script": {...}, "expected_revision": N}</code>. Send <code>enabled</code> and a positive <code>timeout_ms</code> every time.</td><td><code>200</code> (<code>409</code> stale or name taken)</td></tr>
+                        <tr><td><code>POST /scripts/{id}/enable</code><br><code>POST /scripts/{id}/disable</code></td><td>Change the desired state only. Body: <code>{"expected_revision": N}</code>.</td><td><code>200</code></td></tr>
+                        <tr><td><code>POST /scripts/{id}/recover</code></td><td>Recompile and return to <code>READY</code>. Body: <code>{"expected_revision": N, "timeout_ms": M}</code>; <code>timeout_ms</code> is optional.</td><td><code>200</code> (<code>422</code> if the source still fails)</td></tr>
+                        <tr><td><code>DELETE /scripts/{id}?revision=N</code></td><td>Delete the script. The ECHO script is not protected and is never recreated.</td><td><code>204</code></td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Typical session</h3>
+                <pre><code class="language-bash"># 1. See what exists and read the current revision
+curl -s localhost:8765/scripts
+
+# 2. Check a change before saving it
+curl -s -X POST localhost:8765/scripts/validate -H 'Content-Type: application/json' \
+  -d '{"source":"def on_group_text(message):\n    pass\n"}'
+
+# 3. Disable without deleting (revision 1)
+curl -s -X POST localhost:8765/scripts/ping/disable -H 'Content-Type: application/json' \
+  -d '{"expected_revision":1}'
+
+# 4. A frozen script: recover it with a longer timeout
+curl -s -X POST localhost:8765/scripts/ping/recover -H 'Content-Type: application/json' \
+  -d '{"expected_revision":2,"timeout_ms":1000}'</code></pre>
+                <p>Recovery fixes the status, not the cause. A script that froze because it is slow will freeze again unless you fix the source or raise <code>timeout_ms</code>.</p>
+            </section>
+
+            <!-- Security -->
+            <section id="security">
+                <h2 class="text-red-600">Security &amp; Sandboxing</h2>
+                <p>Automation is powerful, so it is strictly isolated:</p>
+                <ul class="space-y-1">
+                    <li><strong>No network, filesystem or process control:</strong> scripts cannot make HTTP requests, open sockets, read or write files, run shell commands or start threads.</li>
+                    <li><strong>No hardware access:</strong> scripts cannot reach the KISS modem commands; the only outbound action is <code>reply</code>.</li>
+                    <li><strong>Immutable input:</strong> the <code>message</code> is a frozen copy; scripts cannot alter KAM's internal data.</li>
+                    <li><strong>Loopback only:</strong> the API binds to 127.0.0.1 and refuses to start on any other address. The Host and Content-Type checks stop web pages in a browser on the same machine from driving it (DNS rebinding and cross-site forms).</li>
+                    <li><strong>Trust model:</strong> one system administrator. There are no users, ownership or per-script permissions, and no limits on script count, source size or reply rate. The operator is responsible for the <code>timeout_ms</code> they choose; it has no maximum.</li>
+                    <li><strong>Treat incoming text as untrusted:</strong> <code>body</code> and <code>sender</code> come from the radio. Do not assume they are well-formed.</li>
+                </ul>
+                <div class="info-box info-box-amber">
+                    <strong>Backups:</strong> the database now holds your script source. Include it in backups: <code>sqlite3 kam.db ".backup kam-backup.db"</code> while running, or copy <code>kam.db</code> with its <code>-wal</code> and <code>-shm</code> files while KAM is stopped.
+                </div>
+            </section>
+
+            <!-- Troubleshooting -->
+            <section id="troubleshooting">
+                <h2>Troubleshooting</h2>
+                <table>
+                    <thead><tr><th>Symptom</th><th>Likely cause</th></tr></thead>
+                    <tbody>
+                        <tr><td>Script never runs</td><td>Not <code>enabled</code>; status is <code>FROZEN</code> or <code>BROKEN</code> (check <code>GET /scripts</code>); the channel is not enabled in <code>kam.yml</code>, so KAM cannot decrypt it; or the channel name in your script is not lowercase with a leading <code>#</code>.</td></tr>
+                        <tr><td>Script stopped after working</td><td><code>FROZEN</code> after a timeout. Read <code>last_error</code>, fix the script or raise <code>timeout_ms</code>, then <code>recover</code>.</td></tr>
+                        <tr><td>Log: <code>script invocation failed</code></td><td>The script raised an error, for example an unknown channel in <code>reply</code>. The status is unchanged.</td></tr>
+                        <tr><td>Log: <code>group-text event dropped: queue full</code></td><td>More than 128 events were waiting; scripts are slower than the incoming traffic.</td></tr>
+                        <tr><td>Replies appear to be missing</td><td><code>reply</code> only queues the packet. Quick successive replies can be lost by the modem; see the note under Capabilities.</td></tr>
+                        <tr><td><code>400</code></td><td>Invalid JSON, an unknown field, a missing or non-positive <code>expected_revision</code> (enable, disable, recover), or a missing <code>revision</code> query parameter (delete).</td></tr>
+                        <tr><td><code>403</code> / <code>415</code></td><td>Non-loopback <code>Host</code> header / missing <code>Content-Type: application/json</code>.</td></tr>
+                        <tr><td><code>409</code></td><td>Stale revision, id already exists, or name already used by another script. Re-read the script and retry.</td></tr>
+                        <tr><td><code>422</code></td><td>The source did not compile, lacks <code>on_group_text</code>, calls an undefined name, or <code>timeout_ms</code> is missing or not positive.</td></tr>
+                        <tr><td>Cannot connect to port 8765</td><td>KAM is not running, the port is taken by another program (the log says <code>Local Management API unavailable</code>), or automation was disabled because its database setup failed. Radio ingestion keeps working in the last two cases.</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Technical Deep Dive -->
+            <section id="technical">
+                <h2 class="text-red-600">Technical Deep Dive</h2>
+                <p><em>Intended for developers.</em></p>
+
+                <details>
+                    <summary>The Execution Worker</summary>
+                    <div class="prose">
+                        <p>KAM subscribes one handler to decoded group texts. The handler copies the message and does a non-blocking put on a 128-event queue, so a slow script can never block packet routing. If the queue is full the event is dropped and logged.</p>
+                        <p>A single worker takes events in order. For each event it snapshots the enabled <code>READY</code> scripts and runs them one after another, sorted by script id. Execution is therefore sequential and deterministic; scripts need no locking and cannot run in parallel.</p>
+                        <p>Each run uses the already-compiled program held in memory with a new interpreter thread and the script's deadline. SQLite is not read per event; it is touched only at startup, on API changes and when a status becomes <code>FROZEN</code> or <code>BROKEN</code>.</p>
+                        <p>On shutdown KAM stops the API and event intake, cancels the running script, drops any queued events (and logs how many), and only then stops the radio manager.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Storage Schema</summary>
+                    <div class="prose">
+                        <p>Scripts live in the SQLite table <code class="text-blue-600">automation_scripts</code>:</p>
+                        <pre><code class="language-text">script_id      TEXT PRIMARY KEY      -- stable identity, e.g. "echo"
+name           TEXT NOT NULL UNIQUE  -- human-facing name
+source         TEXT NOT NULL         -- Starlark source (not bytecode)
+enabled        INTEGER 0/1           -- operator's desired state (default 0)
+timeout_ms     INTEGER &gt; 0           -- per-run budget (default 500)
+runtime_status TEXT                  -- READY | BROKEN | FROZEN (default READY)
+last_error     TEXT                  -- latest BROKEN/FROZEN reason; cleared on READY
+revision       INTEGER               -- optimistic-concurrency counter
+created_at     INTEGER               -- Unix seconds
+updated_at     INTEGER               -- Unix seconds</code></pre>
+                        <p>Only the latest error is kept; there is no error history. Databases that ran the retired one-time ECHO migration still contain a <code>builtin.echo</code> row. It is an ordinary script that can be edited or deleted.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Adding a host function</summary>
+                    <div class="prose">
+                        <p>All capabilities are registered in one table, <code>hostFunctions</code> in <code>internal/automation/runtime.go</code>. Compilation accepts only those names as predeclared, and every call receives the invocation context so it shares the script deadline. A new function that does I/O must honour that context, because Starlark's own step limits do not bound time spent inside Go code. Adding the planned weather capability means adding entries here.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Example Script (ECHO)</summary>
+                    <div class="prose">
+                        <p>The full responder is <code>docs/examples/echo.star</code>. It matches only configured channels, ignores the node's own messages, requires <code>@kam</code> not to be followed by a word character, and replies with the hop count, SNR/RSSI (when present) and clock drift:</p>
+                        <pre><code class="language-text">heard alice in 2 hops, SNR 7.25 dB, RSSI -64 dBm, drift 3s</code></pre>
+                        <p>Its replies are pinned by the test <code>TestEchoExampleScript</code>. Downgrade note: an older KAM binary still reads an <code>echo:</code> block in <code>kam.yml</code>; disable the <code>echo</code> script first or both would answer.</p>
+                    </div>
+                </details>
+
+            </section>
+
+        </article>
+
+        <footer class="mt-24 pt-8 border-t border-slate-200 text-center text-slate-500 text-sm">
+            &copy; 2026 KAM Project Manuals. Written for beginner to intermediate readers. Checked against the source on 2026-10-10.
+        </footer>
+    </main>
+</body>
+</html>

@@ -16,6 +16,7 @@ func (m *Manager) readLoop() {
 				return // graceful shutdown via Stop()
 			default:
 				slog.Error("Error reading from serial port", "err", err)
+				m.Fail(err)
 				return
 			}
 		}

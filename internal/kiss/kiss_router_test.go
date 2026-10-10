@@ -3,6 +3,7 @@ package kiss
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"testing"
 	"time"
 
@@ -206,6 +207,20 @@ func buildRxMetaFrame(snr, rssi int) []byte {
 	return []byte{CMD_SETHARDWARE, SUB_RX_META, byte(int8(snr)), byte(int8(rssi))}
 }
 
+func receiveControlFrame(t *testing.T, m *Manager) []byte {
+	t.Helper()
+	select {
+	case control := <-m.TestControlChan():
+		if control.done != nil {
+			control.done <- nil
+		}
+		return control.frame
+	case <-time.After(time.Second):
+		t.Fatal("control frame was not sent")
+		return nil
+	}
+}
+
 func TestRouterAttachesRxMetaToGroupText(t *testing.T) {
 	parsers.ResetTopicRegistry()
 	if err := parsers.SetPublicChannelSecretHex("8b3387e9c5cdea6ac9e5edbaa115cd72"); err != nil {
@@ -336,5 +351,147 @@ func TestRouterRxMetaWithoutPendingIgnored(t *testing.T) {
 		t.Fatal("tap must not fire for orphan RxMeta")
 	case <-time.After(100 * time.Millisecond):
 		// expected: no dispatch
+	}
+}
+
+func TestRadioClientReturnsModemErrorImmediately(t *testing.T) {
+	m := &Manager{}
+	m.TestInit()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.routeLoop(ctx)
+
+	commandCtx, commandCancel := context.WithTimeout(context.Background(), time.Second)
+	defer commandCancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- NewRadioClient(m).SetRadio(commandCtx, RadioConfig{
+			Frequency: 869618000, Bandwidth: 62500, SpreadingFactor: 7, CodingRate: 5,
+		})
+	}()
+
+	receiveControlFrame(t, m)
+	select {
+	case m.TestRxChan() <- []byte{CMD_SETHARDWARE, SUB_ERROR, 0x01}:
+	case <-time.After(time.Second):
+		t.Fatal("modem error was not routed")
+	}
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrInvalidLength) {
+			t.Fatalf("SetRadio error = %v, want ErrInvalidLength", err)
+		}
+		var modemErr *ModemError
+		if !errors.As(err, &modemErr) || modemErr.Code != 0x01 {
+			t.Fatalf("SetRadio error = %#v, want typed code 0x01", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("SetRadio did not return the modem error promptly")
+	}
+}
+
+func TestRadioClientUsesPingBarrierAfterTimeout(t *testing.T) {
+	m := &Manager{}
+	m.TestInit()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.routeLoop(ctx)
+	radio := NewRadioClient(m)
+
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer timeoutCancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- radio.SetRadio(timeoutCtx, RadioConfig{
+			Frequency: 869618000, Bandwidth: 62500, SpreadingFactor: 7, CodingRate: 5,
+		})
+	}()
+	frame := receiveControlFrame(t, m)
+	if len(frame) < 2 || frame[1] != SUB_SET_RADIO {
+		t.Fatalf("initial command = %x, want SetRadio", frame)
+	}
+	if err := <-result; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("SetRadio error = %v, want deadline exceeded", err)
+	}
+
+	go func() {
+		_, err := radio.GetRadio(context.Background())
+		result <- err
+	}()
+
+	frame = receiveControlFrame(t, m)
+	if len(frame) != 2 || frame[0] != CMD_SETHARDWARE || frame[1] != SUB_PING {
+		t.Fatalf("first resync frame = %x, want SetHardware/Ping", frame)
+	}
+	select {
+	case m.TestRxChan() <- []byte{CMD_SETHARDWARE, SUB_RESP_OK}:
+	case <-time.After(time.Second):
+		t.Fatal("stale response was not injected")
+	}
+	select {
+	case control := <-m.TestControlChan():
+		t.Fatalf("next request sent before Pong: %x", control.frame)
+	case <-time.After(25 * time.Millisecond):
+	}
+	select {
+	case m.TestRxChan() <- []byte{CMD_SETHARDWARE, SUB_RESP_PONG}:
+	case <-time.After(time.Second):
+		t.Fatal("Pong was not injected")
+	}
+	frame = receiveControlFrame(t, m)
+	if len(frame) != 2 || frame[1] != SUB_GET_RADIO {
+		t.Fatalf("post-barrier request = %x, want GetRadio", frame)
+	}
+	select {
+	case m.TestRxChan() <- []byte{CMD_SETHARDWARE, SUB_RESP_RADIO, 0x50, 0x51, 0xD5, 0x33, 0x24, 0xF4, 0, 0, 7, 5}:
+	case <-time.After(time.Second):
+		t.Fatal("GetRadio response was not injected")
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("GetRadio after barrier: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("GetRadio did not finish after barrier")
+	}
+}
+
+func TestRouterPublishesTxDoneAndTxBusy(t *testing.T) {
+	m := &Manager{}
+	m.TestInit()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go m.routeLoop(ctx)
+
+	m.TestRxChan() <- []byte{CMD_SETHARDWARE, SUB_TX_DONE, 1}
+	select {
+	case event := <-m.txGateEvents:
+		if !event.done {
+			t.Fatalf("TxDone gate event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("TxDone did not reach TX gate")
+	}
+	if event := <-m.eventChan; event.(TxDone).OK != true {
+		t.Fatalf("modem TxDone event = %#v", event)
+	}
+
+	m.TestRxChan() <- []byte{CMD_SETHARDWARE, SUB_ERROR, MODEM_ERROR_TX_BUSY}
+	select {
+	case event := <-m.txGateEvents:
+		if !event.busy {
+			t.Fatalf("TxBusy gate event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("TxBusy did not reach TX gate")
+	}
+	if _, ok := (<-m.eventChan).(TxBusy); !ok {
+		t.Fatal("modem TxBusy event was not published")
+	}
+	counters := m.Counters()
+	if counters.TxDoneOK != 1 || counters.TxBusy != 1 {
+		t.Fatalf("modem counters = %+v", counters)
 	}
 }

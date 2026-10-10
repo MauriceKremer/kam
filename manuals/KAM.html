@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="A beginner's guide to KAM, its design philosophy, MeshCore radio networks, setup, and everyday operation.">
+    <title>KAM Manual</title>
+    <link href="manuals.css" rel="stylesheet">
+    <script src="manuals.js" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <aside>
+        <div class="manual-brand"><strong>KAM</strong><span>Documentation</span></div>
+        <details class="manual-navigation" open>
+            <summary>Contents</summary>
+            <details class="navigation-section" open>
+                <summary>On this page</summary>
+                <nav aria-label="On this page">
+                    <a href="#origins">Origins</a>
+                    <a href="#overview">What KAM Is</a>
+                    <a href="#meshcore">MeshCore Basics</a>
+                    <a href="#philosophy">Design Philosophy</a>
+                    <a href="#message-flow">A Message's Journey</a>
+                    <a href="#requirements">What You Need</a>
+                    <a href="#installation">First Setup</a>
+                    <a href="#operation">Everyday Operation</a>
+                    <a href="#limits">Privacy &amp; Limits</a>
+                    <a href="#troubleshooting">Troubleshooting</a>
+                    <a href="#reference">Glossary &amp; Sources</a>
+                </nav>
+            </details>
+            <details class="navigation-section" open>
+                <summary>Manuals</summary>
+                <nav aria-label="Manuals">
+                    <a href="KAM.html" aria-current="page">KAM Guide</a>
+                    <a href="FeatureStarlark.html">Starlark Automations</a>
+                    <a href="FeatureKissModem.html">KISS Modem</a>
+                    <a href="FeatureRoomServer.html">Room Server</a>
+                </nav>
+            </details>
+        </details>
+    </aside>
+    <main id="main-content" tabindex="-1">
+        <header>
+            <span>Getting Started</span>
+            <h1>KAM</h1>
+            <p>Understand the software, the radio network it connects to, and the decisions behind its design.</p>
+            <p><span class="badge badge-green">Core features implemented</span><span>For beginners and novice operators. Room servers are implemented but not yet verified on real radios; weather lookups are planned. Status checked 10 October 2026.</span></p>
+        </header>
+        <article class="prose">
+            <section id="origins">
+                <h2>The Story of KAM</h2>
+                <p>The name <strong>KAM</strong> stands for <strong>KickAss Meshcore</strong>. This project was born from a single, driving question: how do we take the raw, unbridled energy of a MeshCore radio network and turn it into a structured, intelligent, and permanent foundation for community communication?</p>
+                <p>The spark for KAM came during the 2026 "May Month Meshcore Month." As the community rallied to build regional coverage, it became obvious that there was a gap in the tools available to enthusiasts. Maurice Kremer, a member of Hackerspace Drenthe, saw an opportunity to fill that gap with a tool that could act as a reliable room server and monitoring companion—helping to build the regional emergency backbone that MeshCore is capable of providing.</p>
+                <p>While MeshCore handles the "magic" of moving packets through the air, it is ephemeral by nature. KAM is the "brain" that catches those signals, gives them a memory through SQLite, and provides the muscle for automation via Starlark. We didn't just want a driver; we wanted to make MeshCore truly <strong>KickAss</strong>.</p>
+                <p><em class="disclaimer-note">Just a heads up: KAM was born in Hackerspace Drenthe, but it's an independent project and doesn't represent the hackerspace officially.</em></p>
+            </section>
+
+            <section id="overview">
+                <h2>What KAM Is</h2>
+                <p>KAM is software that runs on a computer connected to a small radio. It receives supported MeshCore radio traffic, turns it into readable records, and saves those records locally. You can also add small scripts that respond to messages.</p>
+                <p><strong>MeshCore</strong> is a radio-networking project that lets compatible devices exchange small messages without relying on the internet. KAM works alongside that network: it supplies computer-side storage and automation, while the connected radio handles sending and receiving over the air.</p>
+                <p>For example, a local radio group could run KAM on an always-on computer to keep a record of channel messages heard by its radio. Later, the operator could install a script that replies to a specific test message. Neither task requires a cloud database.</p>
+                <h3>Purpose and longer-term direction</h3>
+                <p>KAM's design is motivated by community communication when internet or mobile service is unavailable. Its longer-term direction includes operational bulletins, weather information, network-health reporting, and a shared message board. Those goals explain the architecture; they are not all available features.</p>
+                <table>
+                    <thead><tr><th>Capability</th><th>Current status</th></tr></thead>
+                    <tbody>
+                        <tr><td>Decode device announcements and configured-channel messages; save records locally</td><td>Implemented</td></tr>
+                        <tr><td>Run installed Starlark scripts and send channel replies</td><td>Implemented; scripts must be installed and enabled</td></tr>
+                        <tr><td>Configure and query a KISS radio modem</td><td>Implemented in code; real-radio smoke tests and timing measurements remain pending</td></tr>
+                        <tr><td>Host MeshCore room servers (message boards that MeshCore apps log in to)</td><td>Implemented and tested in software; real-radio verification pending. Optional and off until you add a <code>rooms:</code> list</td></tr>
+                        <tr><td>Weather lookup capability and an operator analytics dashboard</td><td>Planned, not available</td></tr>
+                    </tbody>
+                </table>
+                <p>KAM is not a chat application, a replacement for radio firmware, or a repeater. Its saved history is not automatically a message board that other radios can retrieve.</p>
+                <div class="info-box info-box-amber"><p><strong>Use as a supporting tool.</strong> Radio messages can be missed, and KAM cannot guarantee delivery or a complete archive. Do not use it as your only emergency communication method.</p></div>
+            </section>
+
+            <section id="meshcore">
+                <h2>MeshCore Basics</h2>
+                <h3>Four different parts</h3>
+                <ul>
+                    <li><strong>Host computer:</strong> the computer running KAM. It provides processing, disk storage, and power for the software.</li>
+                    <li><strong>Radio hardware:</strong> the physical board and antenna that send and receive radio signals.</li>
+                    <li><strong>Firmware:</strong> the software installed on the radio board. Its role determines how the board behaves.</li>
+                    <li><strong>KAM:</strong> the separate program on the host computer. It talks to the radio through a USB cable.</li>
+                </ul>
+                <p><strong>LoRa</strong> is the radio technology used by many MeshCore devices. It carries small amounts of data over the air. It is not Wi-Fi, mobile internet, or the same thing as LoRaWAN, a different networking system that can use LoRa radios.</p>
+                <h3>A mesh and its roles</h3>
+                <p>A <strong>node</strong> is a participating device. A <strong>mesh</strong> is a network in which some nodes can pass messages onward. A <strong>repeater</strong> relays radio packets, potentially reaching places the original sender cannot reach directly. Each relay step is a <strong>hop</strong>. Actual range depends on antennas, terrain, placement, radio settings, and interference.</p>
+                <p>A <strong>companion radio</strong> connects to a chat application. A <strong>room server</strong> offers a message board with its own login and message-sharing behavior. A <strong>KISS modem</strong> exposes radio packets to a host program such as KAM. These are different firmware roles, not interchangeable names.</p>
+                <div class="info-box info-box-blue"><p><strong>KAM needs the KISS modem role.</strong> A supported board running ordinary companion firmware does not become a KAM modem just because it has USB. Check firmware and board compatibility before connecting it.</p></div>
+                <h3>What the USB connection carries</h3>
+                <p>A <strong>serial port</strong> is a connection that carries a stream of bytes between the computer and radio. The operating system gives it a name such as <code>/dev/ttyUSB0</code>. <strong>KISS</strong>, short for <em>Keep It Simple, Stupid</em>, is the protocol that packages packets and modem commands on this connection. The USB link is local; LoRa is the separate over-the-air link.</p>
+                <h3>Announcements, channels, and rooms</h3>
+                <p>An <strong>advert</strong> is a device announcement containing identity and other device information. KAM checks its digital signature, a cryptographic check that the announcement matches its signing identity. That check does not prove the device owner is trustworthy.</p>
+                <p>A <strong>channel</strong> is a shared-key group conversation, for example <code>#public</code>. A <strong>key</strong> is the value used to encrypt and decrypt its messages. KAM needs a compatible channel key to turn received group-text packets into readable text. A matching channel name alone is not enough when devices use an explicitly configured key.</p>
+                <p>A <strong>room</strong> is a message board hosted by a room server, not another name for a channel. KAM can host rooms: MeshCore apps log in with a password, post, and receive posts they missed. This is optional and configured separately in <code>kam.yml</code>; see the <a href="FeatureRoomServer.html">room-server manual</a>. KAM does not provide a general direct-message inbox, and the channel history it saves is not shared through a room.</p>
+                <p>MeshCore radio traffic does not require an internet connection, but it does require powered devices and usable radio paths. Downloading KAM, installing build tools, or fetching dependencies can require internet access during setup.</p>
+            </section>
+
+            <section id="philosophy">
+                <h2>Design Philosophy</h2>
+                <h3 id="maker-friendly">Maker-friendly &amp; Pragmatic</h3>
+                <p>KAM is designed for enthusiasts. We believe in a down-to-earth approach: prioritizing ease of setup and maintenance so you can get your node online and start communicating. We favor pragmatism over overly strict design or extreme security hardening. It's a tool for the community, meant to be tinkered with and used to build something real.</p>
+                <h3>Local first, with few moving parts</h3>
+                <p>KAM is one Go program rather than a collection of separate services. <strong>Go</strong> is the programming language used to build it. <strong>SQLite</strong> is its embedded database: it keeps structured records in local files without requiring a separate database server. This makes deployment simpler and removes a cloud dependency from normal operation.</p>
+                <h3>Keep receiving even when other work is slow</h3>
+                <p>Reading radio traffic, saving records, and running scripts are separate jobs. Small waiting lists, called <strong>queues</strong>, let these jobs hand work to one another. Their size is limited so a burst of traffic cannot make memory use grow without bound.</p>
+                <p>This deliberately favors keeping the receiving path responsive over retaining every record. If a storage or automation queue fills up, work can be dropped rather than making radio processing wait indefinitely. A local database is useful history, not proof that every transmitted message arrived.</p>
+                <h3>One owner for a constrained radio</h3>
+                <p>KAM's radio manager is the only part that uses the serial connection. It coordinates commands and outgoing messages so scripts and other components cannot independently overwhelm the modem. This matters because the modem has limited space for pending work and cannot attach a unique request number to every response.</p>
+                <h3>Make optional behavior replaceable</h3>
+                <p><strong>Starlark</strong> is a small Python-like scripting language. An operator can install a script to react to a decoded channel message without rebuilding KAM. Scripts run with restricted capabilities: they can reply through KAM, but do not have general access to files, the internet, or operating-system commands.</p>
+                <p>A script runs with fresh state for each message. A timeout limits how long it can run; a script that exceeds its limit is marked <code>FROZEN</code> and needs operator attention. Optional automation is kept separate from the core job of receiving and storing traffic.</p>
+                <h3>Give settings and records clear homes</h3>
+                <p><strong>YAML</strong> is the readable, indentation-based format used by <code>kam.yml</code>. This file holds node, radio, and channel settings. SQLite holds received records and installed scripts. Keeping that distinction clear makes it easier to understand what to edit and what to back up.</p>
+            </section>
+
+            <section id="message-flow">
+                <h2>A Message's Journey</h2>
+                <p>Suppose someone sends a short message on a channel that KAM has been configured to read:</p>
+                <ol>
+                    <li>The connected radio receives a MeshCore packet, either directly or after other devices have relayed it.</li>
+                    <li>The modem sends the packet over USB to KAM inside a KISS frame, the protocol's packet container.</li>
+                    <li>KAM recognizes a supported group-text packet and attempts to decrypt it using its enabled channel keys.</li>
+                    <li>A decoded message is queued for local storage. If signal information is available, KAM attaches it to the record.</li>
+                    <li>Enabled scripts receive the decoded message through a separate queue. A script may request a reply through the same radio manager.</li>
+                </ol>
+                <div class="mermaid">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 240" role="img" aria-labelledby="flow-title flow-description">
+                        <title id="flow-title">Received traffic and optional automation in KAM</title>
+                        <desc id="flow-description">Received messages move from the MeshCore network through a USB KISS modem into KAM and SQLite storage. KAM also sends decoded messages to scripts, whose optional replies return through KAM and the modem.</desc>
+                        <defs><marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#A1A1A8"/></marker></defs>
+                        <g fill="#222225" stroke="#A1A1A8" stroke-width="1">
+                            <rect x="8" y="48" width="160" height="64" rx="8"/>
+                            <rect x="216" y="48" width="160" height="64" rx="8"/>
+                            <rect x="424" y="48" width="160" height="64" rx="8"/>
+                            <rect x="632" y="48" width="160" height="64" rx="8"/>
+                            <rect x="424" y="176" width="160" height="48" rx="8"/>
+                        </g>
+                        <g fill="none" stroke="#A1A1A8" stroke-width="1.5" marker-end="url(#flow-arrow)">
+                            <path d="M 168 80 H 216"/>
+                            <path d="M 376 80 H 424"/>
+                            <path d="M 584 80 H 632"/>
+                            <path d="M 480 112 V 176"/>
+                            <path d="M 528 176 V 112"/>
+                        </g>
+                        <g fill="#F5F5F7" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="14">
+                            <text x="88" y="85">MeshCore network</text>
+                            <text x="296" y="85">USB KISS modem</text>
+                            <text x="504" y="85">KAM</text>
+                            <text x="712" y="85">SQLite storage</text>
+                            <text x="504" y="205">Installed scripts</text>
+                            <text x="192" y="32">Radio</text>
+                            <text x="400" y="32">USB</text>
+                            <text x="608" y="32">Save</text>
+                            <text x="432" y="148">Message</text>
+                            <text x="580" y="148">Reply</text>
+                        </g>
+                    </svg>
+                </div>
+                <p>Optional replies travel back through KAM and the USB modem to the radio network. Saving an incoming message, sending a reply, and another person receiving that reply are separate events; none automatically proves the others happened.</p>
+                <p><strong>RSSI</strong> means received signal strength; <strong>SNR</strong> means signal-to-noise ratio, how the signal compares with background noise. These describe reception at the connected radio, not the quality of every hop or confirmation of delivery.</p>
+            </section>
+
+            <section id="requirements">
+                <h2>What You Need</h2>
+                <ul>
+                    <li>A computer that can run KAM, with disk space for its growing database and a usable USB serial connection.</li>
+                    <li>A compatible LoRa radio running MeshCore's <code>kiss_modem</code> firmware, with the correct antenna and a USB data cable.</li>
+                    <li>Permission to access the serial port. Linux systems may require membership in a serial-access group; ask the computer administrator if access is denied.</li>
+                    <li>The radio settings used by your local MeshCore group and any channel keys you are authorized to use.</li>
+                    <li>For a source build, Go 1.25 or newer and a local copy of the KAM project. Initial dependency downloads may need internet access.</li>
+                    <li>Another compatible MeshCore device or existing local traffic for a meaningful reception test.</li>
+                </ul>
+                <div class="info-box info-box-amber"><p><strong>Choose settings for your location.</strong> Radio frequency, power, and transmission rules vary by country and hardware. The project's example settings are not a universal legal preset. Confirm local requirements and attach the correct antenna before allowing transmissions.</p></div>
+            </section>
+
+            <section id="installation">
+                <h2>First Setup</h2>
+                <p>The commands below run in a terminal, the application where you enter text commands, on the computer connected to the radio. They assume macOS or Linux and that the terminal is already in the KAM project folder.</p>
+                <h3>1. Build the program</h3>
+                <p>Check that the installed Go version is at least 1.25, then build KAM:</p>
+                <pre><code class="language-bash">go version
+go build -o kam .</code></pre>
+                <p>A successful build creates the <code>kam</code> executable in this folder. The build may print nothing when it succeeds. If it fails, resolve the reported toolchain or dependency error before continuing.</p>
+                <h3>2. Make your own settings file</h3>
+                <p>Copy the supplied configuration once, before editing it. If <code>kam.local.yml</code> already exists, keep that file instead of overwriting your settings.</p>
+                <pre><code class="language-bash">cp kam.yml kam.local.yml</code></pre>
+                <p>Open <code>kam.local.yml</code> in a text editor. YAML uses indentation to group settings; preserve spaces and do not use tabs. Review these values rather than accepting the example unchanged:</p>
+                <table>
+                    <thead><tr><th>Setting</th><th>Meaning and action</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>node_name</code></td><td>The name KAM uses for outgoing channel texts. Choose a recognizable name; it is not proof of identity.</td></tr>
+                        <tr><td><code>db_path</code></td><td>Where KAM saves its SQLite database. With <code>kam.db</code>, the file is in the directory from which you run KAM.</td></tr>
+                        <tr><td><code>radio.port</code></td><td>The serial device name assigned to this radio by your computer, not another device's example name.</td></tr>
+                        <tr><td><code>radio.baud</code></td><td>The USB serial communication speed. The KISS protocol documents 115200 baud; match your modem.</td></tr>
+                        <tr><td><code>radio.frequency_hz</code></td><td>The radio's tuning frequency in hertz. Match your local network and legal band.</td></tr>
+                        <tr><td><code>radio.bandwidth_hz</code>, <code>spreading_factor</code>, <code>coding_rate</code></td><td>LoRa signal settings. Bandwidth is the signal's frequency width; spreading factor and coding rate affect how data is encoded. Match the local network rather than guessing.</td></tr>
+                        <tr><td><code>channels</code></td><td>The channel names, key choices, and enabled states KAM uses to decode group messages.</td></tr>
+                    </tbody>
+                </table>
+                <p>On macOS, serial device names often begin with <code>/dev/cu.</code>; on Linux, common names include <code>/dev/ttyUSB0</code> and <code>/dev/ttyACM0</code>. To list candidates, use the command for your operating system:</p>
+                <pre><code class="language-bash"># macOS
+find /dev -name 'cu.*'
+
+# Linux
+find /dev -name 'ttyUSB*' -o -name 'ttyACM*'</code></pre>
+                <p>A listed port is only a candidate. Confirm which entry belongs to the connected radio, and close other applications that might already be using it.</p>
+                <h3>3. Understand channel keys</h3>
+                <p><code>key_strategy</code> tells KAM how to obtain a channel's key. <code>public</code> is reserved for <code>#public</code> and uses its configured public key. <code>derived</code> calculates a key from the normalized channel name. <code>explicit</code> uses the key supplied in <code>key_hex</code>, a hexadecimal representation containing digits and letters a-f.</p>
+                <p>Use the same compatible key as the other devices on the channel. Public and name-derived keys should not be treated as private secrets. An explicitly shared secret can restrict who decrypts traffic, but everyone holding it belongs to the same trust group.</p>
+                <h3>4. Start KAM and check reception</h3>
+                <pre><code class="language-bash">./kam -config kam.local.yml</code></pre>
+                <p>KAM opens local storage, contacts the modem, applies radio settings, and prints startup information. It keeps running in this terminal; an occupied terminal is normal. A serial-port or modem error is not a successful start.</p>
+                <p>The modem's radio-settings readback is an echo of requested values, not independent proof that the radio chip accepted them. Test reception with a known compatible device. After sending one harmless message on a configured channel, check that KAM logged a decoded group text and that a record reached the database.</p>
+                <p>If the SQLite command-line tool is installed, run this query from a second terminal in the same folder while KAM is running. It reports the number of stored group-text records; it does not display a chat interface.</p>
+                <pre><code class="language-bash">sqlite3 kam.db 'SELECT COUNT(*) FROM group_texts;'</code></pre>
+                <p>Compare the count before and after your test and allow time for background writes. Use your actual database path if it differs. A count increase indicates stored messages, not necessarily only your test message on a busy network. No change calls for a check of radio settings, channel keys, and logs.</p>
+            </section>
+
+            <section id="operation">
+                <h2>Everyday Operation</h2>
+                <h3>Receive first, automate second</h3>
+                <p>Start with receiving and saving messages before installing scripts. The bundled ECHO example, which replies when mentioned, is not enabled automatically on a fresh installation. Follow the <a href="FeatureStarlark.html#quickstart">Starlark quick start</a> when you are ready to add a responder. Use narrowly targeted triggers so replies do not create unnecessary radio traffic.</p>
+                <p>An <strong>API</strong>, or application programming interface, is a way for another program to ask KAM to perform a task. The <strong>Local Management API</strong> manages scripts at <code>127.0.0.1:8765</code>. This address is loopback: it points back to the same computer, not to every computer on your network. It is not a browser-based management dashboard.</p>
+                <h3>Change settings deliberately</h3>
+                <p>KAM watches the configuration file and applies valid channel changes while running. Invalid changes are rejected, leaving the last valid channel set active. Changes to radio settings, node name, or database path require a restart. When using the channel command, pass the same configuration file as the running process.</p>
+                <h3>Stop cleanly and back up</h3>
+                <p>Press <code>Ctrl+C</code> in KAM's terminal and let it finish. A clean stop lets pending storage batches be written before the database and radio connection close. This does not protect against a sudden power failure or earlier queue drops.</p>
+                <p>Back up both your settings file and database: one contains channel settings and keys; the other contains received records and scripts. SQLite may use extra <code>-wal</code> and <code>-shm</code> files while running, so copying only the database file during live writes is not a reliable backup method.</p>
+                <p>With the SQLite command-line tool installed, this command makes a consistent database backup while KAM is running. Run it from a second terminal and change the path if you configured a different database:</p>
+                <pre><code class="language-bash">sqlite3 kam.db ".backup kam-backup.db"</code></pre>
+                <p>Keep backups in a separate, protected location and verify that they can be restored. Back up <code>kam.local.yml</code> separately; the database backup does not include it.</p>
+            </section>
+
+            <section id="limits">
+                <h2>Privacy and Limits</h2>
+                <ul>
+                    <li><strong>Public is public.</strong> The <code>#public</code> key is publicly known. Encryption with a public key shared by everyone is not confidential messaging.</li>
+                    <li><strong>Readable records stay readable on disk.</strong> KAM stores decoded message content. Protect the computer, database, configuration, and backups with operating-system access controls; channel encryption does not protect those files.</li>
+                    <li><strong>A sender label is not identity proof.</strong> A name in group text is not equivalent to a verified advert signature. Do not trust a sensitive instruction solely because a message uses a familiar name.</li>
+                    <li><strong>Local does not mean authenticated.</strong> The script-management API has no authentication. Keep it on loopback and do not publish it through a proxy or network tunnel. Only trusted users should access this computer.</li>
+                    <li><strong>Room passwords are plain text.</strong> Like channel keys, they are in <code>kam.yml</code>. A room's private identity key is a separate file in the <code>rooms</code> directory; back it up with the database.</li>
+                    <li><strong>Coverage and airtime are limited.</strong> Airtime is the time a transmission occupies the radio channel. Long messages and frequent automatic replies consume a shared resource and can interfere with other users.</li>
+                    <li><strong>A saved record is not a delivery receipt.</strong> KAM only records supported traffic its radio receives and successfully decodes. Interference, incompatible settings, unavailable keys, and full queues can leave gaps.</li>
+                    <li><strong>Plan for maintenance.</strong> The connected radio and computer both need power; database files grow with traffic. KAM does not currently provide an automatic reconnect after a lost serial connection.</li>
+                </ul>
+                <p>The <a href="FeatureRoomServer.html">room-server manual</a> explains how radios can log in to a message board hosted by KAM. It does not share this database over the mesh: only posts made in a room are stored there, separately from the channel history. Room passwords are plain text in <code>kam.yml</code>, like channel keys. Weather lookups and the future authenticated Remote API are outside the current release.</p>
+            </section>
+
+            <section id="troubleshooting">
+                <h2>Troubleshooting</h2>
+                <h3>KAM cannot open the radio</h3>
+                <p>Check the USB data cable, device name, serial-access permissions, and whether another application has the port open. Confirm that the radio runs KISS modem firmware. A powered board or visible USB port alone is not enough.</p>
+                <h3>KAM starts but messages do not appear</h3>
+                <p>Confirm that nearby devices use compatible frequency, bandwidth, spreading factor, and coding rate. Check that the channel is enabled and its key matches. Test with a known nearby sender, then inspect the terminal for decoding or storage errors. A quiet terminal may simply mean no supported packets are being received.</p>
+                <h3>A script does not answer</h3>
+                <p>First confirm that the incoming message was decoded. Then check that the script is installed, enabled, and in <code>READY</code> state. <code>BROKEN</code> means its saved source could not be compiled or validated; <code>FROZEN</code> means it exceeded its time limit. The <a href="FeatureStarlark.html#troubleshooting">automation troubleshooting section</a> explains recovery.</p>
+                <h3>The modem is unplugged or stops responding</h3>
+                <p>KAM detects serial-link failures and stops the running node. Restore the connection and start KAM again; do not assume it has reconnected automatically. A firmware reset is different from an unplug: the periodic health check can notice a reset and attempt to reapply startup settings.</p>
+                <h3>You need more diagnostic information</h3>
+                <p>Stop the current process before restarting it with debug logging. Debug output is more detailed. Even normal startup logs can include channel keys, and logs can contain message data; redact keys and personal content before sharing them.</p>
+                <pre><code class="language-bash">DEBUG=1 ./kam -config kam.local.yml</code></pre>
+                <p>Report the error text, operating system, radio board, firmware role/version, and steps that reproduce the problem. Remove private channel keys and personal message content.</p>
+            </section>
+
+            <section id="reference">
+                <h2>Glossary and Sources</h2>
+                <table>
+                    <thead><tr><th>Term</th><th>Plain-language meaning</th></tr></thead>
+                    <tbody>
+                        <tr><td>Advert</td><td>A signed device announcement, not an advertisement.</td></tr>
+                        <tr><td>Channel / group text</td><td>A shared-key conversation and a message sent to it.</td></tr>
+                        <tr><td>Room server</td><td>A device offering a message board with login and history-sharing behavior; not a channel. KAM can act as one.</td></tr>
+                        <tr><td>Receive / RX; transmit / TX</td><td>Listen for incoming radio traffic; send outgoing radio traffic.</td></tr>
+                        <tr><td>Packet / frame</td><td>A unit of network data; a container carrying that data over a connection such as KISS.</td></tr>
+                        <tr><td>Firmware / host</td><td>The program on the radio board; the computer running KAM.</td></tr>
+                        <tr><td>Queue</td><td>A limited waiting list between jobs such as decoding and writing to disk.</td></tr>
+                        <tr><td>SQLite / YAML</td><td>KAM's local database; the text format used for its settings.</td></tr>
+                        <tr><td>Loopback / API</td><td>A network address pointing to this computer; an interface for programmatic requests.</td></tr>
+                        <tr><td>Starlark</td><td>The restricted scripting language used for KAM's message responders.</td></tr>
+                    </tbody>
+                </table>
+                <h3>Where to go next</h3>
+                <ul>
+                    <li><a href="FeatureStarlark.html">Starlark Automations</a>: install and manage message responders.</li>
+                    <li><a href="FeatureKissModem.html">KISS Modem</a>: radio settings, diagnostics, and modem limitations.</li>
+                    <li><a href="FeatureRoomServer.html">Room Server</a>: set up a message board that MeshCore apps can log in to.</li>
+                    <li><a href="https://docs.meshcore.io/">MeshCore documentation</a>: background and device-specific guidance.</li>
+                </ul>
+                <h3>Technical sources</h3>
+                <p>KAM behavior in this guide is based on the current <a href="../main.go">command-line implementation</a>, <a href="../internal/node/node.go">node lifecycle</a>, <a href="../internal/models/models.go">configuration model</a>, and <a href="../go.mod">Go toolchain requirement</a>. Source files are reference material; they are not instructions you must understand before using KAM.</p>
+                <ul>
+                    <li><a href="../docs/DESIGN.md">KAM system design</a> and <a href="../docs/APP_STRUCTURE.md">application structure</a>: purpose, separation of jobs, data ownership, and design philosophy. Older architectural descriptions are interpreted against current code and feature status.</li>
+                    <li><a href="../docs/FeatureStarlark.md">Starlark feature status</a>, <a href="../docs/FeatureKissModem.md">KISS feature status</a>, and <a href="../docs/FeatureRoomServer.md">room-server requirements</a>: implemented behavior, hardware-verification caveats, and planned work.</li>
+                    <li><a href="https://github.com/meshcore-dev/MeshCore/blob/07a3ca9e05b0ab23b878200b2c44b04e08131972/README.md">MeshCore project overview</a>, pinned to commit <code>07a3ca9</code> (6 June 2026): radio-network purpose and firmware roles, read in the upstream documentation.</li>
+                    <li><a href="https://github.com/meshcore-dev/MeshCore/blob/448d1b2239859ced5e44047bdc89717122ac626e/docs/kiss_modem_protocol.md">MeshCore KISS protocol</a>: serial protocol background; the <a href="../docs/FeatureKissModem.md">KAM KISS plan</a> records firmware-source corrections. Hardware-dependent behavior still needs real-radio verification.</li>
+                </ul>
+            </section>
+        </article>
+        <footer>KAM manual &middot; Beginner and novice guide &middot; Updated 10 October 2026</footer>
+    </main>
+</body>
+</html>

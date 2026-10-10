@@ -3,8 +3,8 @@
 > KAM is a regional MeshCore node: a bridge between a KISS TNC / LoRa radio
 > and durable local storage, with a pluggable consumer pipeline. It decodes
 > adverts and group texts, verifies signatures, persists traffic, optionally
-> replies to mentions on-mesh, and is shaped to grow into an operator
-> analytics surface and a MeshCore room server.
+> replies to mentions on-mesh, hosts MeshCore room servers that stock clients
+> can log in to, and is shaped to grow into an operator analytics surface.
 
 This document describes the **runtime architecture** — logical modules,
 workers, data flow, concurrency control, and lifecycle. It deliberately
@@ -24,8 +24,10 @@ unavailable. It aims to:
 - Share **emergency broadcasts** and public-safety advisories across a
   MeshCore mesh region.
 - Relay **weather updates** and similar operational bulletins.
-- Act as a **room server / bulletin-board**: aggregate and serve group-text
-  rooms over a region.
+- Act as a **MeshCore room server / bulletin board**: clients log in, post,
+  and receive pushed posts (implemented; see
+  [FeatureRoomServer.md](FeatureRoomServer.md)). Mirroring group-text channels
+  into a room is a later step.
 - Provide **operator-facing analytics** so a human can watch network health,
   congestion, and traffic composition in real time.
 
@@ -76,7 +78,7 @@ flowchart LR
     subgraph Host["Host machine"]
         Manager["KISS manager<br/>(owns serial link)"]
         Core["Decode / route / persist"]
-        Consumers["Consumers<br/>(echo, future analytics)"]
+        Consumers["Consumers<br/>(automation scripts, future analytics)"]
         Store[("Durable store")]
     end
 
@@ -97,7 +99,7 @@ Key points:
 - **Radio is constrained.** No transaction IDs and a small internal queue, so
   the manager serializes hardware access (one in-flight request at a time).
 - **Consumers loop back through the manager.** Optional outbound traffic
-  (e.g. echo replies) re-enters the radio via the manager, not directly.
+  (e.g. script replies) re-enters the radio via the manager, not directly.
 
 ### 2.1 Context view
 
@@ -133,22 +135,32 @@ flowchart TD
     Send["Outbound frame builder"]
     Persist["Persistence layer<br/>(batched writers)"]
     DB[("Database")]
-    Echo["Echo consumer"]
-    Future["Planned consumers<br/>(analytics, room server)"]
+    Automation["Automation runtime<br/>(Starlark scripts)"]
+    Mesh["Mesh primitives<br/>(packets, crypto, identity)"]
+    Scheduler["Transmit scheduler<br/>(priority, TxDone gate, duty cycle)"]
+    Room["Room servers<br/>(login, posts, push sync)"]
+    Future["Planned consumers<br/>(analytics)"]
 
     Entry --> Lifecycle
     Lifecycle --> Config
     Lifecycle --> Transport
-    Lifecycle --> Echo
+    Lifecycle --> Automation
+    Lifecycle --> Scheduler
+    Lifecycle --> Room
     Config --> DB
     Transport --> Router
     Router --> Parsers
     Router --> Persist
     Router -->|"response frames"| Registry
+    Router -->|"peer packet tap"| Room
     Registry --> RadioCtl
     RadioCtl --> Transport
-    Send --> Transport
-    Echo --> Send
+    Send --> Scheduler
+    Automation --> Send
+    Room --> Scheduler
+    Room --> Mesh
+    Room --> Persist
+    Scheduler --> Transport
     Future -.->|"subscribe"| Router
     Persist --> DB
 ```
@@ -161,20 +173,23 @@ flowchart TD
 | **Node lifecycle** | Owns all long-lived components. Construction bootstraps storage, opens the transport, and pushes + verifies radio settings. Run blocks until cancellation, then shuts components down in order. |
 | **Config loader** | Parse and validate the human-editable YAML config file; load the active channel/secret set from it directly into the in-memory decode registry; write runtime channel additions/updates back into the YAML file; resolve effective store path. |
 | **Domain models** | Pure configuration and record types; validation rules. Runtime-agnostic. |
-| **KISS transport core** | Protocol framing, read/write loops, dispatch loop, response routing, deduplication, radio-quality metadata staging, hardware serialization. |
-| **Payload router** | Decode the frame header (route type, payload type, version); slice transport/path bytes; deduplicate; dispatch to the correct parser and onward sinks. Owns **no** parsing logic. |
+| **KISS transport core** | Protocol framing, read/write loops, dispatch loop, response routing, time-bounded deduplication, radio-quality metadata staging, hardware serialization. |
+| **Payload router** | Decode the frame header (route type, payload type, version); slice transport/path bytes; deduplicate; dispatch to the correct parser and onward sinks, and deliver peer packets (requests, text messages, ACKs, logins, paths) with their route, scope and path intact to the packet tap. Owns **no** parsing logic. |
 | **Payload parsers** | One module per payload type. Adverts (signature verification), group texts (channel-secret decryption). Independently testable. |
 | **Hardware response registry** | Maps hardware responses back to the single in-flight request. Channels are capacity-1 so dispatch never blocks. |
 | **Radio control client** | Synchronous, context-aware get/set/apply operations over the transport; serialized by the hardware mutex. |
 | **Outbound frame builder** | Constructs group-text data frames from channel + body, encrypting with the channel secret. |
+| **Transmit scheduler** | Owns the radio data path for every producer: validates packets, orders them by priority with per-packet delay and cancellation, hands the transport one frame at a time and waits for the modem's transmit-done event, and keeps deferrable traffic (pushes, adverts) inside a duty-cycle budget. |
+| **Mesh primitives** | Transport-independent MeshCore wire logic: packet framing, the shared-secret envelope, identities with signing and key exchange, signed adverts, region keys and transport codes. |
+| **Room servers** | One worker owns every room: logins and roles, posts committed before they are acknowledged, round-robin push sync, keep-alive, adverts, session persistence. See [FeatureRoomServer.md](FeatureRoomServer.md). |
 | **Persistence layer** | Batched, non-blocking writers for each record type; exposes counters for depth, drops, and flushes. Implements the sink interface used by the router. |
-| **Echo consumer** | Subscribes to decoded group texts, filters mentions of the local node, replies via the outbound sender on a dedicated worker. |
+| **Automation runtime** | Subscribes to decoded group texts and runs operator-managed Starlark scripts sequentially on a dedicated bounded-queue worker; scripts reply via the outbound sender. Exposes a loopback-only management API. |
 
 > **Extensibility seam.** The consumer tap is the integration point for any
 > new subscriber: analytics aggregation, room-server fan-out, emergency
 > detection, dashboards. Each subscriber receives the decrypted message plus
 > attached radio-quality metadata. Subscribers **must not block** the dispatch
-> loop; the echo service demonstrates the bounded-queue + worker pattern.
+> loop; the automation runtime demonstrates the bounded-queue + worker pattern.
 
 ---
 
@@ -192,7 +207,7 @@ flowchart TD
     Route["Dispatch worker<br/>(frames → sinks)"]
     AdvertWriter["Advert batch writer"]
     GtWriter["Group-text batch writer"]
-    EchoWorker["Echo worker<br/>(bounded queue)"]
+    AutomationWorker["Automation worker<br/>(bounded queue)"]
     Analytics["Planned: analytics aggregator"]
     Req["Radio request workers<br/>(short-lived)"]
 
@@ -201,10 +216,10 @@ flowchart TD
     Main --> Route
     Main --> AdvertWriter
     Main --> GtWriter
-    Main --> EchoWorker
+    Main --> AutomationWorker
     Route -.-> AdvertWriter
     Route -.-> GtWriter
-    Route -.-> EchoWorker
+    Route -.-> AutomationWorker
     Route -.-> Analytics
     Req --> Write
     Read --> Route
@@ -220,12 +235,12 @@ flowchart TD
 | 4 | Dispatch | transport core | start → stop | consumes inbound frames, routes to registry / parsers / sinks / subscribers |
 | 5 | Advert batch writer | persistence | open → stop | consumes advert queue, batches into storage |
 | 6 | Group-text batch writer | persistence | open → stop | consumes group-text queue, batches into storage |
-| 7 | Echo | echo consumer | open → stop | consumes bounded queue, builds + sends replies |
+| 7 | Automation | automation runtime | start → stop | consumes bounded queue, runs scripts sequentially, sends their replies |
 | 8 | Analytics aggregator *(planned)* | future module | — | subscribes via the consumer tap; periodic snapshots |
 | * | Radio request | caller | per get/set call | registers a response waiter, enqueues, blocks on reply |
 
 > Worker 8 is **not yet implemented**. It is recorded to make the intended
-> growth direction explicit. Echo (7) is currently the only non-persistence
+> growth direction explicit. Automation (7) is currently the only non-persistence
 > consumer of the group-text tap.
 
 ---
@@ -274,7 +289,7 @@ Outbound frames flow through a single **bounded outbound queue** with one
 writer:
 
 - Producers: radio control (control frames) and the outbound sender
-  (group-text data frames, used by echo).
+  (group-text data frames, used by script replies).
 - Because there is exactly one writer, the data path needs no extra
   serialization. Control-path serialization is the **hardware mutex**.
 
@@ -400,19 +415,19 @@ sequenceDiagram
     Route->>Tap: notify subscribers
 ```
 
-### 5.3 Outbound group text (echo reply)
+### 5.3 Outbound group text (script reply)
 
 ```mermaid
 sequenceDiagram
     participant Tap as Group-text tap
-    participant Echo as Echo worker
+    participant Auto as Automation worker
     participant Builder as Frame builder
     participant TxQ as Outbound queue
     participant Write as Write worker
     participant Radio
 
-    Tap->>Echo: mention detected (non-blocking enqueue)
-    Echo->>Builder: build reply for channel + body
+    Tap->>Auto: group text (non-blocking enqueue)
+    Auto->>Builder: script calls reply(channel, text)
     Builder->>Builder: encrypt with channel secret
     Builder->>TxQ: enqueue data frame
     TxQ->>Write: dequeue
@@ -485,10 +500,8 @@ flowchart TD
     C --> D["Open transport"]
     D --> E["Start read / write / dispatch workers"]
     E --> F["Push + verify radio config"]
-    F --> G{"Echo enabled?"}
-    G -->|yes| H["Start echo worker<br/>subscribe to group-text tap"]
-    G -->|no| I["Ready"]
-    H --> I
+    F --> G["Start automation runtime (best effort)<br/>subscribe to group-text tap"]
+    G --> I["Ready"]
     I --> J["Block on termination signal"]
 ```
 
@@ -498,8 +511,8 @@ Failure at any step tears down everything opened so far.
 
 ```mermaid
 flowchart TD
-    Sig["Termination signal"] --> EchoStop["1. Stop echo worker<br/>(drain before TX path exits)"]
-    EchoStop --> StopLoops["2. Stop transport core<br/>(read / write / dispatch exit)"]
+    Sig["Termination signal"] --> AutoStop["1. Stop automation runtime<br/>(drain before TX path exits)"]
+    AutoStop --> StopLoops["2. Stop transport core<br/>(read / write / dispatch exit)"]
     StopLoops --> Drain["3. Drain + flush persistence queues"]
     Drain --> CloseDB["4. Close storage"]
     CloseDB --> CloseTransport["5. Close transport"]
@@ -508,7 +521,7 @@ flowchart TD
 
 **Ordering invariants:**
 
-- **Echo before transport core** — the echo worker must not enqueue outbound
+- **Automation before transport core** — scripts must not enqueue outbound
   frames into a write path that has already exited.
 - **Persistence flush before storage close** — no ingested traffic is lost.
 - **Storage close before transport close** — no sink references a closed
@@ -591,13 +604,13 @@ and periodically snapshots them to an operator-facing surface.
 
 ---
 
-## 9. Room-server role (planned)
+## 9. Room-server role (implemented for plan phases 1-3)
 
 A MeshCore room server is a node advertising a **room** type. It is a
-**bulletin board**: it persists posts in a cyclic queue, pushes new posts to
-logged-in clients, and selectively forwards mesh packets. This traffic is
-**direct** (ECDH-derived shared secret), **not** group text, so KAM's current
-group-text path does not capture it.
+**bulletin board**: it persists posts, pushes new posts to logged-in clients,
+and (in the reference firmware, not in KAM) can forward mesh packets. This
+traffic is **direct** (ECDH-derived shared secret), **not** group text, so it
+reaches KAM through the peer-packet tap rather than the group-text path.
 
 ### 9.1 Conceptual login / post / push
 
@@ -628,28 +641,27 @@ sequenceDiagram
 | Read-write | guest/"room" password | Post + read |
 | Read-only | no password (if allowed) | Read only, no ACK on posts |
 
-### 9.3 Implications for KAM
+KAM enforces the intent of the table: only read-write and admin clients may
+post (the reference firmware also lets role 1 post by accident).
 
-Acting as a room server means implementing, on top of the existing transport
-core and outbound sender:
+### 9.3 How KAM implements it
 
-1. **Login request handling + session table** — the anonymous-request payload
-   is not yet routed (only adverts + group texts are). Add a parser and a
-   client/session store (the access-list analogue).
-2. **Crypto** — the hardware already exposes key exchange, encrypt/decrypt,
-   sign/verify, and hashing primitives. A room server can drive these through
-   the response registry rather than reimplementing crypto natively, keeping
-   KAM a thin, auditable bridge.
-3. **Post store + push state machine** — cyclic buffer plus per-client sync
-   watermark, pending-ACK, and failure counters with a round-robin push loop.
-   A natural new worker alongside echo.
-4. **Path learning** — handle path and ACK payloads to advance sync and learn
-   routes.
-5. **Flood scoping** — preserve transport/region codes on replies so traffic
-   stays within a region.
-6. **Operator metrics** — query room servers/repeaters for their status
-   payload and aggregate it into the analytics surface, giving cross-node
-   congestion/airtime/duplicate visibility without each node self-reporting.
+1. **Login handling + session table** — the router delivers the anonymous
+   request to the packet tap; the room keeps a bounded client table (least
+   recently active non-admin evicted) with per-client replay protection, and
+   persists sessions so a restart does not force a re-login.
+2. **Crypto** — KAM holds each room's identity and runs the key exchange and
+   signing itself; the modem's identity and crypto commands are not used, because
+   the modem cannot be given a chosen identity and its encrypt/decrypt take a
+   caller-supplied key anyway.
+3. **Post store + push state machine** — posts live in SQLite and are committed
+   before they are acknowledged; per-client sync watermark, pending-ACK and
+   failure counters drive a round-robin push loop on the room worker.
+4. **Path learning** — path and ACK payloads advance sync and store routes.
+5. **Flood scoping** — replies reuse the request's region when known; adverts
+   and pushes use a configured default region.
+6. **Operator metrics** — not yet: status requests get no reply, and KAM does
+   not yet query other room servers for theirs.
 
 ---
 
@@ -683,8 +695,9 @@ allow**, not commitments:
 
 1. **Operator metrics API / dashboard** — export queue metrics and traffic
    rollups; aggregator taps the consumer stream plus queue counters.
-2. **Room-server surface** — serve persisted group-text history and live tails
-   to operators / bridged clients.
+2. **Room administration and history surfaces** — the room server itself is
+   implemented; management endpoints for clients, roles and posts, a status
+   reply, and group-text history/live tails for operators are not.
 3. **New payload-type parsers** — one module per type. The router is a pure
    dispatcher; emergency/weather payloads plug in without touching it.
 4. **Originating broadcasts** — emergency/weather/ops via the outbound sender,

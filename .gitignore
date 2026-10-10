@@ -3,5 +3,9 @@ kam.bytecoder.nl
 *.db-shm
 *.db-wal
 
+# Room identity keys (private; created next to the database)
+/rooms/
+*.key
+
 /.agents/skills
 /skills-lock.json

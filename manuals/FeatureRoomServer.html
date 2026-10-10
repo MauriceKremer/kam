@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Room Server Manual</title>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: true, theme: 'base', themeVariables: {
+            darkMode: true, background: '#101012', primaryColor: '#222225',
+            primaryTextColor: '#F5F5F7', primaryBorderColor: '#A1A1A8',
+            lineColor: '#A1A1A8', secondaryColor: '#18181B', tertiaryColor: '#2C2C30',
+            textColor: '#F5F5F7', edgeLabelBackground: '#18181B',
+            actorBkg: '#222225', actorBorder: '#A1A1A8', actorTextColor: '#F5F5F7',
+            signalColor: '#C5C5CA', signalTextColor: '#F5F5F7',
+            labelBoxBkgColor: '#18181B', labelBoxBorderColor: '#A1A1A8',
+            labelTextColor: '#F5F5F7', loopTextColor: '#F5F5F7',
+            noteBkgColor: '#2C2C30', noteTextColor: '#F5F5F7', noteBorderColor: '#A1A1A8',
+            fontFamily: '-apple-system, BlinkMacSystemFont, Helvetica Neue, Segoe UI, sans-serif'
+        } });
+    </script>
+    <link href="manuals.css" rel="stylesheet">
+    <script src="manuals.js" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <!-- Sidebar -->
+    <aside>
+        <div class="manual-brand"><strong>KAM</strong><span>Documentation</span></div>
+        <details class="manual-navigation" open>
+        <summary>Contents</summary>
+        <details class="navigation-section" open>
+        <summary>On this page</summary>
+        <nav class="space-y-3" aria-label="On this page">
+            <a href="#overview" class="block text-sm text-slate-600 hover:text-blue-600 transition">Overview</a>
+            <a href="#status" class="block text-sm text-slate-600 hover:text-blue-600 transition">Status</a>
+            <a href="#terminology" class="block text-sm text-slate-600 hover:text-blue-600 transition">Terminology</a>
+            <a href="#setup" class="block text-sm text-slate-600 hover:text-blue-600 transition">Setting Up a Room</a>
+            <a href="#workflow" class="block text-sm text-slate-600 hover:text-blue-600 transition">How it Works</a>
+            <a href="#cryptography" class="block text-sm text-slate-600 hover:text-blue-600 transition">Cryptography</a>
+            <a href="#roles" class="block text-sm text-slate-600 hover:text-blue-600 transition">Roles</a>
+            <a href="#limits" class="block text-sm text-slate-600 hover:text-blue-600 transition">Limits</a>
+            <a href="#kam-differences" class="block text-sm text-slate-600 hover:text-blue-600 transition">How KAM Differs</a>
+            <a href="#operations" class="block text-sm text-slate-600 hover:text-blue-600 transition">Operating a Room</a>
+            <a href="#troubleshooting" class="block text-sm text-slate-600 hover:text-blue-600 transition">Troubleshooting</a>
+            <a href="#technical" class="block text-sm text-slate-600 hover:text-blue-600 transition">Technical Deep Dive</a>
+        </nav>
+        </details>
+        <details class="navigation-section" open>
+        <summary>Manuals</summary>
+        <nav class="space-y-3" aria-label="Manuals">
+            <a href="KAM.html">KAM Guide</a>
+            <a href="FeatureRoomServer.html" aria-current="page">Room Server</a>
+            <a href="FeatureKissModem.html" class="block text-sm text-slate-600 hover:text-blue-600 transition">KISS Modem</a>
+            <a href="FeatureStarlark.html" class="block text-sm text-slate-600 hover:text-blue-600 transition">Starlark Automations</a>
+        </nav>
+        </details>
+        </details>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main-content" tabindex="-1">
+        <header>
+            <span>Feature Manual</span>
+            <h1>MeshCore Room Server</h1>
+            <p>Run a bulletin board on your mesh that stock MeshCore apps and radios can log in to.</p>
+            <p class="mt-4"><span class="badge badge-green">Implemented (phases 1-3)</span> <span class="badge badge-amber">Hardware verification pending</span> <span class="text-sm text-slate-500 ml-2">Requirements and decisions: <code>docs/FeatureRoomServer.md</code></span></p>
+        </header>
+
+        <article class="prose prose-slate max-w-none">
+
+            <!-- Overview -->
+            <section id="overview">
+                <h2>Overview</h2>
+                <p>A <strong class="text-blue-600">Room Server</strong> is a MeshCore node type (advert type <code>ROOM</code>) that works as a shared bulletin board. Clients log in with a password, post messages, and the server stores them and later <em>pushes</em> them to clients, including ones that were offline when the post was made. A room is different from a channel (group text): a channel is a shared-key broadcast that only people online at that moment see, while a room has its own identity and access control and keeps a history.</p>
+
+                <div class="info-box info-box-blue">
+                    <strong class="text-blue-700">Key concept:</strong> think of a digital message board. Users log in to the board, leave messages, and when they come back online the board pushes them what they missed, one message at a time.
+                </div>
+
+                <p><strong>Example.</strong> You run KAM at a hilltop site and add a room called "KAM Lobby". A hiker with the MeshCore app imports the room, logs in with the guest password and posts "Trail closed at the ridge". Ten minutes later a second hiker, who was out of range, logs in. KAM pushes the post to that hiker's app. Both posts survive a KAM restart.</p>
+
+                <p>This manual describes the behaviour of MeshCore's reference room server (firmware <code>v1.17.1</code>, source commit <code>a366955</code>, 2026-09-30) because a stock MeshCore app must be able to use KAM's room. Where KAM deliberately differs, the text says so.</p>
+            </section>
+
+            <!-- Status -->
+            <section id="status">
+                <h2>Status</h2>
+                <div class="info-box info-box-amber">
+                    <strong>Tested in software, not yet on a real radio.</strong> The room server is built and covered by automated tests, including an in-process fake client and a test that drives a login through KAM's real packet pipeline. It has not yet been run against a real MeshCore app or radio, and the airtime numbers in this manual are estimates. Treat a first deployment as a trial.
+                </div>
+                <table>
+                    <thead><tr><th>Capability</th><th>Status</th><th>Notes</th></tr></thead>
+                    <tbody>
+                        <tr><td>Login, roles and replay protection</td><td><span class="badge badge-green">Implemented</span></td><td>Admin, read-write and guest logins; a wrong password gets no answer, as in MeshCore.</td></tr>
+                        <tr><td>Posting with commit-before-acknowledge</td><td><span class="badge badge-green">Implemented</span></td><td>A post is written to the database before the confirmation is sent.</td></tr>
+                        <tr><td>Push sync to clients, backlog window</td><td><span class="badge badge-green">Implemented</span></td><td>One push at a time per client, with retries and a stop after three failures.</td></tr>
+                        <tr><td>Keep-alive requests</td><td><span class="badge badge-green">Implemented</span></td><td>Direct routes only, as in MeshCore.</td></tr>
+                        <tr><td>Signed <code>ROOM</code> adverts</td><td><span class="badge badge-green">Implemented</span></td><td>At start-up, every 2 minutes (zero-hop) and every 47 hours (flood) by default.</td></tr>
+                        <tr><td>Sessions survive a restart</td><td><span class="badge badge-green">Implemented</span></td><td>Role, sync cursor, route and replay timestamp are stored.</td></tr>
+                        <tr><td>Up to 4 rooms on one radio</td><td><span class="badge badge-green">Implemented</span></td><td>Each room has its own key, clients, posts and passwords.</td></tr>
+                        <tr><td>Airtime cap for pushes and adverts</td><td><span class="badge badge-green">Implemented</span></td><td>Based on an estimate of airtime, not a modem measurement.</td></tr>
+                        <tr><td><code>kam room show</code> command</td><td><span class="badge badge-green">Implemented</span></td><td>Prints each room's public key, contact link and signed advert.</td></tr>
+                        <tr><td>Status, telemetry and access-list requests</td><td><span class="badge badge-slate">Not implemented</span></td><td>KAM sends no reply, so an app that asks for a room's status times out.</td></tr>
+                        <tr><td>Management API (clients, roles, posts, forced advert)</td><td><span class="badge badge-slate">Planned</span></td><td>Until then roles change only by logging in with another password.</td></tr>
+                        <tr><td>Over-the-air admin commands</td><td><span class="badge badge-slate">Not planned for v1</span></td><td>KAM acknowledges nothing and answers nothing for them.</td></tr>
+                        <tr><td>Test with real radios and apps</td><td><span class="badge badge-amber">Pending</span></td><td>Needed to confirm timing, airtime and the status-reply layout.</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Terminology -->
+            <section id="terminology">
+                <h2>Terminology</h2>
+                <p>To understand how Room Servers function, it is important to know these terms:</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Term</th>
+                            <th>Definition</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><strong>Room</strong></td><td>The post history of one room server. One identity is one room. (This is the MeshCore meaning; KAM does not mirror its group-text channels into rooms.)</td></tr>
+                        <tr><td><strong>Client</strong></td><td>A MeshCore node (a radio or phone app) that has successfully logged in to the room.</td></tr>
+                        <tr><td><strong>Post</strong></td><td>A text stored by the room with the author's public key and a timestamp assigned by the server.</td></tr>
+                        <tr><td><strong>Push</strong></td><td>The server sending one stored post to one client, then waiting for that client's ACK.</td></tr>
+                        <tr><td><strong>ACK</strong></td><td>A 4-byte acknowledgement. The server sends one for each accepted post; the client sends one for each push.</td></tr>
+                        <tr><td><strong>Sync cursor</strong> (<code>sync_since</code>)</td><td>A per-client timestamp bookmark. Posts newer than it are still owed to that client.</td></tr>
+                        <tr><td><strong>Out path</strong></td><td>The stored direct route from the server to a client. If it is unknown, the server uses a flood (broadcast) instead.</td></tr>
+                        <tr><td><strong>Advert</strong></td><td>A signed announcement that a node exists. A room's advert has type <code>ROOM</code>.</td></tr>
+                        <tr><td><strong>Public key / identity</strong></td><td>The room's address, a 32-byte Ed25519 key. KAM stores the secret part in a key file; losing it changes the room's address.</td></tr>
+                        <tr><td><strong>Scope / region</strong></td><td>A namespace on flood packets (transport codes) that lets repeaters limit where a flood travels.</td></tr>
+                        <tr><td><strong>Role</strong></td><td>What a logged-in client may do: <code>GUEST</code> 0, <code>READ_ONLY</code> 1, <code>READ_WRITE</code> 2, <code>ADMIN</code> 3.</td></tr>
+                        <tr><td><strong>YAML</strong></td><td>The plain-text format of <code>kam.yml</code>, KAM's configuration file.</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Setup -->
+            <section id="setup">
+                <h2>Setting Up a Room</h2>
+                <p><strong>Prerequisites.</strong> KAM already runs with its radio connected (see the <a href="KAM.html">KAM Guide</a>), you can edit <code>kam.yml</code> on the host computer, and you have a MeshCore app or radio to test with. All commands below run in the KAM directory on the host.</p>
+
+                <h3>1. Add the room to kam.yml</h3>
+                <p>Add a <code>rooms:</code> list. The optional <code>mesh:</code> block sets radio-wide choices; <code>default_scope</code> should name the region your local repeaters expect, because repeaters may drop floods that carry no region.</p>
+                <pre><code class="language-yaml">mesh:
+  default_scope: "#region"     # leave out to send unscoped floods
+  duty_cycle_percent: 10       # airtime cap for pushes and adverts, 0 = off
+rooms:
+  - id: lobby
+    name: "KAM Lobby"
+    admin_password: "change-me-now"
+    guest_password: "letmein"      # read-write
+    allow_read_only: false         # true lets any other password log in as a guest</code></pre>
+                <p>Passwords go in <code>kam.yml</code> as plain text, the same as channel keys.</p>
+                <p>Rules KAM checks when it starts: the <code>id</code> uses lowercase letters, digits, <code>-</code> or <code>_</code>; the <code>name</code> is at most 31 bytes (23 with a location); the admin password is required, at most 15 bytes and not <code>password</code>; a guest password and <code>open_room</code> cannot be combined. A room that breaks a rule is reported in the log and stays off; your other rooms and the radio keep working.</p>
+
+                <h3>2. Print the room's key and advert</h3>
+                <pre><code class="language-bash">./kam room show
+./kam room show -config ~/kam-prod.yml -db /var/lib/kam/kam.db</code></pre>
+                <p>The command creates the room's identity key if it does not exist yet, then prints (long values shortened here):</p>
+                <pre><code class="language-text">Room lobby ("KAM Lobby")
+  public key : 8a88e3dd...5c6f
+  hash       : 8a
+  key file   : rooms/lobby.key (created now; back it up, it is the room's address)
+  contact URI: meshcore://contact/add?name=KAM+Lobby&amp;public_key=8a88e3dd...5c6f&amp;type=3
+  advert hex : 10...</code></pre>
+                <p>The key file is a single line of hex in a <code>rooms</code> directory next to the database. The <em>public key</em> is safe to share; the key file is not.</p>
+
+                <h3>3. Start KAM and import the room</h3>
+                <pre><code class="language-bash">./kam</code></pre>
+                <p>The log shows the room's public key and <code>room ready</code>. KAM sends one advert at start-up. In the MeshCore app, import the room with the contact link or QR code (the app understands <code>meshcore://contact/add</code> links), or wait for the app to hear the advert. Then log in with one of the passwords and post a test message.</p>
+
+                <h3>4. Back up the identity</h3>
+                <p>Copy the <code>rooms</code> directory together with <code>kam.db</code>. If you restore the database without the key, KAM creates a new key, the room gets a new address, and clients must import it again (the log warns: <em>identity differs from the one stored</em>).</p>
+
+                <h3>Settings reference</h3>
+                <table>
+                    <thead><tr><th>Setting</th><th>Default</th><th>Meaning</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>id</code></td><td>required</td><td>Names the identity file <code>rooms/&lt;id&gt;.key</code>. At most 32 characters.</td></tr>
+                        <tr><td><code>name</code></td><td>required</td><td>The name clients see (the advert name).</td></tr>
+                        <tr><td><code>enabled</code></td><td><code>true</code></td><td>Set to <code>false</code> to switch a room off without deleting it.</td></tr>
+                        <tr><td><code>admin_password</code></td><td>required</td><td>Grants the admin role. At most 15 bytes, never <code>password</code>.</td></tr>
+                        <tr><td><code>guest_password</code></td><td>none</td><td>Grants the read-write role. At most 15 bytes.</td></tr>
+                        <tr><td><code>open_room</code></td><td><code>false</code></td><td>With <code>true</code> and no guest password, a blank password logs in as read-write. Anyone can then post.</td></tr>
+                        <tr><td><code>allow_read_only</code></td><td><code>false</code></td><td>Any other password logs in as a guest who can read but not post.</td></tr>
+                        <tr><td><code>location</code></td><td>none</td><td><code>latitude</code> and <code>longitude</code> advertised with the room.</td></tr>
+                        <tr><td><code>max_clients</code></td><td>20</td><td>Client table size, 1-100.</td></tr>
+                        <tr><td><code>advert_interval_min</code></td><td>2</td><td>Minutes between zero-hop adverts; 0 turns them off.</td></tr>
+                        <tr><td><code>flood_advert_interval_hours</code></td><td>47</td><td>Hours between flood adverts; 0 turns them off, otherwise 3-168.</td></tr>
+                        <tr><td><code>max_posts</code>, <code>max_age_days</code></td><td>1000, 30</td><td>How much history to keep; 0 means no limit.</td></tr>
+                        <tr><td><code>backlog_posts</code></td><td>32</td><td>The newest posts a returning client is sent, 1-256.</td></tr>
+                        <tr><td><code>mesh.path_hash_size</code></td><td>1</td><td>Bytes per path hash on floods KAM sends. Keep 1 unless every repeater runs firmware 1.14 or newer.</td></tr>
+                        <tr><td><code>mesh.default_scope</code>, <code>mesh.regions</code></td><td>none</td><td>Region for adverts and unknown-scope replies; further regions recognised on incoming floods.</td></tr>
+                        <tr><td><code>mesh.duty_cycle_percent</code></td><td>10</td><td>Share of each hour KAM may spend transmitting pushes and adverts; ACKs and login replies are never held back.</td></tr>
+                    </tbody>
+                </table>
+                <p>Room settings are read when KAM starts. Restart KAM after you change them. At most 4 rooms run at once.</p>
+            </section>
+
+            <!-- Workflow -->
+            <section id="workflow">
+                <h2>How it Works</h2>
+                <p>The interaction follows a specific lifecycle:</p>
+
+                <h3>1. Discovery</h3>
+                <p>The room announces itself with a signed <strong class="text-blue-600">ROOM advert</strong> containing its public key, name and optionally location. KAM sends a flood advert at start-up (in the default scope), a zero-hop advert every 2 minutes and a flooded one every 47 hours, all configurable; several rooms start 2 seconds apart. A client does not log in automatically when it hears an advert. Whether the app adds the room as a contact depends on its own policy and hop limit, and importing the contact link is the fallback. Clients ignore an advert whose timestamp is not newer than the last one they stored for that room.</p>
+
+                <h3>2. Login</h3>
+                <p>The client sends an encrypted <strong class="text-blue-600">Login Request</strong> (an anonymous request that carries its own public key) containing its clock, its sync cursor and a password. The server decides:</p>
+                <table>
+                    <thead><tr><th>Condition</th><th>Outcome</th></tr></thead>
+                    <tbody>
+                        <tr><td>Blank password from a client the server already knows</td><td>Accepted without re-checking; cursor, pending push, failures and route are left alone.</td></tr>
+                        <tr><td>Password equals the admin password</td><td>Logged in as <code>ADMIN</code>.</td></tr>
+                        <tr><td>Password equals the guest password (or blank on an open room)</td><td>Logged in as <code>READ_WRITE</code> (despite the name, this is the posting role).</td></tr>
+                        <tr><td>Anything else, and <code>allow_read_only</code> is on</td><td>Logged in as <code>GUEST</code>.</td></tr>
+                        <tr><td>Anything else, and <code>allow_read_only</code> is off</td><td><strong>No response at all.</strong> The client simply times out; the server never says "wrong password".</td></tr>
+                        <tr><td>New login with a timestamp not newer than the last one from that client</td><td>Dropped as a replay.</td></tr>
+                        <tr><td>Too many attempts from one key (more than 5 quickly, then one every 2 seconds) or from all keys together</td><td>Dropped without any work, so password guessing over the radio stays slow.</td></tr>
+                    </tbody>
+                </table>
+                <p>On success the server stores the client's cursor, clears any pending push and failure count, remembers the shared secret, and waits 2 seconds before its first push. It answers with a small <strong>Login Response</strong> (server time, role and permissions, a random value and a firmware level) about 300 ms later.</p>
+
+                <h3>3. Posting a message</h3>
+                <p>A client sends a text message to the server. The server drops replays, checks the client's role, stores the post and, <strong>only after the post is durably stored</strong>, sends an <strong class="text-blue-600">ACK</strong> about 200 ms later. If the write fails, KAM sends no ACK and the client simply retries. A retry with the same client timestamp is acknowledged again but not stored twice. A <code>GUEST</code> post is not accepted and gets no ACK. Post text is limited to 150 bytes. An empty post is acknowledged but not stored.</p>
+
+                <h3>4. Receiving pushes (catching up)</h3>
+                <p>The server walks through its clients in turn. For a client that is due, it pushes the oldest post newer than the client's cursor (never the client's own posts, and only if the post is at least 6 seconds old). The client must acknowledge each push before the server sends the next to that client, which keeps the radio link from being flooded. A matching ACK moves the cursor forward. A missing ACK counts as a failure; after 3 failures the server stops pushing to that client until the client shows activity again.</p>
+
+                <div class="mermaid">
+                    sequenceDiagram
+                        participant C as Client
+                        participant S as Room Server
+                        S-->>C: ROOM advert (signed)
+                        C->>S: 1. Login request (password, sync cursor)
+                        S-->>C: 2. Login response (role)
+                        C->>S: 3. Post message
+                        S-->>C: 4. Post ACK (after the post is stored)
+                        S->>C: 5. Push a stored post
+                        C-->>S: 6. Push ACK (cursor advances)
+                </div>
+
+                <h3>Push state for one client</h3>
+                <div class="mermaid">
+                    stateDiagram-v2
+                        [*] --> Idle: login OK
+                        Idle --> AwaitingAck: unsynced post at least 6 s old and the client has its turn
+                        AwaitingAck --> Idle: matching ACK and the cursor advances
+                        AwaitingAck --> Idle: ACK timeout and failures plus 1
+                        Idle --> Starved: 3 failures
+                        Starved --> Idle: client activity such as login or text
+                </div>
+
+                <h3>Routes and paths</h3>
+                <p>Replies travel either <em>direct</em> along a stored out path or as a <em>flood</em>. When a client receives a flooded packet from the server, it sends back a short <strong>PATH</strong> packet that carries the route it saw, and the server remembers that route as the client's out path. A flooded login or request is answered with a path return so the client learns the route; the server never sends a reciprocal path back. After three failed pushes KAM also forgets the route, so the next exchange finds a fresh one.</p>
+
+                <h3>Keep-alive and other requests</h3>
+                <p>Clients may send small requests (<code>REQ</code>): <code>0x01</code> status, <code>0x02</code> keep-alive, <code>0x03</code> telemetry, <code>0x05</code> access list (admin). KAM answers keep-alive only. Keep-alive works on direct routes. It refreshes the client's activity, may force the sync cursor, clears a pending push, and replies with an ACK plus a one-byte count of posts still owed. The other request types get no reply; KAM counts them. Any authenticated message or request from a client resets its failure count.</p>
+            </section>
+
+            <!-- Cryptography -->
+            <section id="cryptography">
+                <h2>Cryptography</h2>
+                <p>Room traffic between a client and the server is encrypted. These are MeshCore's protocol choices; KAM matches them exactly to interoperate.</p>
+                <ul class="space-y-2">
+                    <li><strong>Identity:</strong> each room has an <strong>Ed25519</strong> key pair. The 32-byte public key is the room's address, and its first byte (the "node hash") is what packets carry. Keys starting with <code>0x00</code> or <code>0xFF</code> are not allowed, and KAM avoids giving two of its rooms the same first byte.</li>
+                    <li><strong>Shared secret:</strong> client and server each compute the same 32-byte secret from their own private key and the other's public key (an X25519 key exchange derived from the Ed25519 keys). The secret itself is never transmitted.</li>
+                    <li><strong>Encryption:</strong> <strong>AES-128</strong> using the first 16 bytes of the secret, in ECB mode with zero padding to 16-byte blocks. That is how the reference firmware works, so KAM does the same.</li>
+                    <li><strong>Integrity:</strong> a <strong>MAC</strong> of <strong>HMAC-SHA-256</strong> over the ciphertext (keyed with all 32 secret bytes) cut to its first 2 bytes. The wire form is <code>MAC | ciphertext</code>.</li>
+                    <li><strong>Not everything is encrypted:</strong> adverts are <em>signed</em>, not encrypted, so anyone can read a room's name and public key. ACKs are a bare 4-byte hash. Packet headers, route and path are visible.</li>
+                </ul>
+                <p>KAM holds each room's identity itself and does the signing and key exchange in software (the modem cannot be given a chosen identity). The key exchange is checked against a test key pair taken from MeshCore's own source, so a MeshCore client computes the same secret. Only the 32-byte seed is stored, as hex, in the room's key file.</p>
+            </section>
+
+            <!-- Roles -->
+            <section id="roles">
+                <h2>Roles &amp; Permissions</h2>
+                <p>Once logged in, a client has a role. Login itself only hands out three of the four roles: the admin password gives <code>ADMIN</code>, the guest password gives <code>READ_WRITE</code>, and <code>allow_read_only</code> gives <code>GUEST</code>. <code>READ_ONLY</code> exists in the protocol but cannot be assigned by logging in; today KAM has no way to assign it, because role changes need the management API.</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Role</th>
+                            <th>Reference firmware</th>
+                            <th>KAM</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="font-semibold">GUEST (0)</td>
+                            <td>Receives pushes. Cannot post: a post gets no ACK.</td>
+                            <td>Same.</td>
+                        </tr>
+                        <tr>
+                            <td class="font-semibold">READ_ONLY (1)</td>
+                            <td><strong>Can post.</strong> The firmware only blocks role 0, so despite the name this role posts.</td>
+                            <td>Cannot post. KAM enforces the intended meaning.</td>
+                        </tr>
+                        <tr>
+                            <td class="font-semibold">READ_WRITE (2)</td>
+                            <td>Reads and posts.</td>
+                            <td>Reads and posts.</td>
+                        </tr>
+                        <tr>
+                            <td class="font-semibold">ADMIN (3)</td>
+                            <td>Reads and posts, can request the access list, and can send CLI commands over the air.</td>
+                            <td>Reads and posts, and is never evicted from the client table. Access-list requests and over-the-air commands get no reply.</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="info-box info-box-amber">
+                    <strong>Open rooms:</strong> with a blank guest password the reference firmware lets anyone log in as <code>READ_WRITE</code>. KAM only allows that if you explicitly set <code>open_room: true</code>.
+                </div>
+            </section>
+
+            <!-- Limits -->
+            <section id="limits">
+                <h2>Limits to Plan Around</h2>
+                <table>
+                    <thead><tr><th>Item</th><th>Value</th><th>Note</th></tr></thead>
+                    <tbody>
+                        <tr><td>Post text</td><td>150 bytes</td><td>The reference constant says 151, but its copy keeps at most 150. KAM truncates at a UTF-8 boundary, so a multi-byte character is never split.</td></tr>
+                        <tr><td>Stored posts</td><td>Reference: 32, in RAM only</td><td>Lost on reboot. KAM stores posts in SQLite (default newest 1000 and at most 30 days) and sends a returning client the newest 32.</td></tr>
+                        <tr><td>Clients</td><td>20</td><td>When full, the least recently active non-admin is evicted. KAM's limit is configurable (1-100).</td></tr>
+                        <tr><td>Rooms</td><td>4</td><td>All rooms share one radio and one airtime budget.</td></tr>
+                        <tr><td>Password length</td><td>15 bytes</td><td>Clients truncate longer passwords, so KAM rejects longer configured ones.</td></tr>
+                        <tr><td>Pushes in flight</td><td>1 per client</td><td>Round-robin across clients, at most one every 1.2 s (150 ms between idle scans). A post must be 6 s old first.</td></tr>
+                        <tr><td>Push ACK timeout</td><td>12 s flood; 4 s + 2 s &times; (hops + 1) direct</td><td>Each timeout is one failure; 3 failures pause the client.</td></tr>
+                        <tr><td>Packet size</td><td>Payload 184 B, path 64 B, frame 255 B</td><td>A push fits in a single packet (about 164 bytes).</td></tr>
+                        <tr><td>Airtime</td><td>About 0.53 s for a 166-byte packet</td><td>At the example radio settings (SF 7, 62.5 kHz, CR 4/5); an estimate. A full 32-post catch-up is about 17 s of transmitting per client, and 20 clients about 5.7 minutes.</td></tr>
+                    </tbody>
+                </table>
+                <p>These numbers are why KAM has an airtime budget: pushes and adverts wait when the estimated airtime in the last hour would exceed <code>duty_cycle_percent</code>, while ACKs and login replies are never delayed or dropped for it.</p>
+            </section>
+
+            <!-- How KAM differs -->
+            <section id="kam-differences">
+                <h2>How KAM Differs from the Reference Firmware</h2>
+                <p>Goals: a stock MeshCore client can discover or import the room, log in, post, receive pushes and reconnect and catch up; acknowledged posts survive restarts and power loss; room traffic cannot starve KAM's other functions; and an operator can run the room without an over-the-air command line.</p>
+                <table>
+                    <thead><tr><th>Topic</th><th>Reference firmware</th><th>KAM</th></tr></thead>
+                    <tbody>
+                        <tr><td>Identity</td><td>Its own key pair on the board.</td><td>A software identity per room in <code>rooms/&lt;id&gt;.key</code>. The modem generates its own key on first boot and cannot be given one, so using it would change the room's address whenever the modem is replaced.</td></tr>
+                        <tr><td>Posts</td><td>32 posts in RAM.</td><td>Durable SQLite store, committed before the ACK. A returning client receives at most the newest 32 posts, however old its cursor.</td></tr>
+                        <tr><td>Sessions</td><td>RAM; only admins are saved.</td><td>Role, cursor, route and replay timestamp are stored (written every 5 seconds and at shutdown). Secrets are recomputed, not stored. A restored client is not pushed to until it is heard from again, so a client that left does not cost airtime.</td></tr>
+                        <tr><td>Blank-password login</td><td>Known clients are accepted; nothing else changes.</td><td>Same, and the client counts as active again.</td></tr>
+                        <tr><td>After 3 failed pushes</td><td>Keeps the out path.</td><td>Also drops the out path so the next exchange rediscovers the route.</td></tr>
+                        <tr><td>Number of rooms</td><td>One.</td><td>Up to 4, each with its own identity, clients, posts, passwords and advert.</td></tr>
+                        <tr><td>Over-the-air CLI</td><td>Yes (admin).</td><td>None in v1.</td></tr>
+                        <tr><td>Forwarding</td><td>The reference room server defaults to not forwarding.</td><td>Never forwards or repeats any packet.</td></tr>
+                        <tr><td>Passwords</td><td>Default admin password is <code>password</code>.</td><td>Refuses to start a room whose admin password is empty or <code>password</code>; compares passwords in constant time; rate-limits logins. Passwords themselves are plain text in <code>kam.yml</code>.</td></tr>
+                        <tr><td>Empty posts</td><td>Stored and pushed.</td><td>Acknowledged, not stored.</td></tr>
+                        <tr><td>Clock</td><td>Board clock.</td><td>Trusts the host clock only (see the warning below).</td></tr>
+                        <tr><td>Region scoping</td><td>Default scope and known regions.</td><td>Same, with a start-up warning if no default scope is set, since scoped meshes may not carry unscoped floods.</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="info-box info-box-red">
+                    <strong>Give the host a trustworthy clock.</strong> Clients use timestamps for replay checks and cursors. If KAM's clock steps backwards across a restart (a Raspberry Pi without a battery-backed clock or network time can), clients will ignore the room's adverts as "not newer" and will never receive new posts whose timestamp is below their stored cursor. KAM cannot see either failure. Within one run, post and advert timestamps always increase. KAM only logs a warning at start-up if the clock is earlier than the newest stored post.
+                </div>
+            </section>
+
+            <!-- Operations -->
+            <section id="operations">
+                <h2>Operating a Room</h2>
+                <ul>
+                    <li><strong>What the log shows:</strong> at start-up, one <code>room identity</code> line per room (public key, hash, key file) and <code>room ready</code> with the number of cached posts and restored clients. During operation: <code>login accepted</code>, <code>login refused</code>, <code>login attempt rate limited</code>, <code>push not acknowledged</code>, and errors such as <code>post not stored</code>. Passwords and full client keys are never logged; keys appear as their first 4 bytes.</li>
+                    <li><strong>Statistics:</strong> logins (ok, failed, rate-limited, replayed), posts (accepted, rejected), pushes (sent, acknowledged, timed out), unsupported requests and dropped packets are counted. KAM logs a summary when it stops; there is no export yet.</li>
+                    <li><strong>Changing a room:</strong> edit <code>kam.yml</code> and restart KAM. Changing the <code>name</code> or <code>location</code> changes the advert; clients keep the old name until they hear the new advert.</li>
+                    <li><strong>Removing a room:</strong> set <code>enabled: false</code> or delete the entry. The posts stay in <code>kam.db</code> and the key stays in <code>rooms/</code>, so re-enabling the same <code>id</code> brings the room back at the same address.</li>
+                    <li><strong>Isolation:</strong> a room failure never stops radio ingestion. A room that cannot start is logged and skipped.</li>
+                    <li><strong>Shutdown:</strong> KAM stops listening, then stops automation and the rooms (writing client sessions), then stops transmitting, then stops the modem manager.</li>
+                    <li><strong>Backups:</strong> keep <code>kam.db</code> (posts and sessions) and the <code>rooms</code> directory (identities). See the <a href="KAM.html">KAM Guide</a> for how to copy the database safely.</li>
+                    <li><strong>Authentication:</strong> the Local Management API has none, so only loopback access protects it. Management of rooms through that API is planned, not available.</li>
+                </ul>
+            </section>
+
+            <!-- Troubleshooting -->
+            <section id="troubleshooting">
+                <h2>Troubleshooting</h2>
+                <table>
+                    <thead><tr><th>Symptom</th><th>Likely cause</th><th>What to do</th></tr></thead>
+                    <tbody>
+                        <tr><td>The app never finds the room</td><td>The advert was not heard, or the room did not start.</td><td>Check the log for <code>room ready</code>; look for <code>room configuration problem</code> lines. Import the room with the contact link from <code>kam room show</code>. Confirm the radio is in range and uses the same radio settings as the mesh.</td></tr>
+                        <tr><td>Login times out</td><td>Wrong password (MeshCore never says so), rate limiting after several quick attempts, a client table full of admins, or repeaters dropping an unscoped reply.</td><td>Retype the password (at most 15 characters). Wait a few seconds between attempts. Set <code>mesh.default_scope</code> to your region and restart.</td></tr>
+                        <tr><td>Logged in, but posts never arrive on a second device</td><td>The post is younger than 6 seconds; the second device has not been active; pushes are paused after 3 failures; or the author is reading on the same device (authors do not receive their own posts).</td><td>Wait and keep the second app connected; check the log for <code>push not acknowledged</code>. A keep-alive or a new post from that device resumes pushing.</td></tr>
+                        <tr><td>A post is never confirmed</td><td>The login was a guest (read-only), or the database write failed.</td><td>Log in with the admin or guest password. Check the log for <code>post not stored</code> and the free disk space.</td></tr>
+                        <tr><td>The log says <em>room disabled</em></td><td>A setting broke a rule.</td><td>Read the message; it names the room and the setting. Fix <code>kam.yml</code> and restart.</td></tr>
+                        <tr><td>The log says <em>identity differs from the one stored</em></td><td>The key file was replaced or restored from another machine.</td><td>Restore the original <code>rooms/&lt;id&gt;.key</code>, or accept the new address and re-import the room in clients.</td></tr>
+                        <tr><td>The app shows an error asking for room status</td><td>Status requests are not implemented.</td><td>Nothing to fix; the room still works for posts.</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Technical Deep Dive -->
+            <section id="technical">
+                <h2 class="text-red-600">Technical Deep Dive</h2>
+                <p><em>Note: This section contains implementation details intended for developers.</em></p>
+
+                <details>
+                    <summary>The Push State Machine</summary>
+                    <div class="prose">
+                        <p>The server manages pushes through a state machine (diagram under How it Works) to stay reliable over unreliable radio links:</p>
+                        <ol>
+                            <li><strong>Idle:</strong> a client is eligible when it has no push pending, has been active in this run, and has fewer than 3 failures. After a push the next scan is 1200 ms away, otherwise 150 ms.</li>
+                            <li><strong>Choosing a post:</strong> the oldest cached post newer than the cursor, not authored by that client, at least 6 s old. The cache holds the newest <code>backlog_posts</code> posts, so a returning client is never sent more than that.</li>
+                            <li><strong>Awaiting ACK:</strong> the push plaintext is <code>post_timestamp(4) | text-type and random attempt bits(1) | author key prefix(4) | text</code>. The expected ACK, <code>SHA-256(push plaintext | client public key)[0:4]</code>, is recorded when the push is queued. The random bits make each retry's packet hash and ACK different.</li>
+                            <li><strong>On match:</strong> the ACK may arrive as an ACK packet, a multipart ACK or inside a PATH. The server clears the pending push and failures and sets the cursor to the pushed post.</li>
+                            <li><strong>On timeout:</strong> failures go up by one. At 3, the client is "starved" and gets nothing until it shows authenticated activity, and a stored route is dropped. The route is direct when an out path is known (timeout <code>4 s + 2 s &times; (hops + 1)</code>) and otherwise a scoped flood (12 s). A push that is still waiting in the transmit queue at its timeout (for example held back by the airtime cap) is withdrawn without counting as a failure.</li>
+                        </ol>
+                        <p>The push engine takes an injectable clock, so the tests run it deterministically.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Payload &amp; Path Encoding</summary>
+                    <div class="prose">
+                        <p>A packet is <code>header | [transport codes(4)] | path_len | path | payload</code>. In <code>path_len</code>, bits 0-5 are the hop count and bits 6-7 the hash size minus one; the value <code>0b11</code> is invalid. The path is at most 64 bytes and the payload at most 184. The router drops anything that breaks these rules.</p>
+                        <p>Peer messages (request, response, text, path) are <code>dest_hash(1) | src_hash(1) | MAC(2) | ciphertext</code>. An anonymous request instead carries the sender's full 32-byte public key. One-byte hashes collide, so the server matches <code>dest_hash</code> to its own first key byte and then tries <strong>every</strong> known client with that <code>src_hash</code> until a MAC verifies. With several rooms, every room whose hash matches is tried.</p>
+                        <p>The duplicate key is <code>SHA-256(payload type | payload)</code> cut to 8 bytes; the path is excluded. KAM remembers up to 512 keys for 2 minutes, and marks the room packets it transmits so a repeater's echo is ignored. A direct packet with a non-empty remaining path belongs to a forwarder, not to the final destination, so KAM ignores it unless it is an ACK. Flood packets are always processed. KAM never forwards.</p>
+                        <p>Login response plaintext is 13 bytes: server time(4), login-OK flag, legacy keep-alive byte, admin/guest indicator, permissions, random(4), firmware level. For a flooded request it is wrapped in a PATH return (extra type <code>RESPONSE</code>); the combined path and extra data must stay within 166 bytes. Replies mirror the request's path hash size.</p>
+                        <p><strong>Scope:</strong> a scoped flood sets <code>transport_codes[0]</code> to the first 2 bytes of <code>HMAC-SHA-256(region key, payload type | payload)</code> read as a little-endian number (<code>0x0000</code> becomes <code>0x0001</code> and <code>0xFFFF</code> becomes <code>0xFFFE</code>). The region key of a public region is the first 16 bytes of <code>SHA-256("#" + name)</code>. A reply reuses the request's scope if it matches a configured region; an unscoped flood request gets an unscoped reply; otherwise the default scope is used if set. Repeaters may drop unscoped floods, so an unscoped reply may not travel.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Data Persistence</summary>
+                    <div class="prose">
+                        <p>Rooms live in SQLite on a dedicated connection with <code>synchronous=FULL</code> and versioned migrations. The tables are <code>rooms</code> (id and public key), <code>room_posts</code> (room, server timestamp, author key, text) and <code>room_clients</code> (role, cursor, replay timestamp, route), all keyed by room id. Posts use a transactional, ordered store, not the batched drop-on-full queues that adverts and group texts use.</p>
+                        <p>For every post KAM follows a "commit-before-ACK" rule: the message and the author's replay timestamp are written in one transaction <em>before</em> the confirmation is queued, so an acknowledged post survives a power loss. Post timestamps are strictly increasing, unique second values within a run (bumped by one when the clock repeats); if a stored post already has the timestamp after a clock step, the next free one is used. Retention pruning runs every 10 minutes. Client sessions are written in batches every 5 seconds and at shutdown.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Transmission</summary>
+                    <div class="prose">
+                        <p>One transmit scheduler owns the radio data path for every producer (group-text sends, automation replies, rooms). It validates each packet, hands the modem one data frame at a time and waits for <code>TxDone</code> (or the writer's report that it gave up), with a timeout as a fallback. Priorities, highest first: direct ACKs and replies; flood replies and PATH; group texts; pushes; adverts. It supports the 200 ms ACK delay and 300 ms response delay and can cancel a queued push when it becomes obsolete.</p>
+                        <p>Pushes and adverts are deferrable: when the estimated airtime of the last hour plus the next packet would exceed <code>duty_cycle_percent</code>, they wait. The estimate uses the LoRa airtime formula with an 8-symbol preamble; the modem's own airtime command is not used yet, so the real figure may be somewhat higher. The queue holds 128 packets; when it is full a deferrable packet is refused and an ACK evicts the newest deferrable one.</p>
+                        <p>The modem's <code>TXDELAY</code> defaults to 500 ms (<code>radio.csma.txdelay_ms</code>). That latency may exceed client ACK timeouts, which firmware derives from estimated airtime, so measure it on hardware.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Code map and tests</summary>
+                    <div class="prose">
+                        <table>
+                            <thead><tr><th>Part</th><th>Where</th></tr></thead>
+                            <tbody>
+                                <tr><td>Packets, envelope, identity, adverts, region codes</td><td><code>internal/mesh</code></td></tr>
+                                <tr><td>Packet tap, dedup, transmit scheduler, airtime estimate</td><td><code>internal/kiss</code> (<code>kiss_router.go</code>, <code>dedup.go</code>, <code>scheduler.go</code>, <code>airtime.go</code>)</td></tr>
+                                <tr><td>Room logic</td><td><code>internal/room</code></td></tr>
+                                <tr><td>Room storage</td><td><code>internal/db/rooms.go</code></td></tr>
+                                <tr><td>Room settings</td><td><code>internal/models/rooms.go</code></td></tr>
+                                <tr><td>Wiring and shutdown order</td><td><code>internal/node/node.go</code></td></tr>
+                                <tr><td><code>kam room show</code></td><td><code>main.go</code></td></tr>
+                            </tbody>
+                        </table>
+                        <p>Tests combine unit tests (envelope and key-exchange vectors, golden frames, the push machine on a fake clock), an in-process fake client that speaks the client side of login, post, ACK, PATH and keep-alive, and a test that sends a login frame through the real router, packet tap, room service and transmit scheduler. The layout of the status reply is a raw firmware struct that no document describes; it will be pinned from a real capture. Interop runs with the MeshCore companion app on real hardware are still to do.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Delivery phases</summary>
+                    <div class="prose">
+                        <ol>
+                            <li><strong>Spikes and decisions:</strong> <span class="badge badge-amber">Pending (hardware)</span> capture a real room server's login, push and status traffic; measure <code>TXDELAY</code> and airtime; confirm the room limit. The region key format is confirmed from MeshCore's source.</li>
+                            <li><strong>Foundations:</strong> <span class="badge badge-green">Implemented</span> packet tap, dedup fix, transmit scheduler, mesh crypto and identity package, config, signed <code>ROOM</code> advert.</li>
+                            <li><strong>Login and sessions:</strong> <span class="badge badge-green">Implemented</span> anonymous request to response or path return, client table and roles, replay rules, path learning, rate limit.</li>
+                            <li><strong>Posts and push:</strong> <span class="badge badge-green">Implemented</span> post store, ACK after commit, push engine, keep-alive, backlog window, session persistence.</li>
+                            <li><strong>Operations:</strong> <span class="badge badge-amber">Partly</span> airtime cap, retention and start-up validation are done; the status reply, counter export and management API endpoints are open.</li>
+                            <li><strong>Optional:</strong> <span class="badge badge-slate">Planned</span> a Starlark room event and a post host function, channel bridging, an over-the-air CLI subset.</li>
+                        </ol>
+                    </div>
+                </details>
+
+            </section>
+
+        </article>
+
+        <footer class="mt-24 pt-8 border-t border-slate-200 text-center text-slate-500 text-sm">
+            &copy; 2026 KAM Project Manuals. Written for beginner to intermediate readers. Checked against the source on 2026-10-10.
+        </footer>
+    </main>
+</body>
+</html>

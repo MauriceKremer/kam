@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	go.bug.st/serial v1.7.1
+	go.starlark.net v0.0.0-20261005163335-bcb1a1a55bf9
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.53.0
 )

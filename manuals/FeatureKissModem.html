@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KISS Modem Manual</title>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: true, theme: 'base', themeVariables: {
+            darkMode: true, background: '#101012', primaryColor: '#222225',
+            primaryTextColor: '#F5F5F7', primaryBorderColor: '#A1A1A8',
+            lineColor: '#A1A1A8', secondaryColor: '#18181B', tertiaryColor: '#2C2C30',
+            textColor: '#F5F5F7', edgeLabelBackground: '#18181B',
+            actorBkg: '#222225', actorBorder: '#A1A1A8', actorTextColor: '#F5F5F7',
+            signalColor: '#C5C5CA', signalTextColor: '#F5F5F7',
+            labelBoxBkgColor: '#18181B', labelBoxBorderColor: '#A1A1A8',
+            labelTextColor: '#F5F5F7', loopTextColor: '#F5F5F7',
+            noteBkgColor: '#2C2C30', noteTextColor: '#F5F5F7', noteBorderColor: '#A1A1A8',
+            fontFamily: '-apple-system, BlinkMacSystemFont, Helvetica Neue, Segoe UI, sans-serif'
+        } });
+    </script>
+    <link href="manuals.css" rel="stylesheet">
+    <script src="manuals.js" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <!-- Sidebar -->
+    <aside>
+        <div class="manual-brand"><strong>KAM</strong><span>Documentation</span></div>
+        <details class="manual-navigation" open>
+        <summary>Contents</summary>
+        <details class="navigation-section" open>
+        <summary>On this page</summary>
+        <nav class="space-y-3" aria-label="On this page">
+            <a href="#overview" class="block text-sm text-slate-600 hover:text-blue-600 transition">Overview</a>
+            <a href="#status" class="block text-sm text-slate-600 hover:text-blue-600 transition">Implementation Status</a>
+            <a href="#how-it-works" class="block text-sm text-slate-600 hover:text-blue-600 transition">How it Works</a>
+            <a href="#protocol" class="block text-sm text-slate-600 hover:text-blue-600 transition">Protocol Reference</a>
+            <a href="#commands" class="block text-sm text-slate-600 hover:text-blue-600 transition">Commands</a>
+            <a href="#radio" class="block text-sm text-slate-600 hover:text-blue-600 transition">Radio Settings</a>
+            <a href="#events" class="block text-sm text-slate-600 hover:text-blue-600 transition">Events &amp; Errors</a>
+            <a href="#quirks" class="block text-sm text-slate-600 hover:text-blue-600 transition">Modem Quirks</a>
+            <a href="#startup" class="block text-sm text-slate-600 hover:text-blue-600 transition">Startup</a>
+            <a href="#examples" class="block text-sm text-slate-600 hover:text-blue-600 transition">Example Frames</a>
+            <a href="#troubleshooting" class="block text-sm text-slate-600 hover:text-blue-600 transition">Troubleshooting</a>
+            <a href="#technical" class="block text-sm text-slate-600 hover:text-blue-600 transition">Technical Deep Dive</a>
+        </nav>
+        </details>
+        <details class="navigation-section" open>
+        <summary>Manuals</summary>
+        <nav class="space-y-3" aria-label="Manuals">
+            <a href="KAM.html">KAM Guide</a>
+            <a href="FeatureKissModem.html" aria-current="page">KISS Modem</a>
+            <a href="FeatureStarlark.html" class="block text-sm text-slate-600 hover:text-blue-600 transition">Starlark Automations</a>
+            <a href="FeatureRoomServer.html" class="block text-sm text-slate-600 hover:text-blue-600 transition">Room Server</a>
+        </nav>
+        </details>
+        </details>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main-content" tabindex="-1">
+        <header>
+            <span>Feature Manual</span>
+            <h1>KISS Modem Command Layer</h1>
+            <p>An explanation of how KAM communicates with the MeshCore KISS radio modem.</p>
+            <p class="mt-4"><span class="badge badge-green">Implemented</span> <span class="text-sm text-slate-500 ml-2">Code is complete; real-radio smoke tests and timing measurements remain pending.</span></p>
+        </header>
+
+        <article class="prose prose-slate max-w-none">
+
+            <!-- Overview -->
+            <section id="overview">
+                <h2>Overview</h2>
+                <p>KAM does not talk to a radio chip. It talks to a <strong>MeshCore KISS modem</strong>: a small board running MeshCore's <code>kiss_modem</code> firmware that does the LoRa work and exposes a serial port. The <strong>KISS (Keep It Simple, Stupid)</strong> protocol carries two kinds of traffic over that port: radio packets, and a set of control commands (called <code>SetHardware</code>) for configuring and querying the modem.</p>
+
+                <div class="info-box info-box-blue">
+                    <strong>Goal of the command layer:</strong> a safe, typed, validated Go API, so that callers never build raw frames, a bad radio setting is caught before it is sent, and the modem is not overwhelmed with simultaneous transmissions.
+                </div>
+
+                <div class="info-box info-box-amber">
+                    <strong>Scope.</strong> The typed Tier 1 commands, request tracking, modem error handling, TX pacing, startup checks, optional radio settings and link-health probe are implemented. Crypto/identity commands and modem reboot remain deferred. Hardware-specific limits and timing still need confirmation on a real board.
+                </div>
+            </section>
+
+            <!-- Status -->
+            <section id="status">
+                <h2>Implementation Status</h2>
+                <table>
+                    <thead><tr><th>Area</th><th>Status</th><th>Notes</th></tr></thead>
+                    <tbody>
+                        <tr><td>KISS framing and serial reader/writer</td><td><span class="badge badge-green">Implemented</span></td><td>115200 baud by default (configurable); frames are escaped and split on <code>C0</code>.</td></tr>
+                        <tr><td>Receiving radio packets and <code>RxMeta</code></td><td><span class="badge badge-green">Implemented</span></td><td>Adverts/group texts are parsed; SNR/RSSI is attached when received, with a 200 ms fallback.</td></tr>
+                        <tr><td>Tier 1 commands and validation</td><td><span class="badge badge-green">Implemented</span></td><td>Radio, power, signal report, standard KISS parameters and diagnostics use typed methods.</td></tr>
+                        <tr><td>Request safety and modem errors</td><td><span class="badge badge-green">Implemented</span></td><td>One in-flight request; typed errors; a Ping barrier discards stale responses after timeout.</td></tr>
+                        <tr><td><code>TxDone</code>/<code>TxBusy</code> and TX pacing</td><td><span class="badge badge-green">Implemented</span></td><td>Control traffic has priority; data is gated to one pending frame with one retry and a timeout.</td></tr>
+                        <tr><td>Startup checks and optional radio settings</td><td><span class="badge badge-green">Implemented</span></td><td>Ping, radio echo comparison, optional power/CSMA, signal reporting and diagnostics.</td></tr>
+                        <tr><td>Link-loss and reset detection</td><td><span class="badge badge-green">Implemented</span></td><td>Serial failures stop <code>Node.Run</code> with an error; a 30-second probe reapplies settings after reset.</td></tr>
+                        <tr><td>Hardware smoke tests</td><td><span class="badge badge-amber">Pending</span></td><td>Radio-specific response captures, TX timing and unplug/reset tests have not been run.</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- How it Works -->
+            <section id="how-it-works">
+                <h2>How it Works</h2>
+                <p>KAM uses a few small cooperating pieces, each with one job:</p>
+                <ul>
+                    <li><strong>Reader:</strong> reads bytes from the serial port, undoes the KISS escaping and hands complete frames to the router.</li>
+                    <li><strong>Router:</strong> parses radio packets and classifies modem responses, errors and unsolicited events.</li>
+                    <li><strong>Writer:</strong> prioritizes control frames and sends at most one data frame until <code>TxDone</code>, retry outcome or gate timeout.</li>
+                    <li><strong>Manager:</strong> owns the serial port, request slot, queues, event subscriptions and link-health signal.</li>
+                    <li><strong>Radio client:</strong> typed Go methods for Tier 1 commands; callers do not construct raw frames.</li>
+                    <li><strong>Sender:</strong> builds group-text packets (used by Starlark <code>reply</code>) and queues them for the writer.</li>
+                </ul>
+
+                <div class="mermaid">
+                    graph LR
+                        Modem["KISS modem"] -->|"serial bytes"| Reader["Reader"]
+                        Reader -->|"frames"| Router["Router"]
+                        Router -->|"radio packets and RxMeta"| Parsers["Parsers and consumers"]
+                        Router -->|"responses and errors"| Slot["Request slot"]
+                        Slot --> Client["Radio client"]
+                        Client -->|"control"| ControlQ["Prioritized control queue"]
+                        Sender["Sender"] -->|"data"| DataQ["TX gate"]
+                        ControlQ --> Writer["Writer"]
+                        DataQ --> Writer
+                        Writer -->|"framed bytes"| Modem
+                </div>
+
+                <p>The modem has no request IDs. Several commands share <code>OK</code> (<code>0xF0</code>), so KAM allows one request at a time. If a request times out, the next one must pass a <code>Ping</code> barrier before it is sent.</p>
+            </section>
+
+            <!-- Protocol -->
+            <section id="protocol">
+                <h2>Protocol Reference</h2>
+                <p>The serial link is 115200 baud, 8 data bits, no parity, 1 stop bit, no flow control. All multi-byte numbers are <strong>little-endian</strong>.</p>
+
+                <h3>Framing</h3>
+                <p>Every message is wrapped in a frame end byte: <code>FEND (C0) | type | data | FEND</code>. If <code>C0</code> or the escape byte appears inside the data, it is replaced with a two-byte escape sequence so it cannot be mistaken for a frame boundary:</p>
+                <table>
+                    <thead><tr><th>Byte</th><th>Name</th><th>In data it becomes</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>C0</code></td><td>FEND</td><td><code>DB DC</code></td></tr>
+                        <tr><td><code>DB</code></td><td>FESC</td><td><code>DB DD</code></td></tr>
+                    </tbody>
+                </table>
+                <p>The <code>type</code> byte is <code>port&lt;&lt;4 | command</code>. Only port 0 is used, and frames for other ports are ignored. The largest unescaped frame is 512 bytes. A signed value can happen to equal <code>C0</code>: an RSSI of -64 dBm is the byte <code>C0</code> and travels as <code>DB DC</code>.</p>
+
+                <h3>Standard KISS Commands (host to modem)</h3>
+                <p>These are the classic KISS parameters. <strong>None gets a reply</strong>, and the modem ignores a frame whose data is empty. KAM applies TXDELAY, persistence, slot time and full-duplex settings when a <code>csma</code> block is configured; <code>TXtail</code> is available through the client but is not configurable because the reviewed firmware does not use it.</p>
+                <table>
+                    <thead>
+                        <tr><th>Type</th><th>Name</th><th>Data</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>0x00</code></td><td>Data</td><td>raw packet, 1-255 bytes</td><td>-</td><td>The radio packet to transmit. The modem holds one pending transmission at a time.</td></tr>
+                        <tr><td><code>0x01</code></td><td>TXDELAY</td><td>1 byte, 10 ms units</td><td>50 (500 ms)</td><td>Wait after the channel is clear before starting to transmit.</td></tr>
+                        <tr><td><code>0x02</code></td><td>Persistence</td><td>1 byte, 0-255</td><td>63</td><td>CSMA: transmit when a random number 0-255 is at most this value.</td></tr>
+                        <tr><td><code>0x03</code></td><td>SlotTime</td><td>1 byte, 10 ms units</td><td>10 (100 ms)</td><td>Wait before the next CSMA attempt.</td></tr>
+                        <tr><td><code>0x04</code></td><td>TXtail</td><td>1 byte, 10 ms units</td><td>0</td><td>Stored by the modem but not used by its transmit logic in the firmware reviewed.</td></tr>
+                        <tr><td><code>0x05</code></td><td>FullDuplex</td><td>1 byte</td><td>0</td><td>Non-zero skips CSMA and transmits after TXDELAY. Harmful on a half-duplex LoRa radio.</td></tr>
+                        <tr><td><code>0xFF</code></td><td>Return</td><td>-</td><td>-</td><td>Ignored.</td></tr>
+                    </tbody>
+                </table>
+                <p>In the other direction, a frame of type <code>0x00</code> from the modem carries a received radio packet. It has no signal metadata; that arrives separately as <code>RxMeta</code>.</p>
+            </section>
+
+            <!-- Commands -->
+            <section id="commands">
+                <h2>Commands</h2>
+                <p>Control commands use type <code>0x06</code> (<code>SetHardware</code>) followed by a sub-command byte: <code>FEND | 06 | sub | data | FEND</code>. A reply is <code>06 | (sub | 0x80) | data</code>, so <code>GetRadio</code> (<code>0x0B</code>) is answered with <code>0x8B</code>. Commands that just succeed answer the generic <code>OK</code> (<code>0xF0</code>). A failure answers <code>Error</code> (<code>0xF1</code>) with a code. An unknown sub-command answers <code>Error/UnknownCmd</code>, which is how a newer KAM can discover an older firmware: the firmware's single version number cannot be used to detect features.</p>
+
+                <p>The modem offers 26 sub-commands. KAM implements the Tier 1 radio, power, signal-report and diagnostic commands; crypto/identity functions and <code>Reboot</code> remain deferred.</p>
+
+                <table>
+                    <thead>
+                        <tr><th>Sub</th><th>Name</th><th>Request data</th><th>Response</th><th>KAM</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>0x09</code></td><td>SetRadio</td><td>frequency(4) Hz, bandwidth(4) Hz, SF(1), CR(1)</td><td><code>F0</code> OK</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x0B</code></td><td>GetRadio</td><td>-</td><td><code>8B</code> frequency, bandwidth, SF, CR</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x0A</code></td><td>SetTxPower</td><td>dBm(1)</td><td><code>F0</code> OK</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x0C</code></td><td>GetTxPower</td><td>-</td><td><code>8C</code> dBm(1)</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x0D</code></td><td>GetCurrentRssi</td><td>-</td><td><code>8D</code> int8 dBm</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x0E</code></td><td>IsChannelBusy</td><td>-</td><td><code>8E</code> 0 clear / 1 busy</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x0F</code></td><td>GetAirtime</td><td>packet length(1)</td><td><code>8F</code> milliseconds(4)</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x10</code></td><td>GetNoiseFloor</td><td>-</td><td><code>90</code> int16 dBm</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x11</code></td><td>GetVersion</td><td>-</td><td><code>91</code> version(1), reserved(1)</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x12</code></td><td>GetStats</td><td>-</td><td><code>92</code> rx(4), tx(4), errors(4)</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x13</code></td><td>GetBattery</td><td>-</td><td><code>93</code> millivolts(2)</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x14</code></td><td>GetMCUTemp</td><td>-</td><td><code>94</code> int16, tenths of &deg;C</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x15</code></td><td>GetSensors</td><td>permissions(1): 1 base, 2 location, 4 environment</td><td><code>95</code> CayenneLPP bytes (may be empty)</td><td><span class="badge badge-green">Implemented (raw bytes)</span></td></tr>
+                        <tr><td><code>0x16</code></td><td>GetDeviceName</td><td>-</td><td><code>96</code> UTF-8, no terminator</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x17</code></td><td>Ping</td><td>-</td><td><code>97</code></td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x19</code></td><td>SetSignalReport</td><td>enable(1)</td><td><code>9A</code> status(1)</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x1A</code></td><td>GetSignalReport</td><td>-</td><td><code>9A</code> status(1)</td><td><span class="badge badge-green">Implemented</span></td></tr>
+                        <tr><td><code>0x18</code></td><td>Reboot</td><td>-</td><td><code>F0</code> OK, then the link drops</td><td><span class="badge badge-amber">Deferred</span> (no reconnect logic)</td></tr>
+                        <tr><td><code>0x01</code>-<code>0x08</code></td><td>GetIdentity, GetRandom, VerifySignature, SignData, EncryptData, DecryptData, KeyExchange, Hash</td><td>various</td><td><code>81</code>-<code>88</code></td><td><span class="badge badge-amber">Deferred</span> (KAM keeps its own identity and crypto)</td></tr>
+                    </tbody>
+                </table>
+                <p>Reply code <code>0x9A</code> is used for both signal-report commands; <code>SetSignalReport</code> does not answer <code>0x99</code>. The firmware reviewed defines these 26 sub-commands, <code>0x01</code> to <code>0x1A</code>.</p>
+
+                <div class="info-box info-box-amber">
+                    <strong>Note on verification:</strong> after <code>SetRadio</code> KAM reads the values back with <code>GetRadio</code>. This "echo check" confirms the modem received the command and stored the numbers. It does <strong>not</strong> prove the radio chip applied them (see Modem Quirks).
+                </div>
+
+                <div class="info-box info-box-blue">
+                    <strong>Safety rule:</strong> no Starlark function and no automation-reachable API exposes the radio client. Scripts can only send group texts through <code>reply</code>; they can never change radio settings.
+                </div>
+            </section>
+
+            <!-- Radio settings -->
+            <section id="radio">
+                <h2>Radio Settings</h2>
+                <p>The radio parameters come from the <code>radio:</code> block of <code>kam.yml</code> and are pushed to the modem once at startup. Changing them requires a restart; the config file watcher only reloads channels.</p>
+                <table>
+                    <thead>
+                        <tr><th><code>kam.yml</code> key</th><th>On the wire</th><th>MeshCore range</th><th>Validation</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>frequency_hz</code></td><td>uint32, Hz</td><td>300-2500 MHz</td><td>Range checked at load and send</td></tr>
+                        <tr><td><code>bandwidth_hz</code></td><td>uint32, Hz</td><td>7.8-500 kHz</td><td>Range checked at load and send</td></tr>
+                        <tr><td><code>spreading_factor</code></td><td>uint8</td><td>5-12</td><td>Range checked at load and send</td></tr>
+                        <tr><td><code>coding_rate</code></td><td>uint8</td><td>5-8 (meaning 4/5 to 4/8)</td><td>Range checked at load and send</td></tr>
+                        <tr><td><code>tx_power_dbm</code></td><td>optional uint8, dBm</td><td>1-22</td><td>Range checked at load and send</td></tr>
+                    </tbody>
+                </table>
+                <p>The example <code>kam.yml</code> uses 869.618 MHz, 62.5 kHz, SF 7, CR 5. KAM validates the documented ranges before sending. The actual chip may accept less: the common SX1262 driver takes only 150-960 MHz and -9 to 22 dBm. KAM cannot tell which chip is attached, so it cannot check chip-specific limits, and the modem still answers <code>OK</code> to a value the chip rejects. Startup RSSI and noise-floor readings are diagnostic hints, not proof that the radio accepted the values.</p>
+                <p>You are responsible for choosing a frequency and power that is legal where you operate.</p>
+            </section>
+
+            <!-- Events -->
+            <section id="events">
+                <h2>Events &amp; Errors</h2>
+                <p>The modem also sends frames on its own, without being asked.</p>
+
+                <h3>Events</h3>
+                <table>
+                    <thead><tr><th>Frame</th><th>Meaning</th><th>KAM behavior</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td><code>06 F8 result</code><br>TxDone</td>
+                            <td>Sent once for every data frame the modem accepted for transmission. <code>1</code> means the transmission succeeded, <code>0</code> that it failed.</td>
+                            <td>Published as a modem event and releases the TX gate; success/failure is counted.</td>
+                        </tr>
+                        <tr>
+                            <td><code>06 F9 snr rssi</code><br>RxMeta</td>
+                            <td>Follows each received data frame. SNR is a signed byte in quarter-dB units (<code>0x1D</code> = 29 = +7.25 dB). RSSI is a signed byte in dBm. Enabled by default after every modem boot.</td>
+                            <td>Used. Attached to the pending group text, which is released after 200 ms if the frame does not arrive.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>Error codes</h3>
+                <p>A failed command or rejected transmission produces <code>06 F1 code</code>:</p>
+                <table>
+                    <thead>
+                        <tr><th>Code</th><th>Name</th><th>Typical cause</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>01</code></td><td>InvalidLength</td><td>The command payload was too short or too long.</td></tr>
+                        <tr><td><code>02</code></td><td>InvalidParam</td><td>A value was out of range (for example <code>GetRandom</code> length).</td></tr>
+                        <tr><td><code>03</code></td><td>NoCallback</td><td>The board does not provide that function (for example no temperature sensor, or no stats).</td></tr>
+                        <tr><td><code>04</code></td><td>MacFailed</td><td>Modem-side decryption failed its MAC check (crypto commands, deferred).</td></tr>
+                        <tr><td><code>05</code></td><td>UnknownCmd</td><td>The modem does not recognise the command. Typical of an older firmware.</td></tr>
+                        <tr><td><code>06</code></td><td>EncryptFailed</td><td>Modem-side encryption failed (crypto commands, deferred).</td></tr>
+                        <tr><td><code>07</code></td><td>TxBusy</td><td>A second data frame arrived while one was still pending. It is also queued when the modem's output queue overflowed and dropped one of its own responses or events, so it can mean "your response was lost" rather than "busy".</td></tr>
+                    </tbody>
+                </table>
+                <p>A pending command receives a typed <code>ModemError</code> immediately. An unmatched <code>TxBusy</code> is published to event subscribers and sent to the TX gate; other unmatched modem errors are published as faults. <code>NoCallback</code> and <code>UnknownCmd</code> match <code>ErrUnsupported</code>.</p>
+            </section>
+
+            <!-- Quirks -->
+            <section id="quirks">
+                <h2>Modem Quirks</h2>
+                <p>These behaviours come from reading the firmware source. The protocol document does not state most of them, and they explain several design choices.</p>
+                <table>
+                    <thead><tr><th>Behaviour</th><th>What it means for you</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>SetRadio</code> and <code>SetTxPower</code> answer <code>OK</code> after only a length check. The board code ignores the radio driver's return codes.</td><td><code>OK</code> means "received", not "applied".</td></tr>
+                        <tr><td><code>GetRadio</code> and <code>GetTxPower</code> return a stored copy of what the host last sent. It is all zeros after boot or reset until the host sets it.</td><td>The read-back is an echo. A zero answer reveals that the modem has reset.</td></tr>
+                        <tr><td>Only <code>GetCurrentRssi</code>, <code>GetNoiseFloor</code>, <code>IsChannelBusy</code> and <code>GetStats</code> read real hardware state.</td><td>Use those for health checks.</td></tr>
+                        <tr><td><code>OK</code> is shared by <code>SetRadio</code>, <code>SetTxPower</code> and <code>Reboot</code>, and there are no request IDs.</td><td>After a timeout, KAM sends a <code>Ping</code> barrier and discards frames until its <code>Pong</code>.</td></tr>
+                        <tr><td>A data frame of 0 or more than 255 bytes is discarded with no <code>Error</code> and no <code>TxDone</code>.</td><td>Check the length before writing, or a pacing gate would wait for a <code>TxDone</code> that never comes.</td></tr>
+                        <tr><td>The noise floor is zeroed after start-up and after every automatic gain reset (every 30 s when idle).</td><td>A noise floor of 0 means "not calibrated yet", not 0 dBm.</td></tr>
+                        <tr><td>While transmitting, or while its output queue is backed up, the modem skips receiving.</td><td>KAM must keep reading the serial port promptly or it loses inbound packets.</td></tr>
+                        <tr><td><code>GetSensors</code> with no sensors answers an empty <code>0x95</code>; <code>GetMCUTemp</code> answers <code>NoCallback</code> when there is no reading.</td><td>Both mean "unsupported", not a failure.</td></tr>
+                        <tr><td>A modem reset clears the stored radio values, RxMeta setting and KISS parameters without telling the host.</td><td>The 30-second probe detects zero or changed cached radio values and reapplies startup settings.</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Startup -->
+            <section id="startup">
+                <h2>Startup</h2>
+                <h3>Implemented startup sequence</h3>
+                <p>Startup has a 10-second overall budget and a one-second maximum per command. Steps 1, 3 and 7 are fatal; optional features warn and continue when unavailable.</p>
+                <table>
+                    <thead><tr><th>Step</th><th>Command</th><th>If it fails</th></tr></thead>
+                    <tbody>
+                        <tr><td>1</td><td><code>Ping</code></td><td>Fatal: "no KISS modem on &lt;port&gt;".</td></tr>
+                        <tr><td>2</td><td><code>GetVersion</code>, <code>GetDeviceName</code></td><td>Warn.</td></tr>
+                        <tr><td>3</td><td><code>SetRadio</code></td><td>Fatal.</td></tr>
+                        <tr><td>4</td><td><code>SetTxPower</code> (only if <code>tx_power_dbm</code> is set)</td><td>Warn.</td></tr>
+                        <tr><td>5</td><td><code>SetSignalReport(true)</code> (makes sure RxMeta is on)</td><td>Warn.</td></tr>
+                        <tr><td>6</td><td>CSMA settings, ending with a <code>Ping</code> round trip (only if a <code>csma</code> block is set)</td><td>Warn.</td></tr>
+                        <tr><td>7</td><td><code>GetRadio</code>, compared with step 3</td><td>Fatal on a mismatch.</td></tr>
+                        <tr><td>8</td><td><code>GetCurrentRssi</code>, <code>GetNoiseFloor</code>, <code>GetAirtime(255)</code></td><td>Logged. The airtime sets the transmit-gate timeout.</td></tr>
+                    </tbody>
+                </table>
+                <p>The whole startup has a 10-second budget; each request keeps its own 1-second timeout. A summary line logs the device name, firmware version, the radio values the modem echoed and the RSSI and noise-floor readings.</p>
+
+                <h3>Optional configuration</h3>
+                <p>Unset optional keys leave modem defaults untouched. Radio values are validated during YAML load and again by the typed client.</p>
+                <p>If a <code>csma</code> block is present, omitted numeric fields use the modem defaults: 500 ms TXDELAY, persistence 63 and 100 ms slot time. Explicit zeroes are preserved. Without the block, KAM sends no CSMA parameter frames.</p>
+                <pre><code class="language-yaml">radio:
+  # existing: port, baud, frequency_hz, bandwidth_hz, spreading_factor, coding_rate
+  tx_power_dbm: 17        # 1-22
+  csma:
+    txdelay_ms: 500       # multiples of 10, 0-2550
+    persistence: 63       # 0-255
+    slot_time_ms: 100     # multiples of 10, 0-2550
+    full_duplex: false    # true bypasses CSMA; KAM will warn at startup</code></pre>
+                <p><code>TXtail</code> will not be a config key, because it appears to have no effect in the firmware.</p>
+            </section>
+
+            <!-- Examples -->
+            <section id="examples">
+                <h2>Example Frames</h2>
+                <p>Shown without the surrounding <code>C0</code> bytes, in hex. They are taken from the protocol document and the design, not yet from a captured session.</p>
+                <table>
+                    <thead><tr><th>Exchange</th><th>Bytes</th></tr></thead>
+                    <tbody>
+                        <tr><td>Ping</td><td><code>06 17</code> &rarr; <code>06 97</code></td></tr>
+                        <tr><td>GetRadio</td><td><code>06 0B</code> &rarr; <code>06 8B 50 51 D5 33 24 F4 00 00 07 05</code></td></tr>
+                        <tr><td>SetRadio 869.618 MHz, 62.5 kHz, SF 7, CR 5</td><td><code>06 09 50 51 D5 33 24 F4 00 00 07 05</code> &rarr; <code>06 F0</code></td></tr>
+                        <tr><td>SetTxPower 17 dBm</td><td><code>06 0A 11</code> &rarr; <code>06 F0</code></td></tr>
+                        <tr><td>TXDELAY 500 ms</td><td><code>01 32</code> (no reply)</td></tr>
+                        <tr><td>TxDone, success</td><td><code>06 F8 01</code></td></tr>
+                        <tr><td>TxBusy error</td><td><code>06 F1 07</code></td></tr>
+                        <tr><td>RxMeta, SNR +7.25 dB, RSSI -64 dBm</td><td><code>06 F9 1D C0</code>, on the wire <code>06 F9 1D DB DC</code></td></tr>
+                    </tbody>
+                </table>
+                <p>Reading <code>50 51 D5 33</code> as little-endian gives <code>0x33D55150</code> = 869 618 000 Hz; <code>24 F4 00 00</code> is 62 500 Hz.</p>
+            </section>
+
+            <!-- Troubleshooting -->
+            <section id="troubleshooting">
+                <h2>Troubleshooting</h2>
+                <table>
+                    <thead><tr><th>Symptom</th><th>Likely cause</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>open serial port "...": ...</code></td><td>Wrong port name, device not plugged in, port already in use, or missing permission (on Linux add yourself to the <code>dialout</code> group). Override with <code>-port</code>.</td></tr>
+                        <tr><td><code>no KISS modem on &lt;port&gt;</code></td><td>Startup Ping failed. Check the port, baud rate, firmware and cable. Modem <code>Error</code> responses include a typed error code.</td></tr>
+                        <tr><td><code>radio config echo mismatch</code></td><td><code>GetRadio</code> returns a cached echo, not RF state. Check for an older/incompatible modem or an unexpected reset.</td></tr>
+                        <tr><td>Group texts arrive without SNR/RSSI</td><td>The <code>RxMeta</code> frame did not arrive within 200 ms. Scripts see <code>has_rx_meta</code> false.</td></tr>
+                        <tr><td>The cable was pulled</td><td>A serial read/write failure closes the manager health signal; <code>Node.Run</code> returns an error for the supervisor.</td></tr>
+                        <tr><td>Two quick script replies appear delayed</td><td>The writer holds one data frame until <code>TxDone</code>, while control commands remain prioritized. A lost event releases the gate at its timeout.</td></tr>
+                        <tr><td>Radio values look right in the log but nothing is received</td><td>The modem's read-back only echoes what was sent. Check frequency, bandwidth, SF and CR against the rest of the mesh and against the chip's real limits.</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <!-- Technical Deep Dive -->
+            <section id="technical">
+                <h2>Technical Deep Dive</h2>
+                <p>This section is intended for developers and intermediate users who need to understand the implementation details.</p>
+
+                <details>
+                    <summary>Request slot and Ping barrier</summary>
+                    <div class="prose">
+                        <p>The Manager serializes one in-flight request with a context-aware slot. The router delivers an expected response or typed <code>Error</code> through a buffered result channel. Control writes are context-aware and the writer prioritizes them over data.</p>
+                        <p>After a timeout or cancellation, the next request sends <code>Ping</code> and the router drops frames until <code>Pong</code>. This prevents a late response from being assigned to the following request. Unmatched frames are counted and dropped.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Request tracking and the "Barrier" mechanism</summary>
+                    <div class="prose">
+                        <p>The Manager and router own one in-flight request slot. A request records the response codes it accepts plus <code>Error</code>, and a buffered result channel. Taking the slot honours the caller's context. Control frames use a queue the writer prioritizes over data frames.</p>
+                        <p>If a command times out, the link is marked unsynchronized and:</p>
+                        <ol>
+                            <li>The next request first sends a <code>Ping</code>.</li>
+                            <li>KAM drops every frame until the matching <code>Pong</code> (<code>0x97</code>) arrives.</li>
+                            <li>Only then does the new request go out, so a stale reply cannot be credited to it.</li>
+                            <li>If the <code>Pong</code> does not arrive within the caller's deadline, the request fails with "modem unresponsive".</li>
+                        </ol>
+                        <p>The router uses this classification for a <code>0x06</code> frame:</p>
+                        <table>
+                            <thead><tr><th>Frame</th><th>Condition</th><th>Action</th></tr></thead>
+                            <tbody>
+                                <tr><td>RxMeta</td><td>always</td><td>Attach to the pending group text (as today).</td></tr>
+                                <tr><td>TxDone</td><td>always</td><td>Publish the event and release the transmit gate.</td></tr>
+                                <tr><td>Pong</td><td>barrier active</td><td>End the barrier; drop the frame.</td></tr>
+                                <tr><td>any other</td><td>barrier active</td><td>Drop as stale.</td></tr>
+                                <tr><td>Error</td><td>a request is pending</td><td>Deliver the error to that request.</td></tr>
+                                <tr><td>Error</td><td>no request pending</td><td>Publish as a TxBusy or fault event.</td></tr>
+                                <tr><td>expected response</td><td>a request is pending</td><td>Deliver the payload.</td></tr>
+                                <tr><td>anything else</td><td>-</td><td>Debug log, count, drop. Never blocks.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Transmission pacing (the TX gate)</summary>
+                    <div class="prose">
+                        <p>To avoid <code>TxBusy</code> (KAM writing before the modem is ready), the writer sends at most one data frame at a time:</p>
+                        <blockquote>
+                            1. Reject a payload outside 1-255 bytes, with a log entry.<br>
+                            2. Write one data frame and wait for <code>TxDone</code>, or for the gate timeout.<br>
+                            3. If <code>TxBusy</code> arrives, wait for a <code>TxDone</code> if one comes; otherwise back off 500 ms and resend once.<br>
+                            4. A second <code>TxBusy</code> drops the frame and counts it. A gate timeout releases the gate, logs and counts it; the frame was already written, so it is not resent.
+                        </blockquote>
+                        <p>The gate timeout is <code>txdelay + 10 &times; slot_time + 3 &times; airtime(255)</code>. KAM reads airtime through <code>GetAirtime</code> after <code>SetRadio</code>; if unavailable, the calculation uses a conservative 1000 ms airtime fallback. Actual timing still needs hardware measurement.</p>
+                        <p>The retry may duplicate a frame the modem had actually sent. Receivers drop such duplicates by payload hash; a lost frame cannot be recovered. <code>Manager.Counters()</code> reports TX completion, busy, retry, timeout, rejected-length and unmatched-response counts.</p>
+                        <p>Priorities, airtime budgets and fairness between senders are not part of this feature. They belong to the transmit scheduler built for the <a href="FeatureRoomServer.html">room server</a>, which sits on top of this pacing: it hands the writer one frame at a time and learns that the modem is free from <code>TxDone</code>, or from a <code>TxAbandoned</code> event when the writer drops a frame after a second <code>TxBusy</code> or a gate timeout.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Link health</summary>
+                    <div class="prose">
+                        <p>When the serial link is lost, <code>Manager.Done()</code> closes and <code>Node.Run</code> returns an error so a supervisor can restart KAM.</p>
+                        <p>A probe every 30 seconds sends <code>Ping</code> and then <code>GetRadio</code> through the normal request slot. An all-zero or different cached value means the modem reset, so radio settings and diagnostics are reapplied. Three consecutive probe timeouts trigger the same fail-stop as a lost link.</p>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>Delivery phases</summary>
+                    <div class="prose">
+                        <ol>
+                            <li><strong>Hardware verification (pending):</strong> capture exchanges from a real board and measure the quirks/timing above.</li>
+                            <li><strong>Implemented:</strong> request slot, typed errors, Ping barrier, Tier 1 commands and validated config.</li>
+                            <li><strong>Implemented:</strong> startup probe, TxDone/TxBusy events, TX gate and counters.</li>
+                            <li><strong>Implemented:</strong> diagnostics, serial fail-stop and the 30-second reset probe.</li>
+                        </ol>
+                        <p>Reference firmware: MeshCore <code>main</code>, read 2026-10-10 (<code>examples/kiss_modem</code> last changed in <code>3b69e78</code>; <code>docs/kiss_modem_protocol.md</code> in <code>448d1b2</code>). Where the firmware and its documentation disagree, the firmware wins. No hardware smoke test was run for this implementation.</p>
+                    </div>
+                </details>
+            </section>
+
+        </article>
+
+        <footer class="mt-24 pt-8 border-t border-slate-200 text-center text-slate-500 text-sm">
+            &copy; 2026 KAM Project Manuals. Written for beginner to intermediate readers. Checked against the source on 2026-10-10.
+        </footer>
+    </main>
+</body>
+</html>

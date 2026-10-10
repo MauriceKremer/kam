@@ -4,11 +4,13 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.bug.st/serial"
 
 	"kam.bytecoder.nl/internal/kiss/parsers"
+	"kam.bytecoder.nl/internal/mesh"
 )
 
 // defaultRxMetaTimeout is how long the router waits for an RxMeta frame after a
@@ -16,38 +18,99 @@ import (
 // RxMeta immediately after each data frame, so this is a safety bound.
 const defaultRxMetaTimeout = 200 * time.Millisecond
 
-// Constants for KISS protocol framing
-const (
-	FEND  = 0xC0
-	FESC  = 0xDB
-	TFEND = 0xDC
-	TFESC = 0xDD
+type requestResult struct {
+	command byte
+	payload []byte
+	err     error
+}
 
-	CMD_DATA        = 0x00
-	CMD_SETHARDWARE = 0x06
+type pendingRequest struct {
+	expected map[byte]struct{}
+	result   chan requestResult
+}
 
-	SUB_GET_RADIO  = 0x0B
-	SUB_RESP_RADIO = 0x8B
-	SUB_SET_RADIO  = 0x09
-	SUB_RESP_OK    = 0xF0
-	SUB_RX_META    = 0xF9 // unsolicited RxMeta: SNR (1, signed, x4) + RSSI (1, signed dBm)
-)
+type controlFrame struct {
+	frame []byte
+	done  chan error
+}
+
+type ModemEvent interface{ modemEvent() }
+
+type TxDone struct{ OK bool }
+type TxBusy struct{}
+type ModemFault struct{ Code byte }
+
+// TxAbandoned reports that the writer gave up on a data frame without ever
+// seeing TxDone: repeated TxBusy or a gate timeout. Like TxDone it means the
+// modem is free for the next frame.
+type TxAbandoned struct{}
+
+func (TxDone) modemEvent()      {}
+func (TxBusy) modemEvent()      {}
+func (ModemFault) modemEvent()  {}
+func (TxAbandoned) modemEvent() {}
+
+type ModemEventHandler func(ModemEvent)
+
+type ModemCounters struct {
+	TxDoneOK          uint64
+	TxDoneFailed      uint64
+	TxBusy            uint64
+	TxBusyRetry       uint64
+	TxGateTimeout     uint64
+	TxRejectedLength  uint64
+	RxUnmatchedFrames uint64
+}
+
+type modemCounters struct {
+	txDoneOK          atomic.Uint64
+	txDoneFailed      atomic.Uint64
+	txBusy            atomic.Uint64
+	txBusyRetry       atomic.Uint64
+	txGateTimeout     atomic.Uint64
+	txRejectedLength  atomic.Uint64
+	rxUnmatchedFrames atomic.Uint64
+}
+
+type txGateEvent struct {
+	busy bool
+	done bool
+}
 
 type Manager struct {
-	stream serial.Port
-	txChan chan []byte
-	rxChan chan []byte
+	stream      serial.Port
+	writeHook   func([]byte) error
+	txChan      chan []byte
+	rxChan      chan []byte
+	controlChan chan controlFrame
 
-	registry *ResponseRegistry
-
-	// hardware Tx Mutex protect against concurrent writes to the serial port
-	hwTxMutex sync.Mutex
+	requestGate chan struct{}
+	requestMu   sync.Mutex
+	pending     *pendingRequest
+	unsynced    bool
+	barrier     bool
 
 	// stopChan is used to signal the goroutines to stop
-	stopChan chan struct{}
+	stopChan  chan struct{}
+	stopOnce  sync.Once
+	doneChan  chan struct{}
+	doneOnce  sync.Once
+	linkErrMu sync.RWMutex
+	linkErr   error
 
 	// NodeName is the local sender name used in outbound group texts.
 	NodeName string
+
+	csmaMu       sync.RWMutex
+	csma         CSMAConfig
+	airtimeMu    sync.RWMutex
+	airtimeMS    uint32
+	counters     modemCounters
+	txGateEvents chan txGateEvent
+
+	eventMu       sync.RWMutex
+	eventHandlers []ModemEventHandler
+	eventChan     chan ModemEvent
 
 	// onGroupTextMu guards onGroupText. The handler slice is read on the
 	// routeLoop goroutine and mutated by subscribers, so it needs its own lock
@@ -66,12 +129,67 @@ type Manager struct {
 	pendingGroupText *parsers.GroupTextMessage
 	pendingTimer     *time.Timer
 
-	// The fixed-size FIFO queue of recently seen message hashes for duplicate suppression
-	seenHashes []string
+	// dedup suppresses duplicate packets over a bounded, time-limited window.
+	dedup dedupCache
+
+	// onPacketMu guards onPacket, the room-server packet tap subscribers.
+	onPacketMu sync.RWMutex
+	onPacket   []PacketHandler
 
 	// Store receives parsed packets for asynchronous persistence. May be nil.
 	Store Persistence
 }
+
+// RxPacket is a validated inbound packet delivered to packet-tap subscribers:
+// route type, transport codes, path and payload are all preserved.
+type RxPacket struct {
+	mesh.Packet
+	ReceivedAt time.Time
+}
+
+// PacketHandler observes an inbound peer packet (REQ, TXT_MSG, ACK, ANON_REQ,
+// PATH, MULTIPART). Handlers run on the route loop after duplicate suppression
+// and must not block.
+type PacketHandler func(RxPacket)
+
+// SubscribePackets registers a packet-tap observer. Safe to call before Start.
+// The returned cancel function removes the handler.
+func (m *Manager) SubscribePackets(h PacketHandler) (cancel func()) {
+	m.onPacketMu.Lock()
+	defer m.onPacketMu.Unlock()
+	m.onPacket = append(m.onPacket, h)
+	idx := len(m.onPacket) - 1
+	return func() {
+		m.onPacketMu.Lock()
+		defer m.onPacketMu.Unlock()
+		if idx < len(m.onPacket) {
+			m.onPacket[idx] = nil
+		}
+	}
+}
+
+func (m *Manager) dispatchPacket(pkt RxPacket) {
+	m.onPacketMu.RLock()
+	handlers := append([]PacketHandler(nil), m.onPacket...)
+	m.onPacketMu.RUnlock()
+	for _, h := range handlers {
+		if h != nil {
+			h(pkt)
+		}
+	}
+}
+
+// MarkSeen records a raw packet this node is about to transmit so an echo of it
+// from a repeater is dropped as a duplicate instead of being processed.
+func (m *Manager) MarkSeen(raw []byte) {
+	if pkt, err := mesh.Parse(raw); err == nil {
+		m.dedup.Mark(pkt.PayloadType(), pkt.Payload)
+	}
+}
+
+// TxGateTimeout returns how long a data frame may stay in flight before the
+// writer gives up waiting for TxDone.
+func (m *Manager) TxGateTimeout() time.Duration { return m.txGateTimeout() }
 
 // GroupTextHandler observes a decrypted inbound group text. Handlers are
 // invoked from the route loop after persistence enqueue; they must not block.
@@ -185,9 +303,14 @@ func NewManager(portName string, baud int) (*Manager, error) {
 		stream:        stream,
 		txChan:        make(chan []byte, 10), // Buffered to prevent immediate blocking
 		rxChan:        make(chan []byte, 10),
-		registry:      NewResponseRegistry(),
+		controlChan:   make(chan controlFrame, 10),
+		requestGate:   make(chan struct{}, 1),
+		txGateEvents:  make(chan txGateEvent, 4),
+		eventChan:     make(chan ModemEvent, 32),
 		stopChan:      make(chan struct{}),
+		doneChan:      make(chan struct{}),
 		rxMetaTimeout: defaultRxMetaTimeout,
+		csma:          CSMAConfig{TxDelayMS: 500, Persistence: 63, SlotTimeMS: 100},
 	}, nil
 }
 
@@ -196,19 +319,130 @@ func (m *Manager) Start() {
 	go m.readLoop()                      // located in kiss_reader.go
 	go m.writeLoop()                     // located in kiss_writer.go
 	go m.routeLoop(context.Background()) // located in kiss_router.go
+	go m.modemEventLoop()
 }
 
 func (m *Manager) TxChan() chan<- []byte {
 	return m.txChan
 }
 
+func (m *Manager) Done() <-chan struct{} { return m.doneChan }
+
+func (m *Manager) Err() error {
+	m.linkErrMu.RLock()
+	defer m.linkErrMu.RUnlock()
+	return m.linkErr
+}
+
+func (m *Manager) Fail(err error) {
+	if err == nil {
+		return
+	}
+	m.doneOnce.Do(func() {
+		m.linkErrMu.Lock()
+		m.linkErr = err
+		m.linkErrMu.Unlock()
+		close(m.doneChan)
+	})
+}
+
+func (m *Manager) SubscribeModemEvents(handler ModemEventHandler) (cancel func()) {
+	m.eventMu.Lock()
+	m.eventHandlers = append(m.eventHandlers, handler)
+	index := len(m.eventHandlers) - 1
+	m.eventMu.Unlock()
+	return func() {
+		m.eventMu.Lock()
+		defer m.eventMu.Unlock()
+		if index < len(m.eventHandlers) && m.eventHandlers[index] != nil {
+			m.eventHandlers[index] = nil
+		}
+	}
+}
+
+func (m *Manager) modemEventLoop() {
+	for {
+		select {
+		case <-m.stopChan:
+			return
+		case event := <-m.eventChan:
+			m.eventMu.RLock()
+			handlers := append([]ModemEventHandler(nil), m.eventHandlers...)
+			m.eventMu.RUnlock()
+			for _, handler := range handlers {
+				if handler != nil {
+					handler(event)
+				}
+			}
+		}
+	}
+}
+
+func (m *Manager) publishModemEvent(event ModemEvent) {
+	select {
+	case m.eventChan <- event:
+	default:
+		slog.Warn("modem event queue full; event dropped", "event", event)
+	}
+}
+
+func (m *Manager) Counters() ModemCounters {
+	return ModemCounters{
+		TxDoneOK: m.counters.txDoneOK.Load(), TxDoneFailed: m.counters.txDoneFailed.Load(),
+		TxBusy: m.counters.txBusy.Load(), TxBusyRetry: m.counters.txBusyRetry.Load(),
+		TxGateTimeout: m.counters.txGateTimeout.Load(), TxRejectedLength: m.counters.txRejectedLength.Load(),
+		RxUnmatchedFrames: m.counters.rxUnmatchedFrames.Load(),
+	}
+}
+
+func (m *Manager) markUnsynced() {
+	m.requestMu.Lock()
+	m.unsynced = true
+	m.requestMu.Unlock()
+}
+
+func (m *Manager) setCSMA(config CSMAConfig) {
+	m.csmaMu.Lock()
+	m.csma = config
+	m.csmaMu.Unlock()
+}
+
+func (m *Manager) csmaConfig() CSMAConfig {
+	m.csmaMu.RLock()
+	defer m.csmaMu.RUnlock()
+	return m.csma
+}
+
+func (m *Manager) setAirtime(milliseconds uint32) {
+	m.airtimeMu.Lock()
+	m.airtimeMS = milliseconds
+	m.airtimeMu.Unlock()
+}
+
+func (m *Manager) txGateTimeout() time.Duration {
+	cfg := m.csmaConfig()
+	m.airtimeMu.RLock()
+	airtime := m.airtimeMS
+	m.airtimeMu.RUnlock()
+	if airtime == 0 {
+		airtime = 1000
+	}
+	totalMS := cfg.TxDelayMS + 10*cfg.SlotTimeMS + 3*int(airtime)
+	return time.Duration(totalMS) * time.Millisecond
+}
+
 // TestInit initializes minimal internal channels for unit tests.
 func (m *Manager) TestInit() {
 	m.txChan = make(chan []byte, 1)
 	m.rxChan = make(chan []byte, 10)
-	m.registry = NewResponseRegistry()
+	m.controlChan = make(chan controlFrame, 10)
+	m.requestGate = make(chan struct{}, 1)
+	m.txGateEvents = make(chan txGateEvent, 4)
+	m.eventChan = make(chan ModemEvent, 32)
 	m.stopChan = make(chan struct{})
+	m.doneChan = make(chan struct{})
 	m.rxMetaTimeout = defaultRxMetaTimeout
+	m.csma = CSMAConfig{TxDelayMS: 500, Persistence: 63, SlotTimeMS: 100}
 }
 
 // TestTxChan returns the internal txChan for tests.
@@ -216,38 +450,37 @@ func (m *Manager) TestTxChan() <-chan []byte {
 	return m.txChan
 }
 
+func (m *Manager) TestControlChan() <-chan controlFrame { return m.controlChan }
+
 // TestRxChan returns a send-only view of the internal rxChan so tests can feed
 // inbound frames into the route loop without a serial port.
 func (m *Manager) TestRxChan() chan<- []byte {
 	return m.rxChan
 }
 
+// TestRouteLoop runs the route loop until ctx is cancelled or the manager stops,
+// so tests in other packages can drive frames through TestRxChan.
+func (m *Manager) TestRouteLoop(ctx context.Context) {
+	m.routeLoop(ctx)
+}
+
 func (m *Manager) Stop() {
-	// Signal the goroutines to stop
-	close(m.stopChan)
-
-	// Flush any pending packet writes before closing the database handle
-	if m.Store != nil {
-		if err := m.Store.Close(); err != nil {
-			slog.Error("[Manager] failed to close persistence store", "error", err)
+	m.stopOnce.Do(func() {
+		close(m.stopChan)
+		if m.Store != nil {
+			if err := m.Store.Close(); err != nil {
+				slog.Error("[Manager] failed to close persistence store", "error", err)
+			}
 		}
-	}
-
-	// Close the serial port
-	m.stream.Close()
+		if m.stream != nil {
+			_ = m.stream.Close()
+		}
+	})
 }
 
 type RadioConfig struct {
 	Frequency       uint32 // e.g., 868000000 Hz
 	Bandwidth       uint32 // e.g., 125000 Hz
-	SpreadingFactor uint8  // e.g., 7 to 12
+	SpreadingFactor uint8  // e.g., 5 to 12
 	CodingRate      uint8  // e.g., 5 to 8
-}
-
-func (m *Manager) LockDevice() {
-	m.hwTxMutex.Lock()
-}
-
-func (m *Manager) UnlockDevice() {
-	m.hwTxMutex.Unlock()
 }

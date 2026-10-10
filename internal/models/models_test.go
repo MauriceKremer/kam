@@ -3,7 +3,10 @@ package models
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func writeConfig(t *testing.T, path, content string) {
@@ -137,54 +140,10 @@ channels:
 	}
 }
 
-func TestLoadKamConfigEchoValid(t *testing.T) {
+func TestLoadKamConfigIgnoresRetiredEchoBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "kam.yml")
-	writeConfig(t, path, `
-version: 1
-node_name: "kam"
-radio:
-  port: "/dev/ttyUSB0"
-  baud: 115200
-  frequency_hz: 869618000
-  bandwidth_hz: 62500
-  spreading_factor: 7
-  coding_rate: 5
-channels:
-  - name: "#public"
-    key_strategy: "public"
-    key_hex: "8b3387e9c5cdea6ac9e5edbaa115cd72"
-    enabled: true
-  - name: "mesh-dev"
-    key_strategy: "derived"
-    enabled: true
-echo:
-  enabled: true
-  channels: ["#public", "mesh-dev"]
-  mention: "@kam"
-`)
-
-	cfg, err := LoadKamConfig(path)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if !cfg.Echo.Enabled {
-		t.Fatal("echo should be enabled")
-	}
-	if cfg.Echo.Mention != "@kam" {
-		t.Fatalf("mention: got %q, want @kam", cfg.Echo.Mention)
-	}
-	if len(cfg.Echo.Channels) != 2 {
-		t.Fatalf("echo channels: got %d, want 2", len(cfg.Echo.Channels))
-	}
-	if cfg.Echo.Channels[0] != "#public" || cfg.Echo.Channels[1] != "#mesh-dev" {
-		t.Fatalf("echo channels normalized mismatch: %+v", cfg.Echo.Channels)
-	}
-}
-
-func TestLoadKamConfigEchoChannelNotConfigured(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "kam.yml")
+	// ECHO is now a Starlark script; the old block must not break startup, even when it was invalid.
 	writeConfig(t, path, `
 version: 1
 node_name: "kam"
@@ -203,39 +162,15 @@ channels:
 echo:
   enabled: true
   channels: ["#ghost"]
+  mention: "@kam"
 `)
 
-	_, err := LoadKamConfig(path)
-	if err == nil {
-		t.Fatal("expected error for echo channel not in channels")
+	cfg, err := LoadKamConfig(path)
+	if err != nil {
+		t.Fatalf("load config with retired echo block: %v", err)
 	}
-}
-
-func TestLoadKamConfigEchoEnabledNoChannels(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "kam.yml")
-	writeConfig(t, path, `
-version: 1
-node_name: "kam"
-radio:
-  port: "/dev/ttyUSB0"
-  baud: 115200
-  frequency_hz: 869618000
-  bandwidth_hz: 62500
-  spreading_factor: 7
-  coding_rate: 5
-channels:
-  - name: "#public"
-    key_strategy: "public"
-    key_hex: "8b3387e9c5cdea6ac9e5edbaa115cd72"
-    enabled: true
-echo:
-  enabled: true
-`)
-
-	_, err := LoadKamConfig(path)
-	if err == nil {
-		t.Fatal("expected error for echo enabled without channels")
+	if len(cfg.Channels) != 1 || cfg.Channels[0].Name != "#public" {
+		t.Fatalf("unexpected channels: %+v", cfg.Channels)
 	}
 }
 
@@ -318,5 +253,62 @@ func TestChannelIndex(t *testing.T) {
 	}
 	if cfg.ChannelIndex("#missing") != -1 {
 		t.Fatalf("expected -1 for missing channel")
+	}
+}
+
+func TestRadioSettingsValidateRanges(t *testing.T) {
+	power := uint8(17)
+	base := KamConfig{
+		Version:  1,
+		NodeName: "kam",
+		Radio: RadioConfig{
+			Port: "/dev/null", Baud: 115200, FrequencyHz: 869618000, BandwidthHz: 62500,
+			SpreadingFactor: 7, CodingRate: 5, TxPowerDBm: &power,
+			CSMA: &CSMAConfig{TxDelayMS: 500, Persistence: 63, SlotTimeMS: 100},
+		},
+		Channels: []ChannelConfig{{
+			Name: "#public", KeyStrategy: KeyStrategyPublic,
+			KeyHex: "8b3387e9c5cdea6ac9e5edbaa115cd72",
+		}},
+	}
+
+	cases := []struct {
+		name string
+		edit func(*KamConfig)
+		key  string
+	}{
+		{"frequency", func(cfg *KamConfig) { cfg.Radio.FrequencyHz = 299_999_999 }, "frequency_hz"},
+		{"bandwidth", func(cfg *KamConfig) { cfg.Radio.BandwidthHz = 7_799 }, "bandwidth_hz"},
+		{"spreading factor", func(cfg *KamConfig) { cfg.Radio.SpreadingFactor = 4 }, "spreading_factor"},
+		{"coding rate", func(cfg *KamConfig) { cfg.Radio.CodingRate = 9 }, "coding_rate"},
+		{"TX power", func(cfg *KamConfig) { value := uint8(23); cfg.Radio.TxPowerDBm = &value }, "tx_power_dbm"},
+		{"TX delay", func(cfg *KamConfig) { cfg.Radio.CSMA.TxDelayMS = 501 }, "txdelay_ms"},
+		{"persistence", func(cfg *KamConfig) { cfg.Radio.CSMA.Persistence = 256 }, "persistence"},
+		{"slot time", func(cfg *KamConfig) { cfg.Radio.CSMA.SlotTimeMS = 101 }, "slot_time_ms"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			csma := *base.Radio.CSMA
+			cfg.Radio.CSMA = &csma
+			tc.edit(&cfg)
+			if _, err := normalizeAndValidate(&cfg); err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Fatalf("validation error = %v, want key %q", err, tc.key)
+			}
+		})
+	}
+	if _, err := normalizeAndValidate(&base); err != nil {
+		t.Fatalf("valid optional radio settings rejected: %v", err)
+	}
+}
+
+func TestPartialCSMAConfigUsesFirmwareDefaults(t *testing.T) {
+	var config CSMAConfig
+	if err := yaml.Unmarshal([]byte("full_duplex: true\n"), &config); err != nil {
+		t.Fatalf("decode partial CSMA config: %v", err)
+	}
+	want := CSMAConfig{TxDelayMS: 500, Persistence: 63, SlotTimeMS: 100, FullDuplex: true}
+	if config != want {
+		t.Fatalf("CSMA config = %+v, want %+v", config, want)
 	}
 }

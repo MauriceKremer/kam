@@ -2,11 +2,12 @@ package kiss
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"log/slog"
+	"time"
 
 	"kam.bytecoder.nl/internal/kiss/parsers"
+	"kam.bytecoder.nl/internal/mesh"
 )
 
 type RouteType byte
@@ -78,11 +79,9 @@ func (m *Manager) routeLoop(ctx context.Context) {
 					m.attachRxMeta(int(int8(subPayload[0])), int(int8(subPayload[1])))
 					continue
 				}
-				// Dispatch by sub-command for SetHardware extensions
-				m.registry.Dispatch(subCmd, subPayload)
+				m.dispatchHardwareResponse(subCmd, subPayload)
 
 			case CMD_DATA:
-
 				// Packet payload must be at least 2 bytes to read the header safely
 				if len(payload) < 2 {
 					slog.Info("[Router] Warning: Received malformed packet with insufficient payload length")
@@ -90,117 +89,73 @@ func (m *Manager) routeLoop(ctx context.Context) {
 				}
 
 				slog.Debug("[Router] Received packet", "cmdByte", cmdByte, "payload", hex.EncodeToString(payload))
-
-				header := payload[0]
-
-				// 1. Decode Header bit-masks
-				routeType := header & 0x03
-				payloadType := (header >> 2) & 0x0F
-				version := (header >> 6) & 0x03
-
-				if version != PAYLOAD_VERSION_V1 {
-					slog.Info("[Router] Warning: Received unsupported packet version", "version", version)
-					continue
-				}
-
-				slog.Info("[Router] Decoded packet header...", "routeType", RouteType(routeType), "payloadType", PayloadType(payloadType), "version", PayloadVersion(version))
-
-				// --- Dynamic Header Slicing Logic ---
-				cursor := 1 // Account for the 1-byte header already processed
-
-				if routeType == ROUTE_TYPE_TRANSPORT_FLOOD || routeType == ROUTE_TYPE_TRANSPORT_DIRECT {
-					// Skip the 4-byte transport codes block
-					cursor += 4
-				}
-
-				// Parse the variable-length path frame present for all route types.
-				// Hop count and per-hop hashes are hoisted out of the if-block so
-				// they remain in scope for GRP_TXT dispatch and tap delivery.
-				numHops := 0
-				hashSize := 1
-				var pathStations [][]byte
-				if cursor < len(payload) {
-					pathFlags := payload[cursor]
-					cursor++ // Consume the path flags byte
-
-					// Extract number of hops from the lower 6 bits
-					numHops = int(pathFlags & 0x3F)
-
-					// Determine the hash size per hop from the upper 2 bits
-					hashSize = 1
-					switch (pathFlags >> 6) & 0x03 {
-					case 0:
-						hashSize = 1
-					case 1:
-						hashSize = 2
-					case 2:
-						hashSize = 3
-					case 3:
-						slog.Warn("[Router] Invalid path hash size code 0b11, dropping packet")
-						continue
-					}
-
-					// Capture the per-hop path hashes (relay node identity hashes)
-					// before skipping them, so handlers and persistence can report
-					// which stations relayed the packet.
-					pathLen := numHops * hashSize
-					if pathLen > 0 && cursor+pathLen <= len(payload) {
-						pathStations = make([][]byte, 0, numHops)
-						for i := 0; i < numHops; i++ {
-							start := cursor + i*hashSize
-							pathStations = append(pathStations, append([]byte(nil), payload[start:start+hashSize]...))
-						}
-					}
-
-					// Skip the accumulated node hop hashes
-					cursor += numHops * hashSize
-				}
-
-				// Safety check to avoid slicing out of bounds
-				if cursor > len(payload) {
-					slog.Info("[Router] Warning: Packet layout truncated or malformed parsing network headers")
-					continue
-				}
-
-				// Extract the clean application-layer payload
-				appPayload := payload[cursor:]
-
-				// Perform deduplication immediately upon receiving raw data
-				// Pass the 'payload' (which starts with the header byte) to the filter
-				if m.isDuplicate(appPayload) {
-					slog.Info("[Router] Dropping duplicate packet")
-					continue
-				}
-
-				slog.Info("[Router] Dispatching packet...", "payload", hex.EncodeToString(appPayload))
-
-				// 2. Dispatch to the appropriate handler
-				switch payloadType {
-				case PAYLOAD_TYPE_ADVERT:
-					advert := parsers.ParseAdvert(appPayload)
-					advert.HopCount = numHops
-					advert.HopStations = pathStations
-					if m.Store != nil {
-						m.Store.EnqueueAdvert(advert)
-					}
-				case PAYLOAD_TYPE_GRP_TXT:
-					msg, ok := parsers.ParseGroupText(appPayload)
-					if ok {
-						msg.HopCount = numHops
-						msg.HopStations = pathStations
-						// Stage for dispatch and wait briefly for the modem's RxMeta
-						// (0xF9) frame so SNR/RSSI can be attached. holdGroupText
-						// enqueues to Store and fires the tap once meta arrives or the
-						// timeout elapses.
-						m.holdGroupText(msg)
-					}
-				default:
-					slog.Info("[Router] Warning: Received unhandled payload type", "payloadType", PayloadType(payloadType))
-				} // Closes switch payloadType
+				m.routePacket(payload)
 			} // Closes switch cmdByte
 		} // Closes select
 	} // Closes for
 } // Closes routeLoop function
+
+// routePacket decodes one inbound radio packet, drops duplicates, and
+// dispatches it by payload type. Adverts and group texts keep their dedicated
+// paths; peer packets go to the packet tap.
+func (m *Manager) routePacket(raw []byte) {
+	pkt, err := mesh.Parse(raw)
+	if err != nil {
+		slog.Warn("[Router] Dropping malformed packet", "error", err)
+		return
+	}
+	if pkt.Version() != PAYLOAD_VERSION_V1 {
+		slog.Info("[Router] Warning: Received unsupported packet version", "version", pkt.Version())
+		return
+	}
+
+	slog.Info("[Router] Decoded packet header...", "routeType", RouteType(pkt.RouteType()), "payloadType", PayloadType(pkt.PayloadType()), "version", PayloadVersion(pkt.Version()))
+
+	// Capture the per-hop path hashes (relay node identity hashes) so handlers
+	// and persistence can report which stations relayed the packet.
+	numHops := pkt.HashCount()
+	var pathStations [][]byte
+	if numHops > 0 {
+		hashSize := pkt.HashSize()
+		pathStations = make([][]byte, 0, numHops)
+		for i := 0; i < numHops; i++ {
+			pathStations = append(pathStations, append([]byte(nil), pkt.Path[i*hashSize:(i+1)*hashSize]...))
+		}
+	}
+
+	appPayload := pkt.Payload
+	if m.dedup.Check(pkt.PayloadType(), appPayload) {
+		slog.Info("[Router] Dropping duplicate packet")
+		return
+	}
+
+	slog.Info("[Router] Dispatching packet...", "payload", hex.EncodeToString(appPayload))
+
+	switch pkt.PayloadType() {
+	case PAYLOAD_TYPE_ADVERT:
+		advert := parsers.ParseAdvert(appPayload)
+		advert.HopCount = numHops
+		advert.HopStations = pathStations
+		if m.Store != nil {
+			m.Store.EnqueueAdvert(advert)
+		}
+	case PAYLOAD_TYPE_GRP_TXT:
+		msg, ok := parsers.ParseGroupText(appPayload)
+		if ok {
+			msg.HopCount = numHops
+			msg.HopStations = pathStations
+			// Stage for dispatch and wait briefly for the modem's RxMeta
+			// (0xF9) frame so SNR/RSSI can be attached. holdGroupText
+			// enqueues to Store and fires the tap once meta arrives or the
+			// timeout elapses.
+			m.holdGroupText(msg)
+		}
+	case PAYLOAD_TYPE_REQ, PAYLOAD_TYPE_TXT_MSG, PAYLOAD_TYPE_ACK, PAYLOAD_TYPE_ANON_REQ, PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_MULTIPART:
+		m.dispatchPacket(RxPacket{Packet: pkt, ReceivedAt: time.Now()})
+	default:
+		slog.Info("[Router] Warning: Received unhandled payload type", "payloadType", PayloadType(pkt.PayloadType()))
+	}
+}
 
 func (rt RouteType) String() string {
 	switch rt {
@@ -215,6 +170,94 @@ func (rt RouteType) String() string {
 	default:
 		return "Unknown"
 	}
+}
+
+func (m *Manager) dispatchHardwareResponse(command byte, payload []byte) {
+	if command == SUB_TX_DONE {
+		if len(payload) < 1 {
+			m.counters.rxUnmatchedFrames.Add(1)
+			slog.Debug("malformed TxDone event", "payload", payload)
+			return
+		}
+		done := TxDone{OK: payload[0] != 0}
+		if done.OK {
+			m.counters.txDoneOK.Add(1)
+		} else {
+			m.counters.txDoneFailed.Add(1)
+		}
+		select {
+		case m.txGateEvents <- txGateEvent{done: true}:
+		default:
+			slog.Warn("TX gate event queue full; TxDone may not release transmission")
+		}
+		m.publishModemEvent(done)
+		return
+	}
+
+	m.requestMu.Lock()
+	if m.barrier {
+		if command != SUB_RESP_PONG {
+			m.requestMu.Unlock()
+			m.counters.rxUnmatchedFrames.Add(1)
+			return
+		}
+		m.barrier = false
+		m.unsynced = false
+	}
+
+	request := m.pending
+	if command == SUB_ERROR {
+		code := byte(0)
+		if len(payload) > 0 {
+			code = payload[0]
+		}
+		if code == MODEM_ERROR_TX_BUSY {
+			m.counters.txBusy.Add(1)
+		}
+		if request != nil {
+			select {
+			case request.result <- requestResult{err: &ModemError{Code: code}}:
+			default:
+			}
+			m.requestMu.Unlock()
+			return
+		}
+		m.requestMu.Unlock()
+		if code == MODEM_ERROR_TX_BUSY {
+			select {
+			case m.txGateEvents <- txGateEvent{busy: true}:
+			default:
+				slog.Warn("TX gate event queue full; TxBusy may not be handled")
+			}
+			m.publishModemEvent(TxBusy{})
+		} else {
+			m.publishModemEvent(ModemFault{Code: code})
+		}
+		return
+	}
+	if request == nil {
+		m.requestMu.Unlock()
+		m.counters.rxUnmatchedFrames.Add(1)
+		slog.Debug("unmatched modem response", "command", command, "payload", payload)
+		return
+	}
+	if request == nil {
+		m.requestMu.Unlock()
+		m.counters.rxUnmatchedFrames.Add(1)
+		slog.Debug("unmatched modem response", "command", command, "payload", payload)
+		return
+	}
+	if _, ok := request.expected[command]; !ok {
+		m.requestMu.Unlock()
+		m.counters.rxUnmatchedFrames.Add(1)
+		slog.Debug("unexpected modem response", "command", command, "payload", payload)
+		return
+	}
+	select {
+	case request.result <- requestResult{command: command, payload: append([]byte(nil), payload...)}:
+	default:
+	}
+	m.requestMu.Unlock()
 }
 
 func (pt PayloadType) String() string {
@@ -265,25 +308,4 @@ func (pv PayloadVersion) String() string {
 	default:
 		return "Unknown"
 	}
-}
-
-func (m *Manager) isDuplicate(payload []byte) bool {
-	// 1. Generate hash from the raw bytes
-	h := sha256.Sum256(payload)
-	hash := hex.EncodeToString(h[:])
-
-	// 2. Check if we've seen it
-	for _, seen := range m.seenHashes {
-		if seen == hash {
-			return true
-		}
-	}
-
-	// 3. Update the buffer (FIFO)
-	if len(m.seenHashes) >= 10 {
-		m.seenHashes = m.seenHashes[1:] // Pop oldest
-	}
-	m.seenHashes = append(m.seenHashes, hash) // Push newest
-
-	return false
 }

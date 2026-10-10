@@ -1,0 +1,25 @@
+# ─── Codify Ignore ───────────────────────────────────────────────
+# Files and folders listed here will be excluded from Codify's
+# awareness — they won't appear in project structure, search results,
+# or file listings sent to the AI.
+#
+# Syntax: Same as .gitignore (one pattern per line)
+#
+# EXAMPLES:
+#
+# Ignore an entire folder (note the trailing slash):
+#   packages/legacy-app/
+#
+# Ignore all files with a specific extension:
+#   *.generated.ts
+#   *.min.js
+#
+# Ignore a specific file:
+#   src/config/secrets.json
+#
+# Ignore folders by name anywhere in the project:
+#   __snapshots__/
+#   .storybook/
+#
+# ─── Your patterns below ─────────────────────────────────────────
+

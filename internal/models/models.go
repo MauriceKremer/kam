@@ -23,25 +23,91 @@ type KamConfig struct {
 	DBPath   string          `yaml:"db_path"`
 	Radio    RadioConfig     `yaml:"radio"`
 	Channels []ChannelConfig `yaml:"channels"`
-	Echo     EchoConfig      `yaml:"echo"`
-}
-
-// EchoConfig controls the optional echo liveness service that replies to
-// group-text messages mentioning the local node on monitored channels.
-type EchoConfig struct {
-	Enabled  bool     `yaml:"enabled"`
-	Channels []string `yaml:"channels"`
-	Mention  string   `yaml:"mention,omitempty"`
+	// Mesh and Rooms are validated lazily by ResolveRooms so a mistake in a
+	// room never prevents the radio from ingesting.
+	Mesh  *MeshConfig  `yaml:"mesh,omitempty"`
+	Rooms []RoomConfig `yaml:"rooms,omitempty"`
 }
 
 // RadioConfig defines the default serial and RF settings.
 type RadioConfig struct {
-	Port            string `yaml:"port"`
-	Baud            int    `yaml:"baud"`
-	FrequencyHz     uint32 `yaml:"frequency_hz"`
-	BandwidthHz     uint32 `yaml:"bandwidth_hz"`
-	SpreadingFactor uint8  `yaml:"spreading_factor"`
-	CodingRate      uint8  `yaml:"coding_rate"`
+	Port            string      `yaml:"port"`
+	Baud            int         `yaml:"baud"`
+	FrequencyHz     uint32      `yaml:"frequency_hz"`
+	BandwidthHz     uint32      `yaml:"bandwidth_hz"`
+	SpreadingFactor uint8       `yaml:"spreading_factor"`
+	CodingRate      uint8       `yaml:"coding_rate"`
+	TxPowerDBm      *uint8      `yaml:"tx_power_dbm,omitempty"`
+	CSMA            *CSMAConfig `yaml:"csma,omitempty"`
+}
+
+type CSMAConfig struct {
+	TxDelayMS   int  `yaml:"txdelay_ms"`
+	Persistence int  `yaml:"persistence"`
+	SlotTimeMS  int  `yaml:"slot_time_ms"`
+	FullDuplex  bool `yaml:"full_duplex"`
+}
+
+func (cfg *CSMAConfig) UnmarshalYAML(node *yaml.Node) error {
+	var raw struct {
+		TxDelayMS   *int  `yaml:"txdelay_ms"`
+		Persistence *int  `yaml:"persistence"`
+		SlotTimeMS  *int  `yaml:"slot_time_ms"`
+		FullDuplex  *bool `yaml:"full_duplex"`
+	}
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	*cfg = CSMAConfig{TxDelayMS: 500, Persistence: 63, SlotTimeMS: 100}
+	if raw.TxDelayMS != nil {
+		cfg.TxDelayMS = *raw.TxDelayMS
+	}
+	if raw.Persistence != nil {
+		cfg.Persistence = *raw.Persistence
+	}
+	if raw.SlotTimeMS != nil {
+		cfg.SlotTimeMS = *raw.SlotTimeMS
+	}
+	if raw.FullDuplex != nil {
+		cfg.FullDuplex = *raw.FullDuplex
+	}
+	return nil
+}
+
+func ValidateRadioParameters(frequencyHz, bandwidthHz uint32, spreadingFactor, codingRate uint8) error {
+	if frequencyHz < 300_000_000 || frequencyHz > 2_500_000_000 {
+		return fmt.Errorf("radio.frequency_hz must be between 300000000 and 2500000000, got %d", frequencyHz)
+	}
+	if bandwidthHz < 7_800 || bandwidthHz > 500_000 {
+		return fmt.Errorf("radio.bandwidth_hz must be between 7800 and 500000, got %d", bandwidthHz)
+	}
+	if spreadingFactor < 5 || spreadingFactor > 12 {
+		return fmt.Errorf("radio.spreading_factor must be between 5 and 12, got %d", spreadingFactor)
+	}
+	if codingRate < 5 || codingRate > 8 {
+		return fmt.Errorf("radio.coding_rate must be between 5 and 8, got %d", codingRate)
+	}
+	return nil
+}
+
+func ValidateTxPowerDBm(value uint8) error {
+	if value < 1 || value > 22 {
+		return fmt.Errorf("radio.tx_power_dbm must be between 1 and 22, got %d", value)
+	}
+	return nil
+}
+
+func (cfg CSMAConfig) Validate() error {
+	if cfg.TxDelayMS < 0 || cfg.TxDelayMS > 2550 || cfg.TxDelayMS%10 != 0 {
+		return fmt.Errorf("radio.csma.txdelay_ms must be a multiple of 10 between 0 and 2550, got %d", cfg.TxDelayMS)
+	}
+	if cfg.Persistence < 0 || cfg.Persistence > 255 {
+		return fmt.Errorf("radio.csma.persistence must be between 0 and 255, got %d", cfg.Persistence)
+	}
+	if cfg.SlotTimeMS < 0 || cfg.SlotTimeMS > 2550 || cfg.SlotTimeMS%10 != 0 {
+		return fmt.Errorf("radio.csma.slot_time_ms must be a multiple of 10 between 0 and 2550, got %d", cfg.SlotTimeMS)
+	}
+	return nil
 }
 
 type ChannelConfig struct {
@@ -180,7 +246,10 @@ func LoadKamConfig(path string) (*KamConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read kam config: %w", err)
 	}
+	return ParseKamConfig(content)
+}
 
+func ParseKamConfig(content []byte) (*KamConfig, error) {
 	var cfg KamConfig
 	if err := yaml.Unmarshal(content, &cfg); err != nil {
 		return nil, fmt.Errorf("parse kam config yaml: %w", err)
@@ -224,6 +293,19 @@ func normalizeAndValidate(cfg *KamConfig) (*KamConfig, error) {
 	if cfg.Radio.CodingRate == 0 {
 		return nil, fmt.Errorf("radio coding_rate is required")
 	}
+	if err := ValidateRadioParameters(cfg.Radio.FrequencyHz, cfg.Radio.BandwidthHz, cfg.Radio.SpreadingFactor, cfg.Radio.CodingRate); err != nil {
+		return nil, err
+	}
+	if cfg.Radio.TxPowerDBm != nil {
+		if err := ValidateTxPowerDBm(*cfg.Radio.TxPowerDBm); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.Radio.CSMA != nil {
+		if err := cfg.Radio.CSMA.Validate(); err != nil {
+			return nil, err
+		}
+	}
 
 	out := &KamConfig{
 		Version:  cfg.Version,
@@ -231,6 +313,8 @@ func normalizeAndValidate(cfg *KamConfig) (*KamConfig, error) {
 		DBPath:   strings.TrimSpace(cfg.DBPath),
 		Radio:    cfg.Radio,
 		Channels: make([]ChannelConfig, 0, len(cfg.Channels)),
+		Mesh:     cfg.Mesh,
+		Rooms:    cfg.Rooms,
 	}
 	seen := make(map[string]struct{}, len(cfg.Channels))
 
@@ -241,26 +325,6 @@ func normalizeAndValidate(cfg *KamConfig) (*KamConfig, error) {
 		}
 		out.Channels = append(out.Channels, normalized)
 	}
-
-	// Normalize and validate the optional echo service config. Echo channels
-	// must be a subset of the configured channels so inbound messages on
-	// them can actually be decrypted.
-	echo := EchoConfig{Enabled: cfg.Echo.Enabled}
-	for _, ec := range cfg.Echo.Channels {
-		name := normalizeChannelName(ec)
-		if name == "" || name == "#" {
-			return nil, fmt.Errorf("echo: invalid channel %q", ec)
-		}
-		if _, ok := seen[name]; !ok {
-			return nil, fmt.Errorf("echo: channel %q is not in channels", name)
-		}
-		echo.Channels = append(echo.Channels, name)
-	}
-	if echo.Enabled && len(echo.Channels) == 0 {
-		return nil, fmt.Errorf("echo: enabled but no channels configured")
-	}
-	echo.Mention = strings.TrimSpace(cfg.Echo.Mention)
-	out.Echo = echo
 
 	return out, nil
 }

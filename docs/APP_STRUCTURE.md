@@ -1,0 +1,170 @@
+# KAM Application Structure
+
+KAM is a single-process Go service that connects a MeshCore-compatible KISS radio to local SQLite storage. Its current runtime is organized around a node lifecycle, a KISS transport manager, packet parsers, asynchronous persistence, an optional Starlark automation runtime, and optional MeshCore room servers.
+
+## Package Structure
+
+```mermaid
+flowchart TD
+    Main["main.go<br/>flags, logging, signals"] --> Node["internal/node<br/>construction and lifecycle"]
+    Main --> Config["internal/config<br/>load, validate, watch, bootstrap"]
+    CLI["kam channel upsert<br/>command process"] --> Config
+    RoomCLI["kam room show<br/>command process"] --> Room
+    Node --> Config
+    Config --> Models["internal/models<br/>configuration and domain types"]
+    Config --> TopicRegistry["internal/kiss/parsers<br/>in-memory channel secrets"]
+
+    Node --> Manager["internal/kiss<br/>manager, KISS loops, router, radio client"]
+    Node --> Persistence["internal/db<br/>SQLite and queued writers"]
+    Node --> Sender["internal/kiss/send<br/>outbound builder and sender"]
+    Node --> Scheduler["internal/kiss TxScheduler<br/>priority, TxDone gate, duty cycle"]
+    Node -. "best effort" .-> Automation["internal/automation<br/>Starlark scripts, Local Management API"]
+    Node -. "best effort" .-> Room["internal/room<br/>room servers"]
+
+    Manager --> Parsers["internal/kiss/parsers<br/>advert and group-text decoders"]
+    Manager --> Persistence
+    Manager --> Automation
+    Manager -->|"packet tap"| Room
+    Automation --> Sender
+    Automation -->|"script repository"| Persistence
+    Room -->|"posts, clients, keys"| Persistence
+    Room --> Mesh["internal/mesh<br/>packets, crypto, identity, adverts"]
+    Room --> Scheduler
+    Sender --> Scheduler
+    Scheduler --> Manager
+
+    Radio["MeshCore KISS radio"] <-->|"serial / KISS frames"| Manager
+    Persistence --> SQLite[("SQLite<br/>adverts, group_texts,<br/>automation_scripts,<br/>rooms, room_posts, room_clients")]
+    Config <-->|"read / atomic write"| YAML["kam.yml<br/>system configuration"]
+```
+
+## Responsibilities
+
+| Area | Responsibility |
+|---|---|
+| `main.go` | Parses command-line overrides, configures logging, loads configuration, constructs the node, and handles SIGINT/SIGTERM. Also runs the short-lived `channel upsert` and `room show` commands. |
+| `internal/config` | Loads and validates YAML, polls for updates, atomically replaces the in-memory channel registry, upserts channels in YAML, and resolves the database path. |
+| `internal/models` | Defines configuration and persisted packet data types, along with configuration normalization and validation, including the `mesh:` and `rooms:` settings (`ResolveRooms` disables an invalid room instead of failing the whole file). |
+| `internal/node` | Owns component construction and shutdown. It bootstraps channels and persistence, starts the KISS manager, applies and verifies radio settings, creates the transmit scheduler, and (best effort) starts the automation runtime with its loopback API and the room servers. |
+| `internal/kiss` | Owns the serial connection and KISS read/write/route loops, response registry, radio control, time-bounded packet deduplication, the group-text and packet taps, and the `TxScheduler` that owns the radio data path. |
+| `internal/kiss/parsers` | Parses and verifies adverts, decrypts group texts using configured channel secrets, and maintains the in-memory channel registry. |
+| `internal/kiss/send` | Builds encrypted group-text packets and queues them on the transmit scheduler. |
+| `internal/mesh` | MeshCore wire primitives with no transport dependency: packet framing, the AES-128-ECB + HMAC envelope, Ed25519 identities with X25519 key exchange, signed adverts, region keys and transport codes, and ACK hashes. |
+| `internal/room` | The room server: logins and roles, posts committed before they are acknowledged, round-robin push sync, keep-alive, signed adverts, rate limiting, and identity files. One worker owns all room state. |
+| `internal/db` | Opens SQLite, maintains advert, group-text, automation and room schemas, persists incoming records through bounded background writer queues, and provides the revision-checked `AutomationRepository` and the `RoomRepository` (own connection, `synchronous=FULL`). |
+| `internal/automation` | Compiles and runs operator-managed Starlark scripts on a single worker fed by a bounded queue, enforces per-script timeouts (`FROZEN`), exposes `reply` through the shared sender, and serves the loopback Local Management API. |
+
+## Runtime Flows
+
+```mermaid
+flowchart LR
+    subgraph Startup["Startup and configuration"]
+        Main["main.go"] --> Load["Load and validate kam.yml"]
+        Load --> Node["node.New"]
+        Node --> Bootstrap["Load channel secrets<br/>into parser registry"]
+        Node --> DBOpen["Open SQLite and start<br/>advert/group-text writers"]
+        Node --> KISSOpen["Open serial and start<br/>read, write, route loops"]
+        Node --> RadioConfig["Apply and verify<br/>radio settings"]
+        YAML["kam.yml"] -. "system config source of truth" .-> Load
+        Bootstrap -.-> Registry["In-memory topic registry"]
+        DBOpen --> DB[("SQLite")]
+        KISSOpen <--> Radio["KISS radio"]
+    end
+
+    subgraph LiveConfig["Live channel configuration"]
+        CLI["kam channel upsert"] --> WriteYAML["Atomic YAML update"] --> ConfigFile["kam.yml"]
+        ConfigFile --> Watcher["Config watcher<br/>500 ms poll"] --> Validate["Parse and validate YAML"]
+        Validate --> Swap["Build and atomically swap<br/>channel registry"]
+        Swap --> LiveRegistry["In-memory topic registry"]
+        Invalid["Invalid YAML"] -. "reject; keep last good registry" .-> Watcher
+    end
+
+    subgraph Inbound["Inbound data"]
+        RadioIn["Radio frames"] --> Read["KISS read loop"] --> Route["KISS route loop"]
+        Route --> Advert["ADVERT parser<br/>signature verification"]
+        Route --> GroupText["Group-text parser<br/>channel decryption"]
+        Route -->|"REQ, TXT_MSG, ACK, ANON_REQ,<br/>PATH, MULTIPART<br/>(after dedup)"| PacketTap["Packet tap<br/>route, scope, path kept"]
+        PacketTap --> RoomWorker["Room worker"]
+        Registry -. "secrets" .-> GroupText
+        Advert --> AdvertQueue["Advert queue"] --> DB
+        GroupText --> RxMeta["Attach RxMeta when available<br/>(or dispatch after timeout)"]
+        RxMeta --> GroupQueue["Group-text queue"] --> DB
+        RxMeta --> ConsumerTap["Group-text subscribers"]
+        ConsumerTap --> Automation["Automation worker"]
+    end
+
+    subgraph Outbound["Outbound packets"]
+        Automation --> Sender["send.Sender"]
+        Caller["Other sender caller"] --> Sender
+        Sender --> Builder["Build encrypted packet"] --> Sched["TxScheduler<br/>priority, delay, duty cycle"]
+        RoomWorker --> Sched
+        Sched -->|"one frame at a time,<br/>wait for TxDone"| Tx["Manager TX queue"] --> Write["KISS write loop"] --> RadioOut["Radio"]
+        RoomWorker --> RoomDB[("SQLite<br/>room_posts, room_clients")]
+    end
+```
+
+## Lifecycle and Data Ownership
+
+- `main` resolves flags and configuration, then delegates runtime ownership to `node.Node`.
+- The node loads channel secrets into memory from YAML. Channel configuration is not stored in SQLite; runtime channel upserts are written back to YAML and immediately applied to the parser registry.
+- While running, the node polls the YAML file for content changes every 500 ms. `kam channel upsert` writes channel changes atomically; the watcher validates the new YAML and swaps the complete channel registry. Invalid YAML is logged and ignored, leaving the last valid registry active.
+- Live reload currently applies channel secrets only. Radio settings, node identity, database path, and the legacy YAML `echo` settings (consumed once by the migration) are read at startup and require a restart to take effect.
+- `kiss.Manager` is the sole owner of the serial connection. It serializes radio control requests and routes inbound frames to the supported advert and group-text parsers.
+- Advert and group-text persistence is asynchronous. The route loop enqueues records to bounded queues; dedicated writers batch inserts into SQLite. Queue saturation can drop records rather than block packet routing.
+- The automation runtime is a group-text subscriber. Its handler clones the message and does a bounded, non-blocking enqueue; its worker runs enabled scripts sequentially, and `reply` sends through the shared sender and the transmit scheduler.
+- Room servers subscribe to the packet tap. The handler does a bounded, non-blocking enqueue; one worker owns every room's client table, push state and advert timers. Posts are committed to SQLite before their ACK is queued; client sessions are written in batches every 5 seconds and on shutdown. Room settings are read at start-up only.
+- Every outbound packet, whether a group text or a room packet, goes through the `TxScheduler`, which hands the modem one frame at a time and waits for `TxDone`.
+- On cancellation, the node stops intake (both subscriptions), the Local Management API and the automation runtime, then the room worker (which flushes client state), then the transmit scheduler, and finally the manager. Manager shutdown closes persistence, which drains and flushes its queues, before closing SQLite and the serial port.
+
+## Starlark Automations
+
+The automation runtime is implemented; remaining work (the weather capability) is tracked in [FeatureStarlark.md](FeatureStarlark.md), which also holds the detailed design.
+
+```mermaid
+flowchart LR
+    API["On-device Local Management API"] --> Repo["Automation script repository"]
+    Repo --> Scripts[("SQLite<br/>automation_scripts")]
+    Repo --> Compile["Validate and compile"] --> Active["Active program snapshot"]
+
+    GroupText["Decoded group text"] -->|"non-blocking enqueue"| Queue["Bounded event queue"]
+    Queue --> Worker["Single sequential worker"] --> Active
+    Active --> Host["Restricted Starlark capabilities"]
+    Host --> Sender["reply / sender"] --> Sched["TX scheduler"] --> KISS["KISS manager TX queue"]
+    Host -. "post-v1 bounded provider" .-> Weather["Weather service adapter"]
+```
+
+- Scripts are persisted in SQLite; YAML remains authoritative for node, radio, and channel settings.
+- The on-device Local Management API validates source before activation. Invalid source loaded from SQLite is marked `BROKEN`; it remains inactive without preventing radio ingestion. Scripts in `BROKEN` or `FROZEN` retain their latest error detail in `last_error`.
+- Each script defaults to `READY` and stores a timeout (500 ms default, tunable by the system administrator with no application-imposed maximum). A timeout marks it `FROZEN` until explicitly recovered. Returning to `READY` clears `last_error`. The worker consumes an internally bounded queue off the route loop; initial execution is sequential, and overflow drops/errors are logged to the console.
+- Script administration uses one system-administrator model; there are no per-user ownership or ACL structures. A future Remote API is out of scope here and will require a separate authentication design.
+- The Local Management API is loopback HTTP only. If automation schema setup fails, core radio ingestion and persistence continue with automation disabled.
+- ECHO is the example script [`examples/echo.star`](examples/echo.star), installed through the API; there is no native ECHO service.
+- `reply` is routed through the existing sender. Future weather access will be a constrained Go host capability, not arbitrary script HTTP.
+- Weather-provider integration is explicitly post-v1 and is not part of the initial Starlark release.
+
+## Room Servers
+
+Room servers are implemented for plan phases 1-3; the requirements, decisions and deviations from the reference firmware are in [FeatureRoomServer.md](FeatureRoomServer.md), and the end-to-end flows are in [SYSTEM_DESIGN.md §10](SYSTEM_DESIGN.md).
+
+- Each room has its own Ed25519 identity, stored as a hex seed in `<database directory>/rooms/<id>.key` (mode `0600`). The public key is the room's address.
+- `kam room show` prints each room's public key, a `meshcore://contact/add` URI and the signed advert as hex, creating a missing identity file first.
+- An invalid room is reported and stays disabled; other rooms and radio ingestion are unaffected.
+- Not yet implemented: status, telemetry and access-list requests (no reply), the over-the-air CLI, HTTP endpoints, and the post-v1 items in FeatureRoomServer §11.
+
+## Source Map
+
+- Entry point: [`main.go`](../main.go)
+- Node lifecycle: [`internal/node/node.go`](../internal/node/node.go)
+- Config and channel bootstrap: [`internal/config`](../internal/config/)
+- Domain types and validation: [`internal/models/models.go`](../internal/models/models.go), room settings in [`internal/models/rooms.go`](../internal/models/rooms.go)
+- KISS manager and router: [`internal/kiss/kiss_manager.go`](../internal/kiss/kiss_manager.go), [`internal/kiss/kiss_router.go`](../internal/kiss/kiss_router.go)
+- Transmit scheduler, airtime estimate and deduplication: [`internal/kiss/scheduler.go`](../internal/kiss/scheduler.go), [`internal/kiss/airtime.go`](../internal/kiss/airtime.go), [`internal/kiss/dedup.go`](../internal/kiss/dedup.go)
+- MeshCore wire primitives: [`internal/mesh`](../internal/mesh/)
+- Room server: [`internal/room`](../internal/room/)
+- Payload parsers: [`internal/kiss/parsers`](../internal/kiss/parsers/)
+- Outbound sender: [`internal/kiss/send`](../internal/kiss/send/)
+- SQLite persistence: [`internal/db/persistence.go`](../internal/db/persistence.go), room repository [`internal/db/rooms.go`](../internal/db/rooms.go)
+- Starlark automation runtime and Local Management API: [`internal/automation`](../internal/automation/)
+- Automation script repository: [`internal/db/automation.go`](../internal/db/automation.go)
+- Example ECHO script: [`examples/echo.star`](examples/echo.star)
+- Starlark automation design: [`FeatureStarlark.md`](FeatureStarlark.md)

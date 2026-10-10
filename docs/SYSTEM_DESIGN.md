@@ -2,9 +2,10 @@
 
 > KAM is a regional MeshCore analytics + room-server application. It connects
 > to any KISS modem flashed with MeshCore firmware, decodes adverts and group
-> texts, verifies Ed25519 signatures, persists to SQLite, optionally echoes
-> mentions back to the mesh, and exposes operator metrics for network
-> behaviour monitoring.
+> texts, verifies Ed25519 signatures, persists to SQLite, runs
+> operator-managed Starlark automations (ECHO is an example script), hosts
+> MeshCore room servers that stock clients can log in to, and exposes operator
+> metrics for network behaviour monitoring.
 
 This document describes the runtime architecture: modules, goroutines, data
 flow, and concurrency controls. Source of truth is the code; this is a map.
@@ -21,8 +22,10 @@ messaging and broadcast channel for when traditional messaging infrastructure
 
 - Share **emergency broadcasts** across a MeshCore mesh region.
 - Relay **weather updates** and other public-safety advisories.
-- Act as a **room server**: aggregate and serve group-text rooms over a
-  region so participants without direct RF reach can still follow traffic.
+- Act as a **MeshCore room server** (advert type `ROOM`): clients log in,
+  post, and receive pushed posts, so participants without direct RF reach can
+  catch up. This is implemented (see [FeatureRoomServer.md](FeatureRoomServer.md)
+  and §10). Mirroring group-text channels into a room is a later step.
 - Provide **operator-facing analytics** so a human operator can watch network
   health, congestion, and traffic composition in real time.
 
@@ -54,12 +57,14 @@ document as the *current* shape, not a contract.
 | Choice | Why it matters for a regional backup service |
 |---|---|
 | **Go** | Single static binary, trivial to deploy on a Pi / NUC / laptop at a regional site. Cheap concurrency for the multi-loop architecture. |
-| **SQLite (WAL, NORMAL sync)** | Zero-ops embedded store — no separate DB process to keep alive during a regional outage. WAL keeps reads responsive while writers batch. Survives power loss with NORMAL sync + 5s busy timeout. |
+| **SQLite (WAL, NORMAL sync)** | Zero-ops embedded store — no separate DB process to keep alive during a regional outage. WAL keeps reads responsive while writers batch. Survives power loss with NORMAL sync + 5s busy timeout. The room repository runs its own connection with FULL sync so an acknowledged post survives power loss. |
 | **Batched, non-blocking persistence queues** | A burst of RF traffic can never stall packet ingestion; the route loop stays responsive. Drops are counted, not silent. |
 | **Hardware mutex + cap-1 waiter channels** | Protects constrained radios with no transaction IDs from queue flooding, so a flaky radio cannot wedge the node. |
 | **Per-payload-type parsers in their own files** | New MeshCore payload types (e.g. emergency broadcast, weather) plug in without touching the router. |
-| **Echo service decoupled from route loop** | Optional producer traffic cannot backpressure ingestion. |
+| **Automation runtime decoupled from route loop** | Script execution and outbound replies cannot backpressure ingestion; a runaway script is frozen by its timeout. |
 | **Graceful, ordered shutdown** | Pending batches flush before the DB handle closes; the node can be restarted cleanly without losing ingested traffic. |
+| **Commit-before-ACK for room posts** | A post is written (synchronous=FULL) before its ACK is queued, so a client is never told a post is safe when it is not. |
+| **One transmit scheduler** | Group texts, automation replies and room packets share one radio. A single scheduler sends one frame at a time, waits for `TxDone`, orders by priority and keeps pushes and adverts inside an airtime budget, so room traffic cannot starve ACKs or exceed the duty cycle. |
 
 ---
 
@@ -74,7 +79,7 @@ document as the *current* shape, not a contract.
    +-----------------------+-----------------------+----------+
    |                       |                       |          |
    v                       v                       v          v
-internal/config    internal/kiss             internal/db   internal/echo
+internal/config    internal/kiss             internal/db   internal/automation
  (YAML load,        (Manager + TNC I/O +       (SQLite     (mention reply
   bootstrap,         router + parsers +        persistence service)
   dbpath)            registry + radio)          queues)
@@ -93,29 +98,46 @@ internal/config    internal/kiss             internal/db   internal/echo
                   internal/kiss/send  (Builder + Sender: outbound group text)
                            |
                            v
-                  internal/models  (KamConfig, RadioConfig, ChannelConfig,
-                                    EchoConfig)
+                  internal/models  (KamConfig, RadioConfig, ChannelConfig)
+```
+
+Room-server additions (plan phases 1-3):
+
+```
+internal/node --starts--> internal/kiss.TxScheduler  (every outbound packet)
+              \--starts--> internal/room.Service      (one worker, all rooms)
+
+routeLoop --packet tap (REQ, TXT_MSG, ACK, ANON_REQ, PATH, MULTIPART)--> room.Service.HandlePacket
+room.Service --> internal/mesh   (packets, envelope crypto, identity, adverts, region codes)
+room.Service --> db.RoomRepository (own SQLite connection, synchronous=FULL)
+room.Service --> kiss.TxScheduler --> Manager.txChan --> writeLoop --> radio
+send.Sender  --> kiss.TxScheduler (legacy TxChan adapter, queued as group text)
 ```
 
 ### Responsibilities
 
 | Package | Role |
 |---|---|
-| `main` | Flag parse, slog setup, load `kam.yml`, build `Node`, block on SIGINT/SIGTERM. |
-| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*send.Sender`, `*echo.Service`. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg. `Run` blocks until ctx cancelled, then stops echo before manager. |
+| `main` | Flag parse, slog setup, load `kam.yml`, build `Node`, block on SIGINT/SIGTERM. Also the short-lived `channel upsert` and `room show` commands. |
+| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*kiss.TxScheduler`, `*send.Sender`, the optional `*automation.Runtime` with its Local Management API server, and the optional `*room.Service` with its repository. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg, creates the scheduler, then (best effort) starts the rooms and the automation runtime. `Run` blocks until ctx cancelled, then shuts down in the order of §6. |
 | `internal/config` | `LoadKamConfig` (YAML + normalize/validate), `BootstrapChannels` (load `#public` + enabled channels from the config into parser topic registry), `UpsertRuntimeChannelAndApply` (write a runtime channel back into the YAML file + apply live), `ResolveDBPath`. |
-| `internal/models` | Pure config + record structs. Validation lives here. |
-| `internal/kiss` | KISS TNC protocol core: `Manager`, reader/writer/router loops, `ResponseRegistry`, `RadioClient`, dedup filter, RxMeta hold/attach/flush. |
+| `internal/models` | Pure config + record structs. Validation lives here, including `MeshConfig`, `RoomConfig` and `KamConfig.ResolveRooms` (an invalid room is disabled, never fatal). |
+| `internal/mesh` | MeshCore wire primitives with no transport dependency: `Packet` parse/encode, `EncryptThenMAC`/`MACThenDecrypt`, `Identity` (Ed25519 + X25519 via `math/big` and `crypto/ecdh`), signed advert payloads, region keys and transport codes, ACK hashes. |
+| `internal/kiss` | KISS TNC protocol core: `Manager`, reader/writer/router loops, `RadioClient`, the time-bounded dedup cache, RxMeta hold/attach/flush, the packet tap, and the `TxScheduler` (priority queue, one frame in flight, `TxDone` gate, duty-cycle cap, airtime estimate). |
 | `internal/kiss/parsers` | Per-payload-type parsers: `ParseAdvert` (Ed25519 verify), `ParseGroupText` (decrypt via channel secret), public-channel secret registry. |
-| `internal/kiss/send` | `Builder` constructs outbound group-text frames; `Sender` enqueues them onto `Manager.txChan`. |
-| `internal/db` | SQLite handle + WAL. `Persistence` implements `kiss.Persistence`. `AdvertQueue` + `GroupTextQueue` = batched background writers. Advert/group-text schemas only (channel config lives in YAML). |
-| `internal/echo` | `Service` subscribes to inbound group texts, replies to mentions via a dedicated worker. First example of a *consumer* of the group-text tap; the operator analytics/metrics surface is expected to subscribe the same way. |
+| `internal/kiss/send` | `Builder` constructs outbound group-text frames; `Sender` queues them on the transmit scheduler. |
+| `internal/room` | `Service`: logins and roles, posts, push sync, keep-alive, adverts, login rate limiting, identity files. One worker goroutine owns all room state. |
+| `internal/db` | SQLite handle + WAL. `Persistence` implements `kiss.Persistence`. `AdvertQueue` + `GroupTextQueue` = batched background writers. `AutomationRepository` stores Starlark scripts (`automation_scripts`) on its own single connection. `RoomRepository` stores `rooms`, `room_posts` and `room_clients` on its own single connection with `synchronous=FULL`. Channel config lives in YAML. |
+| `internal/automation` | `Runtime` loads, compiles, and runs operator-managed Starlark scripts for each group text on one bounded-queue worker; `reply(channel, text)` is the only host function. `NewAPI` is the loopback-only Local Management API. ECHO is the example script `docs/examples/echo.star`. See [FeatureStarlark.md](FeatureStarlark.md). |
 
 > **Extensibility seam.** `Manager.SubscribeGroupText` is the integration point
 > for any new consumer: analytics aggregation, room-server fan-out, emergency
 > broadcast detection, operator dashboards. Each subscriber gets the decrypted
 > message with attached RxMeta (SNR/RSSI) and path info; subscribers must not
-> block the route loop (echo demonstrates the bounded-queue + worker pattern).
+> block the route loop (the automation runtime demonstrates the bounded-queue + worker pattern).
+> `Manager.SubscribePackets` is the same seam for peer traffic (REQ, TXT_MSG,
+> ACK, ANON_REQ, PATH, MULTIPART): it delivers the route type, transport codes,
+> path and payload unchanged, and the room service uses it.
 
 ---
 
@@ -137,13 +159,23 @@ main goroutine
   |                        \----> [writeLoop]   (kiss_writer.go)
   |                        \----> [routeLoop]   (kiss_router.go)
   |   |- radio.ApplyRadioConfig  (sync, short-lived: registers waiter, blocks)
-  |   |- send.NewForManager
-  |   `- if echo enabled:
-  |        echo.New -> manager.SubscribeGroupText(echo.Handle)
-  |                 -> [echo worker goroutine]   (internal/echo)
+  |   |- kiss.NewTxScheduler + Start -> [tx scheduler goroutine]  (kiss/scheduler.go)
+  |   |- send.NewSender(scheduler)
+  |   |- rooms (best effort; a failure leaves radio ingestion running):
+  |   |    db.OpenRoomRepository, room.LoadIdentities, room.NewService
+  |   |    service.Start -> [room worker goroutine]   (internal/room)
+  |   |    manager.SubscribePackets(service.HandlePacket)
+  |   `- automation (best effort; a failure leaves radio ingestion running):
+  |        db.OpenAutomationRepository
+  |        automation.NewRuntime -> manager.SubscribeGroupText(runtime.Handle)
+  |                              -> [automation worker goroutine]   (internal/automation)
+  |        automation.ServeLocalAPI -> [HTTP server goroutine on 127.0.0.1:8765]
   |
   `- n.Run(ctx):  <-ctx.Done()  (SIGINT/SIGTERM)
-       |- echo.Stop()       (close stopCh, wait doneCh)
+       |- unsubscribe (group text, packets) + API Shutdown   (stop intake)
+       |- runtime.Stop()    (cancel active script, drop queued events, join worker)
+       |- rooms.Stop()      (join worker, flush client sessions); close room repository
+       |- scheduler.Stop()  (discard queued packets, join goroutine)
        |- manager.Stop()
        |    |- close(stopChan)  -> readLoop, writeLoop, routeLoop exit
        |    |- Store.Close()
@@ -163,13 +195,17 @@ main goroutine
 | 4 | `routeLoop` | `kiss.Manager` | `Start`→`Stop` | recv `rxChan`, dispatches to registry/parsers/Store/handlers |
 | 5 | advert `writerLoop` | `db.AdvertQueue` | `NewAdvertQueue`→`Stop` | recv `ch`, batch insert into SQLite |
 | 6 | group-text `writerLoop` | `db.GroupTextQueue` | `NewGroupTextQueue`→`Stop` | recv `ch`, batch insert into SQLite |
-| 7 | echo `worker` | `echo.Service` | `New`→`Stop` | recv `queue`, builds + sends reply |
-| 8 | (planned) analytics/metrics aggregator | future package | subscribe via `SubscribeGroupText` | same tap pattern as echo |
+| 7 | automation `worker` | `automation.Runtime` | `NewRuntime`→`Stop` | recv bounded `queue`, runs scripts sequentially, `reply` sends via `send.Sender` |
+| 7a | Local Management API server | `automation.ServeLocalAPI` | `ServeLocalAPI`→`Shutdown` | HTTP on `127.0.0.1:8765`; one short-lived goroutine per request |
+| 7b | tx scheduler | `kiss.TxScheduler` | `Start`→`Stop` | recv legacy `TxChan` frames, a timer, and `TxDone`/`TxAbandoned` modem events; sends one frame at a time to `Manager.txChan` |
+| 7c | room worker | `room.Service` | `Start`→`Stop` | recv a bounded packet queue (64) and a 50 ms tick; owns every room's state; writes `RoomRepository`, submits to the scheduler |
+| 8 | (planned) analytics/metrics aggregator | future package | subscribe via `SubscribeGroupText` | same tap pattern as the automation runtime |
 | * | radio request | caller (e.g. `main`/`New`) | per `Get`/`Set` call | register waiter on `ResponseRegistry`, push `txChan`, block on resp |
 
 > Goroutine 8 is **not yet implemented**; it is recorded here to make the
-> intended growth direction explicit. Today echo (7) is the only non-persistence
-> consumer of the group-text tap.
+> intended growth direction explicit. Today the automation worker (7) is the
+> only non-persistence consumer of the group-text tap, and the room worker (7c)
+> is the only consumer of the packet tap.
 
 ---
 
@@ -194,28 +230,54 @@ each request.
 
 ### 3.3 Tx path
 
-Outbound frames go through `Manager.txChan` (buffered 10). Producers:
-- `RadioClient.Set` (control frames)
-- `send.Sender.Send` (group-text data frames), used by echo worker
+Every outbound data packet goes through `kiss.TxScheduler`. Producers:
+- `send.Sender.Send` (group-text data frames, used by the automation worker's
+  `reply`) through the scheduler's legacy `TxChan()` adapter, queued as
+  `TxPriorityGroupText`;
+- `room.Service` through `Submit`, with a priority, an optional delay (the
+  reference's 200/300 ms reply delays) and a tag so a queued push can be
+  cancelled.
 
-`writeLoop` is the sole serial writer, so no extra serialization is needed
-for the data path. Control-path serialization is the `hwTxMutex`.
+The scheduler validates each packet with `mesh.Parse`, orders eligible packets
+by priority (ACKs and direct replies, then flood replies and PATH, then group
+texts, then pushes, then adverts), and hands `Manager.txChan` (buffered 10)
+exactly one frame at a time. It then waits for the modem's `TxDone` (or the
+writer's `TxAbandoned` event when the writer gave up after repeated `TxBusy` or a
+gate timeout), with the manager's gate timeout plus 500 ms as a fallback.
+Pushes and adverts are deferrable: when the sliding one-hour airtime estimate
+(`kiss.LoRaAirtime`) would exceed `duty_cycle_percent` they wait; ACKs, replies
+and group texts never do. A full queue (128) evicts the newest deferrable packet
+to admit a non-deferrable one and rejects a deferrable one.
+
+`writeLoop` is the sole serial writer and keeps its own `TxDone` gate; control
+frames (`RadioClient` requests) use the manager's separate control queue, which
+the writer always drains first (see [FeatureKissModem.md](FeatureKissModem.md)).
 
 ### 3.4 Rx dispatch + RxMeta hold
 
-`routeLoop` decodes the 1-byte header (`routeType` | `payloadType` |
-`version`), slices transport/path bytes, dedups by SHA-256 of the app
-payload (FIFO of 10), then dispatches:
+`routeLoop` hands each KISS data frame to `routePacket`, which parses it with
+`mesh.Parse` (a reserved path hash size, a path over 64 bytes, a missing payload
+or a payload over 184 bytes is dropped; so is an unsupported packet version),
+slices transport/path bytes, drops duplicates, then dispatches. The dedup key is
+the first 8 bytes of SHA-256(payload type | payload), held for 2 minutes in a
+cache of at most 512 entries, so the same flood arriving over several routes
+counts once while a retry with different attempt bits passes. Room packets KAM
+transmits are marked seen, so a repeater's echo is not processed (group-text
+echo handling is unchanged).
 
 - `PAYLOAD_TYPE_ADVERT` → `parsers.ParseAdvert` (Ed25519 verify) →
   `Store.EnqueueAdvert` (non-blocking).
+- `PAYLOAD_TYPE_REQ`, `TXT_MSG`, `ACK`, `ANON_REQ`, `PATH`, `MULTIPART` → the
+  packet tap (`SubscribePackets`): a `kiss.RxPacket` with route type, transport
+  codes, encoded `path_len`, path and payload. Handlers must not block; the room
+  service enqueues to its bounded queue.
 - `PAYLOAD_TYPE_GRP_TXT` → `parsers.ParseGroupText` (decrypt) →
   `holdGroupText`: stage the message, arm a
   `time.AfterFunc(rxMetaTimeout)` timer. The next `SUB_RX_META` (0xF9)
   frame calls `attachRxMeta(snr, rssi)`, attaches radio quality, and
   dispatches. If RxMeta never arrives, `flushPendingGroupText` dispatches
   without it. Dispatch = `Store.EnqueueGroupText` + tap subscribed handlers
-  (echo).
+  (automation runtime).
 
 `pendingMu` guards the single pending message + timer. Only one group
 text is held at a time; a new message flushes the previous one.
@@ -234,17 +296,55 @@ routeLoop ──EnqueueAdvert──>  AdvertQueue.ch  ──>  advert writerLoop
 routeLoop ──EnqueueGroupText─> GroupTextQueue.ch ──> gt writerLoop      ──>  SQLite (group_texts)
 ```
 
-### 3.6 Echo service
+### 3.6 Automation runtime
 
-`echo.Service` is fully decoupled from the route loop. `Handle` (called
-inline by `dispatchGroupText`) only does cheap filters + non-blocking
-enqueue to its own bounded queue. The worker goroutine does the
-potentially-blocking `Build`+`Send` sequentially. This guarantees the
-route loop never blocks on radio TX backpressure.
+`automation.Runtime` is fully decoupled from the route loop. `Handle` (called
+inline by `dispatchGroupText`) clones the message and does a non-blocking
+enqueue to a bounded queue (128); a full queue drops the event and logs it.
+A single worker runs every enabled `READY` script sequentially in script-ID
+order, each in a fresh Starlark thread bounded by the script's `timeout_ms`
+(default 500 ms). A script that exceeds it is marked `FROZEN` (in memory
+first, then persisted) until an operator recovers it. Compiled programs stay
+resident; SQLite is touched only at startup, on API mutations, and on
+`BROKEN`/`FROZEN` transitions. The only host function is `reply`, which goes
+through `send.Sender` with a context-aware 500 ms budget.
 
-Shutdown order matters: `echo.Stop()` runs **before** `manager.Stop()` so
-the worker cannot enqueue TX frames into a write loop that has already
-exited.
+Shutdown order matters: the runtime is stopped (active script cancelled,
+queued events dropped, worker joined) **before** `manager.Stop()` so scripts
+cannot enqueue TX frames into a write loop that has already exited.
+
+### 3.7 Room service
+
+`room.Service` follows the same decoupling. `HandlePacket` (called inline by the
+packet tap) does a non-blocking enqueue to a bounded queue (64) and counts what
+it drops. One worker goroutine owns every room's state, so no room state needs a
+lock: it processes packets and runs a 50 ms tick for time-driven work.
+
+Per room the worker keeps the client table (public key, shared secret, role,
+replay timestamp, cursor, stored route, push state), the newest
+`backlog_posts` posts (the only posts the push engine can ever send, so it never
+queries SQLite), and the timers for adverts, session flush and retention.
+
+- **Receive.** A direct packet that still has hops left is ignored (a forwarder's
+  business) except an ACK. `ANON_REQ` is tried against every room whose first key
+  byte matches `dest_hash`; a peer packet is tried against every client with a
+  matching `src_hash` until a MAC verifies.
+- **Posts.** The post is committed to SQLite (`synchronous=FULL`, together with
+  the author's replay timestamp) and only then is its ACK queued. If the write
+  fails there is no ACK and the client's timestamp is not advanced, so its retry
+  is processed as new.
+- **Push.** Round robin, one client per pass, at most one unacknowledged push per
+  client, 1.2 s after a push and 150 ms when idle. A push that never left the
+  scheduler queue by its ACK timeout (for example held back by the duty-cycle
+  cap) is withdrawn without counting as a failure.
+- **Persistence.** Client sessions are written in batches every 5 s and on stop;
+  posts are not batched. Retention prunes by count and age every 10 minutes.
+- **Failure isolation.** A room that cannot start is logged and skipped; radio
+  ingestion continues.
+
+The worker is stopped after the packet subscription is removed and **before**
+the scheduler and the manager, so its last flush and any queued ACKs still have
+a write path.
 
 ---
 
@@ -273,17 +373,17 @@ radio ──bytes──> readLoop ──> rxChan ──> routeLoop
    dispatchGroupText:
    |-> Store.EnqueueGroupText ──> GroupTextQueue.ch ──> writerLoop ──> SQLite group_texts
    `-> subscribed handlers:
-        echo.Handle ──filter──> echo.queue ──> echo.worker ──> send.Sender.Send
-              ──> txChan ──> writeLoop ──> radio
+        automation.Handle ──clone──> bounded queue ──> worker ──> scripts ──> reply ──> send.Sender.Send
+              ──> TxScheduler ──> txChan ──> writeLoop ──> radio
 ```
 
-### 4.3 Outbound group text (echo reply)
+### 4.3 Outbound group text (script reply)
 
 ```
-echo.worker ──> send.Sender.Send(ctx, channel, body)
+automation.worker ──> reply ──> send.Sender.Send(ctx, channel, body)
    |-> Builder.Build (encrypt with channel secret)
    |-> frame = [CMD_DATA][raw...]
-   `-> manager.txChan ──> writeLoop ──> serial.Write ──> radio
+   `-> TxScheduler ──> manager.txChan ──> writeLoop ──> serial.Write ──> radio
 ```
 
 ### 4.4 Radio configuration (startup)
@@ -299,6 +399,46 @@ main/node.New ──> RadioClient.ApplyRadioConfig(ctx, cfg)
    `-> returns verified RadioConfig (read back from hardware)
 ```
 
+### 4.5 Room login, post and push
+
+```
+radio ──> readLoop ──> rxChan ──> routeLoop ──routePacket──> dedup ──> packet tap
+   `-> room.HandlePacket ──> bounded queue ──> room worker
+
+   ANON_REQ (login):
+     rate limit ──> X25519 shared secret ──> MAC ──> authorize (password -> role)
+     ──> client table (replay check, evict least recently active non-admin)
+     ──> RESPONSE (direct) or PATH return carrying the response (flood)
+     ──> TxScheduler (delay 300 ms)
+
+   TXT_MSG (post):
+     MAC ──> role check (read-write or admin) ──> RoomRepository.AppendPost (commit)
+     ──> push cache ──> ACK ──> TxScheduler (delay 200 ms)
+
+   tick (every 50 ms):
+     next client in the round robin ──> oldest unsynced post, at least 6 s old
+     ──> TXT_MSG (signed plain) ──> TxScheduler (push priority, cancellable tag)
+
+   ACK, PATH extra or MULTIPART ACK:
+     match a client's pending ACK ──> cursor = pushed post, failures = 0
+```
+
+```
+Client                                 KAM room (ADV_TYPE_ROOM, default scope)
+  | --- ANON_REQ login(t, since, pw) -->|  rate limit; ECDH; replay check
+  | <-- PATH(RESPONSE) / RESPONSE ------|  13-byte response; role in byte 7
+  | --- PATH(route, [ACK]) ------------>|  stores the route; no reciprocal path
+  |                                     |
+  | --- TXT_MSG(plain) post ----------->|  commit to SQLite, then ACK
+  | <-- ACK(sha256) --------------------|  hash over timestamp, flags, text, client key
+  |                                     |
+  |                 [round robin tick]  |  one unacknowledged push per client
+  | <-- TXT_MSG(signed) post -----------|  expected ACK recorded before sending
+  | --- ACK(sha256) ------------------->|  cursor advances; next push
+  |                                     |
+  | --- REQ(KEEP_ALIVE, since?) ------->|  direct only: ACK + unsynced count
+```
+
 ---
 
 ## 5. Shared state and locks
@@ -309,9 +449,14 @@ main/node.New ──> RadioClient.ApplyRadioConfig(ctx, cfg)
 | `ResponseRegistry.waiters` | `sync.Mutex` | Waiter channels are `cap 1` so dispatch never blocks. |
 | `onGroupText` handlers | `onGroupTextMu sync.RWMutex` | Route loop reads (RLock); subscribe/unsubscribe writes. Unsubscribe nils the slot, doesn't shrink slice. |
 | `pendingGroupText` + timer | `pendingMu sync.Mutex` | Single in-flight group text awaiting RxMeta. |
-| `seenHashes` dedup FIFO | none (route loop only) | Accessed only from `routeLoop`. |
+| `dedupCache` | `sync.Mutex` | Checked by `routeLoop`, marked by the scheduler (`MarkSeen`). Bounded: 2 minutes, 512 entries. |
+| `onPacket` handlers | `onPacketMu sync.RWMutex` | Same pattern as `onGroupText`. |
+| `TxScheduler` queue, airtime ledger, in-flight flag | `sync.Mutex` | Producers submit from any goroutine; one run goroutine sends. Modem events reach it through a buffered channel and never block the event loop. |
+| Room state (client tables, post caches, timers, push state) | none (room worker only) | Counters are atomics, so `Stats()` is safe from any goroutine. |
+| `RoomRepository` | single SQLite connection | Writes first in every transaction, so a concurrent commit by the persistence connection cannot fail it with `SQLITE_BUSY_SNAPSHOT`. |
 | `AdvertQueue.ch` / `GroupTextQueue.ch` | channel | Bounded; enqueue non-blocking. |
-| echo `queue` | channel | Bounded; enqueue non-blocking. |
+| automation `queue` | channel | Bounded (128); enqueue non-blocking, drops are logged. |
+| automation `scripts` (compiled programs) | `sync.RWMutex` + `mutationMu` | Worker snapshots under RLock; API mutations and freezes serialize on `mutationMu` and publish a new entry only after the SQLite write commits. |
 | `stopChan` | `close()` | Signal-all for the three Manager loops. Each queue/service has its own stop signal. |
 
 ---
@@ -320,9 +465,15 @@ main/node.New ──> RadioClient.ApplyRadioConfig(ctx, cfg)
 
 `Node.Run` blocks on `<-ctx.Done()` (SIGINT/SIGTERM), then:
 
-1. `echo.Stop()` — close `stopCh`, wait `doneCh`. Drains echo queue
-   **before** the TX path goes away.
-2. `manager.Stop()`:
+1. Unsubscribe the group-text and packet handlers (stop intake), shut down the
+   Local Management API, then `automation.Runtime.Stop()` (cancel the active
+   script, drop queued events, join the worker, wait for in-flight API
+   mutations) and close the automation repository, all **before** the TX path
+   goes away.
+2. `room.Service.Stop()` joins the worker after a final flush of client
+   sessions; then close the room repository.
+3. `TxScheduler.Stop()` discards queued packets and joins its goroutine.
+4. `manager.Stop()`:
    1. `close(stopChan)` — `readLoop`, `writeLoop`, `routeLoop` exit.
    2. `Store.Close()`:
       - `AdvertQueue.Stop()` — drain + final flush, wait `done`.
@@ -330,19 +481,39 @@ main/node.New ──> RadioClient.ApplyRadioConfig(ctx, cfg)
       - `db.Close()`.
    3. `stream.Close()`.
 
-Ordering invariant: echo before manager, persistence flush before DB close,
-DB close before serial close.
+Ordering invariant: automation and rooms before the scheduler, the scheduler
+before the manager, persistence flush before DB close, DB close before serial
+close.
 
 ---
 
 ## 7. SQLite
 
-One file (`kam.db`) holds `adverts` and `group_texts` only. Channel
-configuration is **not** persisted here — it lives in `kam.yml` (see
+One file (`kam.db`) holds `adverts`, `group_texts`, the automation table
+`automation_scripts` (script source, timeout, status, last error, revision),
+and the room tables `rooms` (id and public key), `room_posts` (room, server
+timestamp, author key, text) and `room_clients` (role, cursor, replay
+timestamp, stored route), with a `room_schema_version` table for migrations.
+Channel configuration is **not** persisted here — it lives in `kam.yml` (see
 `internal/config`). Opened with
-WAL mode, 5s busy timeout, NORMAL synchronous mode. Schemas and tuning
+WAL mode, 5s busy timeout, NORMAL synchronous mode; the room repository sets
+FULL on its own connection so a post survives power loss before it is
+acknowledged. Schemas and tuning
 constants live in `internal/db` (see README "Advert Persistence" and
 "Group Text Persistence" for full DDL and metrics).
+
+**Backups.** The database now contains operator script source. Include it in
+operational backups, and copy it consistently: take an online
+`sqlite3 kam.db ".backup kam-backup.db"`, or copy `kam.db` together with its
+`-wal` and `-shm` files while the node is stopped. Restoring a backup restores
+scripts and their enabled state.
+
+**Room identity keys are not in the database.** Each room's Ed25519 seed is a
+hex file at `<database directory>/rooms/<id>.key`. The public key
+is the room's address: losing the file means clients no longer recognise the
+room, so back the `rooms` directory up with the database. Passwords are in
+`kam.yml` in plain text, like channel keys (decision D11 in
+[FeatureRoomServer.md](FeatureRoomServer.md)).
 
 ---
 
@@ -379,16 +550,19 @@ missing piece is an aggregator goroutine (goroutine 8 in §2) that taps the
 same `SubscribeGroupText` stream plus the queue `Metrics()` counters and
 periodically snapshots them to an operator-facing surface.
 
-### 8.2 Room-server role (intended)
+### 8.2 Room-server role
 
-As a room server, KAM is expected to:
-- Persist every decrypted group-text room durably (already done —
-  `group_texts` table).
-- Expose room history + live tail to operators / bridged clients (API surface
-  not yet built).
-- Optionally **re-broadcast** emergency/weather advisories onto relevant
-  channels via `send.Sender` (same path echo uses). Trigger policy and
-  authorisation are open design questions.
+As a room server, KAM now:
+- Answers logins, stores posts durably (acknowledged posts survive a restart or
+  power loss), and pushes them to logged-in clients (§3.7, §4.5).
+- Keeps persisting every decrypted group-text channel in `group_texts` (a
+  separate feature; channels are not mirrored into rooms).
+
+Still open: Local Management API endpoints for clients, roles, posts and
+forced adverts; a `ServerStats`-compatible status reply (which would let
+clients and other KAM nodes read this node's metrics); history and live-tail
+surfaces for operators; and re-broadcasting emergency/weather advisories via
+`send.Sender` (trigger policy and authorisation are open design questions).
 
 ### 8.3 Broadcast / emergency & weather (intended)
 
@@ -413,8 +587,10 @@ architecture is shaped to allow**, not commitments:
 1. **Operator metrics API / dashboard** — export queue metrics + traffic
    rollups. Aggregator goroutine taps `SubscribeGroupText` + queue
    `Metrics()`.
-2. **Room-server HTTP/WebSocket surface** — serve `group_texts` history and
-   live tails from SQLite.
+2. **Room administration and history surfaces** — the room server is
+   implemented; Local Management API endpoints for clients, roles, posts and
+   forced adverts (plan phase 4) and a `group_texts` history/live-tail surface
+   are not.
 3. **New payload-type parsers** — `internal/kiss/parsers/<type>.go` per type.
    The router is a pure dispatcher; emergency/weather payloads plug in here.
 4. **Originating broadcasts** — emergency/weather/ops via `send.Sender`, with
@@ -435,6 +611,12 @@ architecture is shaped to allow**, not commitments:
 
 ## 10. MeshCore room-server protocol (reference)
 
+> **Status.** KAM implements this behaviour for plan phases 1-3 (login, roles,
+> posts, push sync, keep-alive, adverts, session persistence); see
+> [FeatureRoomServer.md](FeatureRoomServer.md) for requirements, decisions and
+> every deviation. Statements below that were checked against the pinned
+> firmware source and found wrong are marked *(corrected)*.
+
 MeshCore has **no single room-server spec doc**. The behaviour is defined by
 three sources that must be read together:
 
@@ -447,8 +629,9 @@ three sources that must be read together:
    `main`-branch version).
 
 A room server is a MeshCore node advertising `ADV_TYPE_ROOM`. It is a **BBS**:
-persists posts in a cyclic queue, pushes new posts to logged-in clients, and
-also selectively forwards mesh packets. Traffic is **direct**
+persists posts in a cyclic queue and pushes new posts to logged-in clients.
+The reference room server defaults to `disable_fwd = 1`, so it does not forward
+mesh packets unless configured to *(corrected)*; KAM never forwards. Traffic is **direct**
 (ECDH-derived shared secret, `PAYLOAD_TYPE_ANON_REQ`/`REQ`/`RESPONSE`/
 `TXT_MSG`) — *not* group text. KAM's group-text path does not capture it.
 
@@ -457,7 +640,8 @@ also selectively forwards mesh packets. Traffic is **direct**
 | Constant | Value | Meaning |
 |---|---|---|
 | `MAX_UNSYNCED_POSTS` | 32 | cyclic post queue size |
-| `MAX_POST_TEXT_LEN` | 151 | 160 − 9-byte overhead |
+| `MAX_POST_TEXT_LEN` | 151 | buffer size; `StrHelper::strncpy` keeps at most **150 bytes** *(corrected)* |
+| `MAX_CLIENTS` | 20 | client table size; the least recently active non-admin is evicted when full *(corrected: omitted before)* |
 | `POST_SYNC_DELAY_SECS` | 6 | settle before a post is pushable |
 | `PUSH_NOTIFY_DELAY_MILLIS` | 2000 | post-add → first push window |
 | `SYNC_PUSH_INTERVAL` | 1200 | round-robin push cadence |
@@ -478,6 +662,10 @@ also selectively forwards mesh packets. Traffic is **direct**
 Note the counter-intuitive naming: the **guest password** grants
 **read-write**, and a passwordless login is the true **guest/read-only**.
 
+The reference blocks posting only for role `GUEST` (0); `READ_ONLY` (1) can
+post *(corrected)*. KAM enforces the intent instead: only read-write and admin
+clients post (decision D3).
+
 ### 10.3 Login flow
 
 Client → server: `PAYLOAD_TYPE_ANON_REQ`, ciphertext plaintext = Room server
@@ -496,7 +684,9 @@ Server (`onAnonDataRecv`):
    `allow_read_only`)→guest. Mismatch → **no response** (client times out).
 3. Replay guard: `sender_timestamp <= client->last_timestamp` → reject.
 4. `acl.putClient`; store ECDH `shared_secret`; set `sync_since`, reset
-   `pending_ack`/`push_failures`; mark ACL dirty (lazy 5s write).
+   `pending_ack`/`push_failures`; mark the client dirty. The reference persists
+   **admin entries only** *(corrected)*; KAM persists every client session in
+   batches every 5 s (decision D4).
 5. If request was flood, `out_path_len = OUT_PATH_UNKNOWN` (force rediscovery).
 6. Reply `PAYLOAD_TYPE_RESPONSE`:
 
@@ -521,15 +711,17 @@ Client → server: `PAYLOAD_TYPE_TXT_MSG` (encrypted with shared secret),
 plaintext = plain-text-message: `timestamp(4) | (txt_type<<2)|attempt(1) | msg`.
 
 Server `onPeerDataRecv` decodes `txt_type`:
-- `TXT_TYPE_PLAIN` (0) → `addPost()` into cyclic queue (admin/read-write
-  only; read-only → no ACK, rejected). Schedules `next_push`.
+- `TXT_TYPE_PLAIN` (0) → `addPost()` into cyclic queue (read-write and admin
+  by intent; the reference rejects only role `GUEST`, see §10.2). Schedules
+  `next_push`.
 - `TXT_TYPE_CLI_DATA` (1) → admin-only CLI command; reply sent back as
   `TXT_MSG`. Non-admin → no ACK, no reply.
 - `TXT_TYPE_SIGNED_PLAIN` (2) → server-side only (used for pushes, §10.5).
 
 Replay rule for `TXT_MSG`: `sender_timestamp >= last_timestamp` (equal =
-retry → ACK but do **not** re-add the post). `REQ` uses the stricter
-`sender_timestamp < last_timestamp` → reject.
+retry → ACK but do **not** re-add the post). `REQ` drops
+`sender_timestamp < last_timestamp`, the same boundary; it simply has no retry
+case *(corrected: it is not stricter)*.
 
 Server ACKs with 4-byte truncated SHA256 of `{timestamp, text, sender
 pubkey}`. Direct if `out_path` known (optionally a 2nd `createMultiAck`
@@ -566,9 +758,11 @@ Client ACKs with the 4-byte hash. `processAck` matches against `pending_ack`:
 3. **`sync_since = push_post_timestamp`** — post marked delivered.
 
 ACK timeout before next iteration → `push_failures++`, `pending_ack=0`.
-After 3 failures the client starves; `out_path` reset to `OUT_PATH_UNKNOWN`
-on next flood contact triggers path rediscovery. Inactive clients evicted
-(LRU) when the ACL table fills.
+After 3 failures the client starves until it shows authenticated activity
+(login, `TXT_MSG` or `REQ`). The reference does **not** reset `out_path` at that
+point; only a flood login clears it *(corrected)*. KAM does reset it (RS-PUSH-6)
+so the next exchange rediscovers the route. When the client table is full the
+least recently active non-admin is evicted.
 
 ### 10.7 Keep-alive + status/telemetry
 
@@ -614,29 +808,27 @@ Client                                 Server (ADV_TYPE_ROOM, region-scoped)
   | --- REQ(GET_STATUS) -------------->|  ServerStats  -> operator metrics (§8)
 ```
 
-### 10.10 Implications for KAM
+### 10.10 KAM implementation
 
-Acting as a room server in KAM means implementing, on the Go side over the
-existing `kiss.Manager` + `send.Sender`:
+How each piece of the reference behaviour maps onto KAM (plan phases 1-3):
 
-1. **ANON_REQ handling + ECDH session** — `PAYLOAD_TYPE_ANON_REQ` (payload
-   type 0x07) is not yet routed in `kiss_router.go` (only advert + group
-   text). Add a parser + a client/session table (the ACL analogue).
-2. **Crypto offload to the modem** — the KISS `SetHardware` extensions
-   (`kiss_modem_protocol.md`) already expose `KeyExchange` (X25519, 0x07),
-   `EncryptData`/`DecryptData` (AES-128 + 2-byte HMAC-SHA256 MAC, 0x05/0x06),
-   `SignData`/`VerifySignature` (Ed25519, 0x04/0x03), and `Hash` (SHA-256,
-   0x08). A Go room-server can drive these via `Manager.registry` request/response
-   instead of reimplementing the crypto natively. This keeps KAM a thin,
-   auditable bridge.
-3. **Post store + push state machine** — cyclic buffer + per-client
-   `sync_since`/`pending_ack`/`push_failures` + round-robin push loop. A
-   natural new goroutine alongside the echo worker (§2, goroutine 8).
-4. **Path learning** — `onPeerPathRecv` stores `out_path`; KAM must handle
-   `PAYLOAD_TYPE_PATH` (0x08) and `PAYLOAD_TYPE_ACK` (0x03) to advance sync.
-5. **Region scoping** — preserve transport codes on flood replies so a KAM
-   room server's traffic stays within its region.
-6. **Operator metrics** — a KAM client can `REQ_TYPE_GET_STATUS` to room
-   servers/repeaters it sees and aggregate `ServerStats` into the §8 surface,
-   giving cross-node congestion/airtime/dup visibility without each node
-   self-reporting.
+1. **ANON_REQ handling + ECDH session** — the router parses every packet with
+   `mesh.Parse` and delivers `ANON_REQ`, `REQ`, `TXT_MSG`, `ACK`, `PATH` and
+   `MULTIPART` to the packet tap; `internal/room` keeps the client table (the ACL
+   analogue). The shared secret is X25519 over the Ed25519 keys, byte-compatible
+   with `ed25519_key_exchange` and checked against the MeshCore test key pair.
+2. **Crypto stays in KAM** — the modem's `EncryptData`/`DecryptData` take a
+   caller-supplied key, so offloading them gains nothing *(corrected: this was
+   suggested earlier)*, and the modem cannot be given a chosen identity. Identity,
+   signing and key exchange run in `internal/mesh` (decision D1).
+3. **Post store + push state machine** — `room_posts` in SQLite plus an in-memory
+   cache of the newest posts; per-client `sync_since`, pending ACK and failure
+   count; the round-robin push engine runs on the room worker (§3.7).
+4. **Path learning** — `PATH` stores the client's route; `PATH` extras, plain
+   `ACK` and `MULTIPART` ACKs all advance the cursor.
+5. **Region scoping** — replies reuse the request's region when it matches a
+   configured one; adverts and pushes use `mesh.default_scope`. Region keys are
+   `SHA-256("#" + name)[:16]`.
+6. **Operator metrics** — not done: `GET_STATUS` is unsupported (no reply),
+   so KAM does not yet report `ServerStats`. A KAM client that polls other room
+   servers for status remains a future item.

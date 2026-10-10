@@ -7,34 +7,24 @@ import (
 	"kam.bytecoder.nl/internal/models"
 )
 
-// BootstrapChannels loads every configured channel from the in-memory config
-// (already parsed from kam.yml) into the parser topic registry at startup.
-//
-// System configuration lives in the YAML file only; the durable store is not
-// used for channel state. The #public channel is verified and applied first,
-// then every other enabled channel is registered via applyChannelConfig.
+// BootstrapChannels atomically replaces the parser registry from validated config.
 func BootstrapChannels(cfg *models.KamConfig) error {
 	publicHex, err := cfg.PublicChannelKeyHex()
 	if err != nil {
 		return fmt.Errorf("apply #public key: %w", err)
 	}
-	if err := parsers.SetPublicChannelSecretHex(publicHex); err != nil {
-		return fmt.Errorf("apply #public key: %w", err)
-	}
-
-	parsers.ResetTopicRegistry()
-
+	topics := make([]parsers.TopicConfig, 0, len(cfg.Channels))
 	for _, channel := range cfg.Channels {
-		if channel.Name == "#public" {
-			// Already applied above; skip so applyChannelConfig's #public
-			// special-casing does not run twice.
-			continue
-		}
-		if err := applyChannelConfig(channel); err != nil {
-			return err
-		}
+		topics = append(topics, parsers.TopicConfig{
+			Name:        channel.Name,
+			KeyStrategy: channel.KeyStrategy,
+			KeyHex:      channel.KeyHex,
+			Enabled:     channel.Enabled,
+		})
 	}
-
+	if err := parsers.ReplaceTopicRegistry(publicHex, topics); err != nil {
+		return fmt.Errorf("replace parser channel registry: %w", err)
+	}
 	return nil
 }
 
@@ -48,6 +38,19 @@ func BootstrapChannels(cfg *models.KamConfig) error {
 // channel is rejected here — it is structural and must be edited in the file
 // directly.
 func UpsertRuntimeChannelAndApply(configPath string, channel models.ChannelConfig) error {
+	if err := UpsertChannelInConfigFile(configPath, channel); err != nil {
+		return err
+	}
+	cfg, err := models.LoadKamConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("reload config after upsert: %w", err)
+	}
+	return BootstrapChannels(cfg)
+}
+
+// UpsertChannelInConfigFile atomically adds or replaces a channel in YAML.
+// It does not mutate process-local state, making it suitable for CLI use.
+func UpsertChannelInConfigFile(configPath string, channel models.ChannelConfig) error {
 	normalized, err := models.NormalizeChannelConfig(channel)
 	if err != nil {
 		return fmt.Errorf("normalize runtime channel: %w", err)
@@ -70,47 +73,5 @@ func UpsertRuntimeChannelAndApply(configPath string, channel models.ChannelConfi
 	if err := models.SaveKamConfig(configPath, cfg); err != nil {
 		return fmt.Errorf("save config after upsert: %w", err)
 	}
-
-	return applyChannelConfig(normalized)
-}
-
-// applyChannelConfig reconciles the parser topic registry with a single
-// channel config entry.
-//
-// The #public channel is special-cased: it must use the public key strategy,
-// cannot be disabled, and its secret hex is pushed into the parsers package.
-// For any other channel, a disabled entry is unregistered, while an enabled
-// entry is registered with either a derived or explicit key depending on its
-// KeyStrategy.
-func applyChannelConfig(channel models.ChannelConfig) error {
-	if channel.Name == "#public" {
-		if channel.KeyStrategy != models.KeyStrategyPublic {
-			return fmt.Errorf("#public must use %q strategy", models.KeyStrategyPublic)
-		}
-		if !channel.Enabled {
-			return fmt.Errorf("#public cannot be disabled")
-		}
-		if err := parsers.SetPublicChannelSecretHex(channel.KeyHex); err != nil {
-			return fmt.Errorf("apply #public key: %w", err)
-		}
-		return nil
-	}
-
-	if !channel.Enabled {
-		parsers.UnregisterTopic(channel.Name)
-		return nil
-	}
-
-	switch channel.KeyStrategy {
-	case models.KeyStrategyDerived:
-		parsers.RegisterTopic(channel.Name)
-	case models.KeyStrategyExplicit:
-		if _, err := parsers.RegisterTopicWithKeyHex(channel.Name, channel.KeyHex); err != nil {
-			return fmt.Errorf("register explicit-key channel %q: %w", channel.Name, err)
-		}
-	default:
-		return fmt.Errorf("unsupported key strategy %q for channel %q", channel.KeyStrategy, channel.Name)
-	}
-
 	return nil
 }

@@ -129,3 +129,26 @@ func TestUpsertRuntimeChannelRejectsPublic(t *testing.T) {
 		t.Fatal("expected error upserting #public at runtime")
 	}
 }
+
+func TestChannelUpsertKeepsRoomSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kam.yml")
+	writeConfigFile(t, path, baseConfig+`
+mesh:
+  default_scope: "#eu"
+rooms:
+  - id: lobby
+    name: "Lobby"
+    admin_password: "s3cret"
+    max_posts: 500
+`)
+	if err := UpsertChannelInConfigFile(path, models.ChannelConfig{Name: "#ops", KeyStrategy: models.KeyStrategyDerived, Enabled: true}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	cfg, err := LoadKamConfig(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if cfg.Mesh == nil || cfg.Mesh.DefaultScope != "#eu" || len(cfg.Rooms) != 1 || cfg.Rooms[0].AdminPassword != "s3cret" || cfg.Rooms[0].MaxPosts != 500 {
+		t.Fatalf("room settings lost by a channel upsert: mesh=%+v rooms=%+v", cfg.Mesh, cfg.Rooms)
+	}
+}

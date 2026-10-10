@@ -3,7 +3,6 @@ package parsers
 import (
 	"bytes"
 	"crypto/aes"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -12,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"kam.bytecoder.nl/internal/mesh"
 )
 
 // PublicChannelSecret is the 32-byte GroupChannel secret for the public channel.
@@ -35,7 +36,9 @@ func SetPublicChannelSecretHex(keyHex string) error {
 
 	secret := make([]byte, 32)
 	copy(secret, psk)
+	registryMutex.Lock()
 	PublicChannelSecret = secret
+	registryMutex.Unlock()
 	return nil
 }
 
@@ -75,6 +78,8 @@ type GroupTextMessage struct {
 
 // PublicChannelHash returns the channel hash for the currently configured public secret.
 func PublicChannelHash() byte {
+	registryMutex.RLock()
+	defer registryMutex.RUnlock()
 	return ChannelHash(PublicChannelSecret)
 }
 
@@ -89,6 +94,68 @@ var (
 	registryMutex sync.RWMutex
 	topicRegistry = make(map[uint32]topicStorage)
 )
+
+type TopicConfig struct {
+	Name        string
+	KeyStrategy string
+	KeyHex      string
+	Enabled     bool
+}
+
+// ReplaceTopicRegistry validates and atomically replaces all configured channel secrets.
+func ReplaceTopicRegistry(publicKeyHex string, channels []TopicConfig) error {
+	publicKey, err := hex.DecodeString(strings.TrimSpace(publicKeyHex))
+	if err != nil {
+		return fmt.Errorf("decode public key: %w", err)
+	}
+	if len(publicKey) != 16 {
+		return fmt.Errorf("public key must decode to 16 bytes, got %d", len(publicKey))
+	}
+
+	publicSecret := make([]byte, 32)
+	copy(publicSecret, publicKey)
+	topics := make(map[uint32]topicStorage, len(channels))
+	for _, channel := range channels {
+		cleanName := normalizeTopicName(channel.Name)
+		if cleanName == "#public" || !channel.Enabled {
+			continue
+		}
+
+		var secret []byte
+		switch channel.KeyStrategy {
+		case "derived":
+			hash := sha256.Sum256([]byte(cleanName))
+			secret = make([]byte, 32)
+			copy(secret, hash[:16])
+		case "explicit":
+			key, err := hex.DecodeString(strings.TrimSpace(channel.KeyHex))
+			if err != nil {
+				return fmt.Errorf("decode key for channel %q: %w", cleanName, err)
+			}
+			if len(key) != 16 && len(key) != 32 {
+				return fmt.Errorf("channel %q key must decode to 16 or 32 bytes, got %d", cleanName, len(key))
+			}
+			secret = make([]byte, 32)
+			copy(secret, key)
+		default:
+			return fmt.Errorf("unsupported key strategy %q for channel %q", channel.KeyStrategy, cleanName)
+		}
+
+		nameHash := sha256.Sum256([]byte(cleanName))
+		topicID := binary.LittleEndian.Uint32(nameHash[28:32])
+		topics[topicID] = topicStorage{
+			name:   cleanName,
+			secret: secret,
+			hash:   ChannelHash(secret),
+		}
+	}
+
+	registryMutex.Lock()
+	PublicChannelSecret = publicSecret
+	topicRegistry = topics
+	registryMutex.Unlock()
+	return nil
+}
 
 // ResetTopicRegistry clears all registered topic channels.
 func ResetTopicRegistry() {
@@ -117,7 +184,6 @@ func RegisterTopic(topicName string) uint32 {
 		hash:   ChannelHash(secret),
 	}
 	registryMutex.Unlock()
-
 	slog.Info("[Topic Registry] Subscribed to new channel", "topic", cleanName, "id", topicID, "key_hex", hex.EncodeToString(secret[:16]))
 	return topicID
 }
@@ -200,7 +266,10 @@ func normalizeTopicName(topicName string) string {
 func LookupTopic(topicName string) (secret []byte, hash byte, name string, ok bool) {
 	cleanName := normalizeTopicName(topicName)
 	if cleanName == "#public" {
-		return PublicChannelSecret, ChannelHash(PublicChannelSecret), "#public", true
+		registryMutex.RLock()
+		secret := append([]byte(nil), PublicChannelSecret...)
+		registryMutex.RUnlock()
+		return secret, ChannelHash(secret), "#public", true
 	}
 
 	want := sha256.Sum256([]byte(cleanName))
@@ -208,13 +277,14 @@ func LookupTopic(topicName string) (secret []byte, hash byte, name string, ok bo
 
 	registryMutex.RLock()
 	topic, exists := topicRegistry[topicID]
+	secret = append([]byte(nil), topic.secret...)
 	registryMutex.RUnlock()
 
 	if !exists {
 		return nil, 0, "", false
 	}
 
-	return topic.secret, topic.hash, topic.name, true
+	return secret, topic.hash, topic.name, true
 }
 
 // ChannelHash returns the first byte of SHA256(secret).
@@ -257,23 +327,13 @@ func AESECBEncrypt(key, src []byte) []byte {
 
 // EncryptThenMAC encrypts plaintext with AES-128-ECB and prepends a 2-byte
 // HMAC-SHA256 over the ciphertext. Key material uses the first 16 bytes of
-// secret32 for AES and the full 32 bytes for HMAC.
+// secret32 for AES and the full 32 bytes for HMAC. plaintext must already be a
+// multiple of 16 bytes; mesh.EncryptThenMAC pads instead.
 func EncryptThenMAC(secret32, plaintext []byte) []byte {
-	const macSize = 2
 	if len(plaintext)%16 != 0 {
 		return nil
 	}
-
-	ciphertext := AESECBEncrypt(secret32[:16], plaintext)
-
-	h := hmac.New(sha256.New, secret32)
-	h.Write(ciphertext)
-	mac := h.Sum(nil)[:macSize]
-
-	out := make([]byte, macSize+len(ciphertext))
-	copy(out[:macSize], mac)
-	copy(out[macSize:], ciphertext)
-	return out
+	return mesh.EncryptThenMAC(secret32, plaintext)
 }
 
 // AESECBDecrypt decrypts src block-by-block using AES-128-ECB with the given
@@ -296,20 +356,8 @@ func AESECBDecrypt(key, src []byte) ([]byte, error) {
 // all 32 bytes are the HMAC key (matching MeshCore Utils::MACThenDecrypt).
 // Returns decrypted plaintext, or nil if MAC verification fails.
 func macThenDecrypt(secret32, src []byte) []byte {
-	const macSize = 2
-	if len(src) < macSize+16 || len(src[macSize:])%16 != 0 {
-		return nil
-	}
-	ciphertext := src[macSize:]
-
-	h := hmac.New(sha256.New, secret32)
-	h.Write(ciphertext)
-	if !hmac.Equal(h.Sum(nil)[:macSize], src[:macSize]) {
-		return nil
-	}
-
-	pt, err := AESECBDecrypt(secret32[:16], ciphertext)
-	if err != nil {
+	pt, ok := mesh.MACThenDecrypt(secret32, src)
+	if !ok {
 		return nil
 	}
 	return pt
@@ -331,14 +379,15 @@ func ParseGroupText(payload []byte) (GroupTextMessage, bool) {
 	var matchedChannelName string
 
 	// Try public channel
-	if pt := macThenDecrypt(PublicChannelSecret, macAndData); pt != nil {
+	registryMutex.RLock()
+	publicSecret := append([]byte(nil), PublicChannelSecret...)
+	if pt := macThenDecrypt(publicSecret, macAndData); pt != nil {
 		decryptedPlaintext = pt
 		matchedChannelName = "#public"
 	}
 
 	// Try registered topic channels
 	if decryptedPlaintext == nil {
-		registryMutex.RLock()
 		for _, topic := range topicRegistry {
 			if pt := macThenDecrypt(topic.secret, macAndData); pt != nil {
 				decryptedPlaintext = pt
@@ -346,8 +395,8 @@ func ParseGroupText(payload []byte) (GroupTextMessage, bool) {
 				break
 			}
 		}
-		registryMutex.RUnlock()
 	}
+	registryMutex.RUnlock()
 
 	slog.Info("[Group Text] Decryption attempt finished", "channel_matched", matchedChannelName != "")
 
