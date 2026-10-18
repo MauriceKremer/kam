@@ -30,7 +30,7 @@ channels:
     key_strategy: "derived"
     enabled: true
 
-# Optional MeshCore room servers (see docs/FeatureRoomServer.md and README.md).
+# MeshCore room servers (see docs/FeatureRoomServer.md and README.md).
 # Room settings are read at start-up; restart KAM after changing them.
 # Passwords are plain text here, like channel keys.
 # Run `kam room show` to print each room's public key and advert.
@@ -41,15 +41,15 @@ channels:
 #   regions: ["#region"]       # extra regions recognised on inbound floods
 #   duty_cycle_percent: 10     # airtime cap for pushes and adverts; 0 disables
 #
-# rooms:
-#   - id: lobby                # a-z, 0-9, '-' and '_'; names the identity file
-#     name: "KAM Lobby"        # advert name, at most 31 bytes (23 with a location)
-#     admin_password: "change-me-now"   # at most 15 bytes, never "password"
-#     guest_password: "letmein" # read-write; leave out and set open_room: true for an open room
-#     allow_read_only: false   # any other password logs in as a guest who can read but not post
-#     max_clients: 20
-#     advert_interval_min: 2          # zero-hop advert interval, 0 = off
-#     flood_advert_interval_hours: 47 # flood advert interval, 0 = off, otherwise 3-168
-#     max_posts: 1000          # posts kept, 0 = unlimited
-#     max_age_days: 30         # post age limit, 0 = unlimited
-#     backlog_posts: 32        # newest posts a returning client is sent
+rooms:
+  - id: lobby                # a-z, 0-9, '-' and '_'; names the identity file
+    name: "KAM Lobby"        # advert name, at most 31 bytes (23 with a location)
+    admin_password: "change-me-now"   # at most 15 bytes, never "password"
+    guest_password: "letmein" # read-write; leave out and set open_room: true for an open room
+    allow_read_only: false   # any other password logs in as a guest who can read but not post
+    max_clients: 20
+    advert_interval_min: 2          # zero-hop advert interval, 0 = off
+    flood_advert_interval_hours: 3 # flood advert interval, 0 = off, otherwise 3-168
+    max_posts: 1000          # posts kept, 0 = unlimited
+    max_age_days: 30         # post age limit, 0 = unlimited
+    backlog_posts: 32        # newest posts a returning client is sent
