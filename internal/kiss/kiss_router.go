@@ -99,12 +99,15 @@ func (m *Manager) routeLoop(ctx context.Context) {
 // dispatches it by payload type. Adverts and group texts keep their dedicated
 // paths; peer packets go to the packet tap.
 func (m *Manager) routePacket(raw []byte) {
+	m.flushObservation()
+	m.flushPendingGroupText()
 	pkt, err := mesh.Parse(raw)
 	if err != nil {
 		slog.Warn("[Router] Dropping malformed packet", "error", err)
 		return
 	}
 	if pkt.Version() != PAYLOAD_VERSION_V1 {
+		m.observeRX(pkt, len(raw), false)
 		slog.Info("[Router] Warning: Received unsupported packet version", "version", pkt.Version())
 		return
 	}
@@ -124,7 +127,9 @@ func (m *Manager) routePacket(raw []byte) {
 	}
 
 	appPayload := pkt.Payload
-	if m.dedup.Check(pkt.PayloadType(), appPayload) {
+	duplicate := m.dedup.Check(pkt.PayloadType(), appPayload)
+	m.observeRX(pkt, len(raw), duplicate)
+	if duplicate {
 		slog.Info("[Router] Dropping duplicate packet")
 		return
 	}
@@ -186,7 +191,7 @@ func (m *Manager) dispatchHardwareResponse(command byte, payload []byte) {
 			m.counters.txDoneFailed.Add(1)
 		}
 		select {
-		case m.txGateEvents <- txGateEvent{done: true}:
+		case m.txGateEvents <- txGateEvent{done: true, ok: done.OK}:
 		default:
 			slog.Warn("TX gate event queue full; TxDone may not release transmission")
 		}

@@ -81,5 +81,5 @@ func (r *roomState) sendAdvert(now time.Time, flood bool) {
 	}
 	tag := "advert:" + r.cfg.ID
 	r.svc.tx.Cancel(tag) // a queued stale advert is replaced, not stacked
-	r.svc.submit(pkt, kiss.TxPriorityAdvert, 0, tag)
+	r.svc.submit(pkt, kiss.TxPriorityAdvert, 0, tag, r.cfg.ID)
 }

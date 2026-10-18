@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 func openRoomTestRepository(t *testing.T, path string) *RoomRepository {
@@ -109,6 +110,9 @@ func TestRoomPostsAreOrderedIsolatedAndDurable(t *testing.T) {
 	if latest[2].Text != "post 109" || !bytes.Equal(latest[2].Author, roomKey(109)) {
 		t.Fatalf("post content: %+v", latest[2])
 	}
+	if latest[2].CreatedAt.IsZero() {
+		t.Fatal("post creation time was not loaded")
+	}
 	if all, _ := repository.LatestPosts(ctx, "lobby", 100); len(all) != 10 {
 		t.Fatalf("got %d posts, want 10 (the rejected duplicate must not exist)", len(all))
 	}
@@ -123,6 +127,50 @@ func TestRoomPostsAreOrderedIsolatedAndDurable(t *testing.T) {
 	reopened := openRoomTestRepository(t, path)
 	if posts, err := reopened.LatestPosts(ctx, "lobby", 100); err != nil || len(posts) != 10 {
 		t.Fatalf("after reopening: %d posts, error %v", len(posts), err)
+	}
+}
+
+func TestRoomMonitorQueriesReturnStatsAndNewestPostsFirst(t *testing.T) {
+	repository := openRoomTestRepository(t, filepath.Join(t.TempDir(), "kam.db"))
+	ctx := context.Background()
+	for timestamp := uint32(1); timestamp <= 3; timestamp++ {
+		if err := repository.AppendPost(ctx, "lobby", RoomPost{Timestamp: timestamp, Author: roomKey(1), Text: "post"}, nil, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stats, err := repository.MonitorStats(ctx, "lobby")
+	if err != nil || stats.RetainedPosts != 3 || stats.LastPostAt == nil {
+		t.Fatalf("room stats = %+v, %v", stats, err)
+	}
+	posts, err := repository.MonitorPosts(ctx, "lobby", 2)
+	if err != nil || len(posts) != 2 || posts[0].Timestamp != 3 || posts[1].Timestamp != 2 || posts[0].CreatedAt.IsZero() {
+		t.Fatalf("monitor posts = %+v, %v", posts, err)
+	}
+}
+
+func TestAdvertNicknameUsesTheNewestRecord(t *testing.T) {
+	persistence, err := NewPersistence(filepath.Join(t.TempDir(), "kam.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer persistence.Close()
+	key := roomKey(7)
+	advert := func(nickname string) AdvertRecord {
+		return AdvertRecord{PublicKey: key, Signature: []byte{0}, RawPayload: []byte{0}, Nickname: nickname}
+	}
+	if err := InsertAdvertsBatch(persistence.db, []AdvertRecord{advert("Old name"), advert("Newest name")}); err != nil {
+		t.Fatal(err)
+	}
+	label, err := persistence.AdvertNickname(context.Background(), key)
+	if err != nil || label == nil || *label != "Newest name" {
+		t.Fatalf("latest nickname = %v, %v", label, err)
+	}
+	if err := InsertAdvertsBatch(persistence.db, []AdvertRecord{advert("")}); err != nil {
+		t.Fatal(err)
+	}
+	label, err = persistence.AdvertNickname(context.Background(), key)
+	if err != nil || label != nil {
+		t.Fatalf("empty newest nickname should be null: %v, %v", label, err)
 	}
 }
 
@@ -142,7 +190,8 @@ func TestRoomPostPreservesUnicodeAndEmptyAuthorSafety(t *testing.T) {
 func TestAppendPostUpdatesClientTimestampInTheSameTransaction(t *testing.T) {
 	repository := openRoomTestRepository(t, filepath.Join(t.TempDir(), "kam.db"))
 	ctx := context.Background()
-	client := RoomClient{PublicKey: roomKey(9), Role: 2, SyncSince: 5, LastTimestamp: 10, OutPathLen: 0xFF}
+	lastHeard := time.Unix(1234, 0).UTC()
+	client := RoomClient{PublicKey: roomKey(9), Role: 2, SyncSince: 5, LastTimestamp: 10, OutPathLen: 0xFF, LastHeardAt: &lastHeard}
 	if err := repository.SaveClients(ctx, "lobby", []RoomClient{client}); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +199,7 @@ func TestAppendPostUpdatesClientTimestampInTheSameTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	clients, err := repository.LoadClients(ctx, "lobby")
-	if err != nil || len(clients) != 1 || clients[0].LastTimestamp != 42 || clients[0].SyncSince != 5 {
+	if err != nil || len(clients) != 1 || clients[0].LastTimestamp != 42 || clients[0].SyncSince != 5 || clients[0].LastHeardAt == nil || !clients[0].LastHeardAt.Equal(lastHeard) {
 		t.Fatalf("clients: %+v, %v", clients, err)
 	}
 

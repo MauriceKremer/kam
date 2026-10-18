@@ -229,11 +229,22 @@ func TestGroupTextRecordConversion(t *testing.T) {
 		Attempt:          0,
 		PublicKeyPrefix:  nil,
 		TimeDriftSeconds: 3,
+		HasRxMeta:        true,
+		SNR:              34,
+		RSSI:             -97,
 	}
 
 	r := groupTextToRecord(msg)
 	if r.ChannelName != "#test" || r.Sender != "bob" || r.Body != "hi" || r.TxtType != 0 || r.Attempt != 0 || r.TimeDriftSeconds != 3 {
 		t.Fatalf("record mismatch: %+v", r)
+	}
+	if r.SNRQuarterDB == nil || *r.SNRQuarterDB != 34 || r.RSSIDBM == nil || *r.RSSIDBM != -97 {
+		t.Fatalf("RxMeta was not preserved: %+v", r)
+	}
+	msg.HasRxMeta = false
+	withoutMeta := groupTextToRecord(msg)
+	if withoutMeta.SNRQuarterDB != nil || withoutMeta.RSSIDBM != nil {
+		t.Fatalf("missing RxMeta should stay null: %+v", withoutMeta)
 	}
 }
 

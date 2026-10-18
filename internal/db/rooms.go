@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // RoomPost is one stored room post.
@@ -15,8 +16,9 @@ type RoomPost struct {
 	Timestamp uint32
 	// Author is the 32-byte public key of the poster (the room's own key for
 	// system posts).
-	Author []byte
-	Text   string
+	Author    []byte
+	Text      string
+	CreatedAt time.Time
 }
 
 // RoomClient is the persisted part of a client session. Shared secrets are
@@ -28,8 +30,9 @@ type RoomClient struct {
 	LastTimestamp uint32
 	// OutPathLen is the encoded path_len of the stored route, or 0xFF when no
 	// route is known.
-	OutPathLen uint8
-	OutPath    []byte
+	OutPathLen  uint8
+	OutPath     []byte
+	LastHeardAt *time.Time
 }
 
 // ErrRoomPostTimestampTaken reports that the room already has a post with that
@@ -68,8 +71,9 @@ CREATE TABLE IF NOT EXISTS room_clients (
   out_path_len INTEGER NOT NULL,
   out_path BLOB NOT NULL,
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  PRIMARY KEY (room_id, public_key)
+	PRIMARY KEY (room_id, public_key)
 ) WITHOUT ROWID;`,
+	`ALTER TABLE room_clients ADD COLUMN last_heard_at INTEGER;`,
 }
 
 // OpenRoomRepository opens the repository at the database path and applies
@@ -182,7 +186,7 @@ func (r *RoomRepository) AppendPost(ctx context.Context, roomID string, post Roo
 
 // LatestPosts returns the newest limit posts of the room, oldest first.
 func (r *RoomRepository) LatestPosts(ctx context.Context, roomID string, limit int) ([]RoomPost, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT post_ts, author, body FROM room_posts WHERE room_id = ? ORDER BY post_ts DESC LIMIT ?`, roomID, limit)
+	rows, err := r.db.QueryContext(ctx, `SELECT post_ts, author, body, created_at FROM room_posts WHERE room_id = ? ORDER BY post_ts DESC LIMIT ?`, roomID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list room posts: %w", err)
 	}
@@ -190,9 +194,11 @@ func (r *RoomRepository) LatestPosts(ctx context.Context, roomID string, limit i
 	var posts []RoomPost
 	for rows.Next() {
 		var post RoomPost
-		if err := rows.Scan(&post.Timestamp, &post.Author, &post.Text); err != nil {
+		var createdAt int64
+		if err := rows.Scan(&post.Timestamp, &post.Author, &post.Text, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan room post: %w", err)
 		}
+		post.CreatedAt = time.Unix(createdAt, 0).UTC()
 		posts = append(posts, post)
 	}
 	if err := rows.Err(); err != nil {
@@ -211,6 +217,59 @@ func (r *RoomRepository) CountPosts(ctx context.Context, roomID string) (int64, 
 		return 0, fmt.Errorf("count room posts: %w", err)
 	}
 	return count, nil
+}
+
+type RoomMonitorStats struct {
+	RetainedPosts int64
+	LastPostAt    *time.Time
+}
+
+func (r *RoomRepository) MonitorStats(ctx context.Context, roomID string) (RoomMonitorStats, error) {
+	var stats RoomMonitorStats
+	var last sql.NullInt64
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*), MAX(created_at) FROM room_posts WHERE room_id = ?`, roomID).Scan(&stats.RetainedPosts, &last); err != nil {
+		return stats, fmt.Errorf("read room monitor stats: %w", err)
+	}
+	if last.Valid {
+		value := time.Unix(last.Int64, 0).UTC()
+		stats.LastPostAt = &value
+	}
+	return stats, nil
+}
+
+func (r *RoomRepository) MonitorPosts(ctx context.Context, roomID string, limit int) ([]RoomPost, error) {
+	if limit < 1 || limit > 200 {
+		return nil, fmt.Errorf("limit must be between 1 and 200")
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT post_ts, author, body, created_at FROM room_posts WHERE room_id = ? ORDER BY post_ts DESC LIMIT ?`, roomID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list monitor room posts: %w", err)
+	}
+	defer rows.Close()
+	posts := make([]RoomPost, 0, limit)
+	for rows.Next() {
+		var post RoomPost
+		var createdAt int64
+		if err := rows.Scan(&post.Timestamp, &post.Author, &post.Text, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan monitor room post: %w", err)
+		}
+		post.CreatedAt = time.Unix(createdAt, 0).UTC()
+		posts = append(posts, post)
+	}
+	return posts, rows.Err()
+}
+
+func (p *Persistence) AdvertNickname(ctx context.Context, publicKey []byte) (*string, error) {
+	var nickname sql.NullString
+	err := p.db.QueryRowContext(ctx, `SELECT nickname FROM adverts WHERE public_key = ? ORDER BY received_at DESC, id DESC LIMIT 1`, publicKey).Scan(&nickname)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (!nickname.Valid || nickname.String == "")) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup advert nickname: %w", err)
+	}
+	value := nickname.String
+	return &value, nil
 }
 
 // PrunePosts deletes posts older than olderThan (a timestamp; 0 keeps all) and
@@ -252,11 +311,15 @@ func (r *RoomRepository) SaveClients(ctx context.Context, roomID string, clients
 		if path == nil {
 			path = []byte{}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO room_clients (room_id, public_key, role, sync_since, last_timestamp, out_path_len, out_path)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+		var lastHeard any
+		if c.LastHeardAt != nil {
+			lastHeard = c.LastHeardAt.Unix()
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO room_clients (room_id, public_key, role, sync_since, last_timestamp, out_path_len, out_path, last_heard_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (room_id, public_key) DO UPDATE SET role = excluded.role, sync_since = excluded.sync_since,
-  last_timestamp = excluded.last_timestamp, out_path_len = excluded.out_path_len, out_path = excluded.out_path, updated_at = unixepoch()`,
-			roomID, c.PublicKey, c.Role, c.SyncSince, c.LastTimestamp, c.OutPathLen, path); err != nil {
+	last_timestamp = excluded.last_timestamp, out_path_len = excluded.out_path_len, out_path = excluded.out_path, last_heard_at = excluded.last_heard_at, updated_at = unixepoch()`,
+			roomID, c.PublicKey, c.Role, c.SyncSince, c.LastTimestamp, c.OutPathLen, path, lastHeard); err != nil {
 			return fmt.Errorf("save room client: %w", err)
 		}
 	}
@@ -276,7 +339,7 @@ func (r *RoomRepository) DeleteClient(ctx context.Context, roomID string, public
 
 // LoadClients returns the stored client sessions, most recently updated first.
 func (r *RoomRepository) LoadClients(ctx context.Context, roomID string) ([]RoomClient, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT public_key, role, sync_since, last_timestamp, out_path_len, out_path FROM room_clients WHERE room_id = ? ORDER BY updated_at DESC, public_key`, roomID)
+	rows, err := r.db.QueryContext(ctx, `SELECT public_key, role, sync_since, last_timestamp, out_path_len, out_path, last_heard_at FROM room_clients WHERE room_id = ? ORDER BY updated_at DESC, public_key`, roomID)
 	if err != nil {
 		return nil, fmt.Errorf("list room clients: %w", err)
 	}
@@ -284,8 +347,13 @@ func (r *RoomRepository) LoadClients(ctx context.Context, roomID string) ([]Room
 	var clients []RoomClient
 	for rows.Next() {
 		var c RoomClient
-		if err := rows.Scan(&c.PublicKey, &c.Role, &c.SyncSince, &c.LastTimestamp, &c.OutPathLen, &c.OutPath); err != nil {
+		var lastHeard sql.NullInt64
+		if err := rows.Scan(&c.PublicKey, &c.Role, &c.SyncSince, &c.LastTimestamp, &c.OutPathLen, &c.OutPath, &lastHeard); err != nil {
 			return nil, fmt.Errorf("scan room client: %w", err)
+		}
+		if lastHeard.Valid {
+			stamp := time.Unix(lastHeard.Int64, 0).UTC()
+			c.LastHeardAt = &stamp
 		}
 		clients = append(clients, c)
 	}

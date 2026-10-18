@@ -43,6 +43,7 @@ type Node struct {
 	roomRepository       *db.RoomRepository
 	unsubscribePackets   func()
 	apiServer            *http.Server
+	monitorServer        *http.Server
 	apiCancel            context.CancelFunc
 	unsubscribe          func()
 	configPath           string
@@ -149,7 +150,7 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 		slog.Info("[Node] Starlark automation runtime enabled")
 	}
 
-	return &Node{
+	node := &Node{
 		manager:              manager,
 		radio:                radio,
 		scheduler:            scheduler,
@@ -165,7 +166,9 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 		configPath:           configPath,
 		radioSettings:        cfg.Radio,
 		RadioConfig:          verified,
-	}, nil
+	}
+	node.startMonitor(cfg, persistence, len(roomConfigs))
+	return node, nil
 }
 
 func configureRadio(ctx context.Context, radio *kiss.RadioClient, cfg *models.KamConfig) (*kiss.RadioConfig, error) {
@@ -360,6 +363,13 @@ func (n *Node) Run(ctx context.Context) error {
 	stopHealth()
 	stopWatcher()
 	<-watchDone
+	if n.monitorServer != nil {
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := n.monitorServer.Shutdown(shutdown); err != nil {
+			_ = n.monitorServer.Close()
+		}
+		cancel()
+	}
 	if n.unsubscribe != nil {
 		n.unsubscribe()
 	}

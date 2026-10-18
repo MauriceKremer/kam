@@ -10,13 +10,13 @@ import (
 )
 
 // submit encodes a packet and queues it for transmission. It never blocks.
-func (s *Service) submit(pkt mesh.Packet, priority kiss.TxPriority, delay time.Duration, tag string) bool {
+func (s *Service) submit(pkt mesh.Packet, priority kiss.TxPriority, delay time.Duration, tag string, roomID string) bool {
 	raw, err := pkt.Encode()
 	if err != nil {
 		slog.Warn("[Room] cannot encode packet", "error", err)
 		return false
 	}
-	if err := s.tx.Submit(kiss.TxRequest{Raw: raw, Priority: priority, Delay: delay, Tag: tag}); err != nil {
+	if err := s.tx.Submit(kiss.TxRequest{Raw: raw, Priority: priority, Delay: delay, Tag: tag, Origin: "room", Room: roomID}); err != nil {
 		s.cnt.txRejected.Add(1)
 		slog.Warn("[Room] transmit queue refused a packet", "error", err, "priority", int(priority))
 		return false
@@ -50,7 +50,7 @@ func (r *roomState) sendDirect(c *client, payloadType byte, payload []byte, prio
 		slog.Warn("[Room] cannot build direct packet", "room", r.cfg.ID, "error", err)
 		return false
 	}
-	return r.svc.submit(pkt, priority, delay, tag)
+	return r.svc.submit(pkt, priority, delay, tag, r.cfg.ID)
 }
 
 // sendFloodReply floods a reply using the request's hash size and scope.
@@ -60,7 +60,7 @@ func (r *roomState) sendFloodReply(req mesh.Packet, payloadType byte, payload []
 		slog.Warn("[Room] cannot build flood reply", "room", r.cfg.ID, "error", err)
 		return false
 	}
-	return r.svc.submit(pkt, kiss.TxPriorityFloodReply, delay, "")
+	return r.svc.submit(pkt, kiss.TxPriorityFloodReply, delay, "", r.cfg.ID)
 }
 
 // sendReply answers a request: direct when the client's route is known, else
@@ -80,7 +80,7 @@ func (r *roomState) sendScopedFlood(payloadType byte, payload []byte, priority k
 		slog.Warn("[Room] cannot build flood packet", "room", r.cfg.ID, "error", err)
 		return false
 	}
-	return r.svc.submit(pkt, priority, delay, tag)
+	return r.svc.submit(pkt, priority, delay, tag, r.cfg.ID)
 }
 
 // pushTag identifies the push queued for one client so it can be cancelled.

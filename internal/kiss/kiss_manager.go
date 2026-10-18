@@ -75,9 +75,11 @@ type modemCounters struct {
 type txGateEvent struct {
 	busy bool
 	done bool
+	ok   bool
 }
 
 type Manager struct {
+	observer    atomic.Pointer[monitorObserver]
 	stream      serial.Port
 	writeHook   func([]byte) error
 	txChan      chan []byte
@@ -259,6 +261,7 @@ func (m *Manager) holdGroupText(msg parsers.GroupTextMessage) {
 // dispatches it immediately. No-op when no message is pending (e.g. orphan
 // RxMeta for a non-group-text data frame).
 func (m *Manager) attachRxMeta(snr, rssi int) {
+	m.attachObservation(snr, rssi)
 	m.pendingMu.Lock()
 	p := m.pendingGroupText
 	if p != nil {
@@ -466,6 +469,7 @@ func (m *Manager) TestRouteLoop(ctx context.Context) {
 
 func (m *Manager) Stop() {
 	m.stopOnce.Do(func() {
+		m.flushObservation()
 		close(m.stopChan)
 		if m.Store != nil {
 			if err := m.Store.Close(); err != nil {

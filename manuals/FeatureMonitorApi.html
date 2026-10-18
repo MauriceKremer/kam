@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Use KAM's loopback API for status, events, channel history and read-only room monitoring; modem control and other actions remain planned.">
+    <title>Backend API Manual</title>
+    <link href="manuals.css" rel="stylesheet">
+    <script src="manuals.js" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <aside>
+        <div class="manual-brand"><strong>KAM</strong><span>Documentation</span></div>
+        <details class="manual-navigation" open>
+            <summary>Contents</summary>
+            <details class="navigation-section" open>
+                <summary>On this page</summary>
+                <nav aria-label="On this page">
+                    <a href="#overview">Overview</a>
+                    <a href="#concepts">Concepts &amp; Responsibilities</a>
+                    <a href="#requirements">Requirements &amp; Status</a>
+                    <a href="#installation">Installation</a>
+                    <a href="#configuration">Configuration</a>
+                    <a href="#usage">Usage &amp; Goroutines</a>
+                    <a href="#events">Event History</a>
+                    <a href="#examples">Examples</a>
+                    <a href="#troubleshooting">Troubleshooting</a>
+                    <a href="#reference">Endpoint Reference</a>
+                    <a href="#modem">Modem Changes</a>
+                    <a href="#scripts">Script Testing</a>
+                    <a href="#sources">Sources</a>
+                </nav>
+            </details>
+            <details class="navigation-section" open>
+                <summary>Manuals</summary>
+                <nav aria-label="Manuals">
+                    <a href="KAM.html">KAM Guide</a>
+                    <a href="FeatureKissModem.html">KISS Modem</a>
+                    <a href="FeatureRoomServer.html">Room Server</a>
+                    <a href="FeatureStarlark.html">Starlark Automations</a>
+                    <a href="FeatureMonitorApi.html" aria-current="page">Backend API</a>
+                </nav>
+            </details>
+        </details>
+    </aside>
+    <main id="main-content" tabindex="-1">
+        <header>
+            <span>Architecture &amp; API Manual</span>
+            <h1>KAM Backend API</h1>
+            <p>How another program can monitor and control KAM without becoming part of its radio service.</p>
+            <p><span class="badge badge-green">Phases 1-2 implemented</span><span>Status, events, channel history and read-only room resources are available. Modem control, room-client removal and script testing remain planned; real-radio verification is pending.</span></p>
+        </header>
+        <article class="prose">
+            <section id="overview">
+                <h2>Overview</h2>
+                <p>An <strong>API</strong>, or application programming interface, lets one program ask another program for information or request a change. Phases 1-2 of KAM's backend API provide status, recent radio and room events, configured channels with message history, and read-only room summaries, clients and posts. Any local dashboard or command-line script can use the same API.</p>
+                <p>For example, KAMmon could ask, "Which packets arrived since my last request?" KAM would return a list. KAMmon would draw the chart and decide which of its signed-in web users may see the details.</p>
+                <p><strong>KAM does the radio work. KAMmon provides the web interface.</strong> KAM remains an open system: it starts, receives, stores messages and runs scripts without KAMmon. It does not register KAMmon as a client, check whether KAMmon is alive, or wait for it to consume events.</p>
+                <div class="info-box info-box-blue"><p><strong>Available now:</strong> port 8766, the bounded event ring, status and event reads, channel list/history, and room list/client/post reads. Modem controls and room-client removal are still planned. The existing script-management API remains on port 8765.</p></div>
+            </section>
+
+            <section id="concepts">
+                <h2>Concepts &amp; Responsibilities</h2>
+                <p>The <strong>host computer</strong> runs both Go programs. The separate <strong>radio board</strong> runs MeshCore KISS modem firmware. MeshCore is the mesh radio system; <strong>KISS</strong> (Keep It Simple, Stupid) is the serial protocol KAM uses to exchange packets and commands with that board. A <strong>serial port</strong> is the computer's byte-by-byte connection to the modem.</p>
+                <p><strong>REST</strong> is a conventional way to organise requests over HTTP. A request such as <code>GET /v1/rooms</code> asks for a resource. The reply uses <strong>JSON</strong>, a text format containing named values and lists. The HTTP method says what the request does; the path identifies the resource.</p>
+                <table>
+                    <thead><tr><th>Component</th><th>Responsibility</th></tr></thead>
+                    <tbody>
+                        <tr><td>KAM</td><td>Radio connection, packet processing, channel decoding, room protocol, storage, automation, and validation of API requests.</td></tr>
+                        <tr><td>KAMmon</td><td>Pages, web login, web-user permissions, filtering visible data, charts and its own short-term memory.</td></tr>
+                        <tr><td>KISS modem</td><td>Radio transmission and reception, signal measurements and modem command replies.</td></tr>
+                        <tr><td>SQLite</td><td>KAM's local database for received records, room state and installed scripts. KAMmon never opens it directly.</td></tr>
+                        <tr><td>YAML configuration</td><td>Readable settings files: <code>kam.yml</code> belongs to KAM; <code>kammon.yml</code> belongs to KAMmon.</td></tr>
+                    </tbody>
+                </table>
+                <h3>Two Different Kinds of Login</h3>
+                <p>KAM's local REST API has <strong>no web accounts, passwords or tokens</strong>. Any local program can use every endpoint that is offered. KAMmon authenticates its own web users and checks their permissions before making a request.</p>
+                <p>A radio joining a <strong>MeshCore room</strong> is different. Existing room passwords and radio-side roles remain KAM's responsibility. The admin password grants the room admin role; the guest password grants read/write; the configured read-only fallback grants guest access. These rules do not grant or restrict REST access.</p>
+                <p>There is no new pinned-role system or room role-editing endpoint in this feature. The <a href="FeatureRoomServer.html#roles">room-server manual explains the existing radio roles</a>. KAMmon's web-user role does not change a radio's room role.</p>
+            </section>
+
+            <section id="requirements">
+                <h2>Requirements &amp; Status</h2>
+                <p>The design assumes one KAM instance and KAMmon on the same device. It does not require a cloud service, a message broker, a second database or a permanent connection between the programs.</p>
+                <table>
+                    <thead><tr><th>Area</th><th>Status</th><th>What is available</th></tr></thead>
+                    <tbody>
+                        <tr><td>Radio, channel storage and room service</td><td>Implemented</td><td>Existing KAM functionality, independent of KAMmon.</td></tr>
+                        <tr><td>Script management on 8765</td><td>Implemented</td><td>List, validate, create, update, enable, disable, recover and delete scripts.</td></tr>
+                        <tr><td>Monitor listener on 8766</td><td>Phases 1-2 implemented</td><td>Status, RX/TX/room events, channel history and room reads; automated race tests pass. Real-radio verification is pending.</td></tr>
+                        <tr><td>Channel and room history endpoints</td><td>Implemented</td><td>Configured channels and messages, room summaries, clients and retained posts.</td></tr>
+                        <tr><td>REST modem control</td><td>Planned</td><td>Read diagnostics, preview changes, apply and save with recovery.</td></tr>
+                        <tr><td>Room-client removal</td><td>Planned</td><td>Forget a session; existing radio login rules remain unchanged.</td></tr>
+                        <tr><td>Script dry runs and run information</td><td>Planned</td><td>Test without transmitting; in-memory execution statistics.</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="installation">
+                <h2>Installation</h2>
+                <p>There is no separate API executable to install. The monitoring listener is part of KAM's Go process. KAMmon is a separate Go program and project.</p>
+                <p>For the current release, follow the <a href="KAM.html#installation">KAM installation guide</a>. To manage scripts today, use the <a href="FeatureStarlark.html#quickstart">Starlark quick start</a>. Adding the configuration below to an older build does not give it the planned API.</p>
+            </section>
+
+            <section id="configuration">
+                <h2>Configuration</h2>
+                <p>This optional block belongs in KAM's <code>kam.yml</code>. These defaults also apply when it is omitted. Setting <code>enabled: false</code> removes both the listener and event recorder. Monitoring settings are read at startup; restart KAM after changing them.</p>
+                <pre><code class="language-yaml">monitor:
+  enabled: true
+  listen: "127.0.0.1:8766"
+  event_ring: 8192</code></pre>
+                <p><strong>Loopback</strong> means a connection within the same computer. The address <code>127.0.0.1</code> is loopback; it is not the computer's address on your home network. The listener accepts only loopback addresses and loopback HTTP Host headers.</p>
+                <table>
+                    <thead><tr><th>Address</th><th>Purpose</th><th>Status</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>127.0.0.1:8765</code></td><td>Existing script API; planned dry-run additions also live here.</td><td>Script management implemented</td></tr>
+                        <tr><td><code>127.0.0.1:8766</code></td><td>Status, events, channels, rooms; later room-client removal and modem control.</td><td>Phases 1-2 implemented</td></tr>
+                    </tbody>
+                </table>
+                <p>The event-ring capacity may be 256 to 65536 events. It is a <strong>count limit, not a guaranteed duration</strong>. A busy network fills the ring sooner than a quiet network.</p>
+                <p>KAMmon uses these local addresses. Browsers connect to KAMmon, not directly to KAM's API. KAMmon owns web authentication and any outward-facing HTTPS setup.</p>
+            </section>
+
+            <section id="usage">
+                <h2>Usage &amp; Goroutines</h2>
+                <p>A <strong>goroutine</strong> is a lightweight Go task that runs alongside other tasks in the same process. It is not another program or another copy of KAM.</p>
+                <p><strong>Yes: the HTTP server runs in its own goroutine.</strong> Go's <code>net/http</code> package also creates goroutines to handle connections and requests. There is no permanent application worker assigned to KAMmon and no subscription registered for each monitoring client.</p>
+                <figure style="margin:24px 0">
+                    <div role="region" aria-label="Backend data-flow diagram" tabindex="0" style="overflow-x:auto">
+                        <svg role="img" aria-labelledby="flow-title flow-description" viewBox="0 0 780 260" style="display:block;width:100%;min-width:720px;font-family:var(--kam-font-code);font-size:14px">
+                            <title id="flow-title">KAM and KAMmon data flow</title>
+                            <desc id="flow-description">Inside KAM, radio workers record events in a bounded memory ring. The HTTP server reads snapshots and returns them to KAMmon. KAMmon holds chart data in its own memory and serves the browser. Changes return through the HTTP server to the existing KAM owner.</desc>
+                            <g fill="var(--bg-1)" stroke="var(--text-muted)">
+                                <rect x="8" y="32" width="420" height="204" rx="8" fill="var(--bg-0)"/>
+                                <rect x="24" y="82" width="168" height="54" rx="4"/>
+                                <rect x="222" y="82" width="184" height="54" rx="4"/>
+                                <rect x="222" y="164" width="184" height="54" rx="4"/>
+                                <rect x="476" y="164" width="168" height="54" rx="4"/>
+                                <rect x="674" y="164" width="98" height="54" rx="4"/>
+                                <path d="M192 109 H222 M314 136 V164 M406 191 H476 M644 191 H674" fill="none"/>
+                            </g>
+                            <g fill="var(--text-primary)" text-anchor="middle">
+                                <text x="218" y="59" font-weight="bold">KAM process</text>
+                                <text x="108" y="105">Radio workers</text><text x="108" y="125">Existing owners</text>
+                                <text x="314" y="105">Event ring</text><text x="314" y="125">Bounded memory</text>
+                                <text x="314" y="187">HTTP server</text><text x="314" y="207">Snapshot reads</text>
+                                <text x="560" y="187">KAMmon</text><text x="560" y="207">UI + memory</text>
+                                <text x="723" y="197">Browser</text>
+                            </g>
+                            <text x="436" y="182" fill="var(--signal)">REST</text>
+                        </svg>
+                    </div>
+                    <figcaption class="text-sm">Read path: radio work records events; KAMmon asks for snapshots. A requested change goes back through KAM's existing data owner.</figcaption>
+                </figure>
+                <h3>Reading Data</h3>
+                <ol>
+                    <li>KAM records a small event when it hears or sends a packet.</li>
+                    <li>KAMmon asks the HTTP server for events after its last cursor.</li>
+                    <li>The handler copies a bounded page from the ring under a short lock.</li>
+                    <li>It releases the lock before converting the copy to JSON or writing to the network.</li>
+                    <li>KAMmon adds the events to its own memory and updates its charts.</li>
+                </ol>
+                <p>A slow reader cannot hold the event-ring lock while the reply is sent. Recording still has a small lock cost; the requirement is <strong>short, measured overhead</strong>, not a promise that a lock never waits.</p>
+                <h3>Requesting Changes</h3>
+                <p>The HTTP handler does not take ownership of the radio or room state. It asks the existing owner to perform the operation: the room worker removes a client, the serialised radio-control path changes settings, and the automation runtime manages scripts.</p>
+                <p>Normal requests have a 5-second deadline, with at most eight monitor requests admitted at once. Extra requests receive a busy response. Modem apply/recovery has a longer bounded budget, explained below. Reads do not create another recording worker or a separate event queue.</p>
+                <h3>When KAMmon Is Absent</h3>
+                <p>KAM does not change its radio processing to accommodate an absent viewer. If no one reads the ring, the oldest events are replaced. If the API listener cannot start, KAM logs that failure and continues its normal work. If KAMmon stops, KAM does not wait for a disconnect message.</p>
+                <p>This isolates API failures; it does not make the hardware invulnerable. A real serial-link failure still follows KAM's existing fail-stop behavior, described in the <a href="FeatureKissModem.html#troubleshooting">KISS modem troubleshooting section</a>.</p>
+            </section>
+
+            <section id="events">
+                <h2>Event History</h2>
+                <p>The <strong>event ring</strong> is a fixed-size list in KAM's memory. Each event has a number, <code>seq</code>, and a time, <code>at</code>. A <strong>cursor</strong> is simply the last number the caller has received. An <strong>epoch</strong> is a new identifier created whenever KAM starts; it tells a client when sequence numbers have restarted.</p>
+                <p>Events carry packet type, route, lengths, signal measurements when available and estimated airtime. Room events also carry activity names and client keys. Events do not contain raw payload bytes or decoded message bodies. Message text is read separately through the channel and room history endpoints.</p>
+                <table>
+                    <thead><tr><th>Field</th><th>Plain meaning</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>epoch</code></td><td>Which run of KAM this reply belongs to.</td></tr>
+                        <tr><td><code>first_seq</code></td><td>Oldest event still in KAM's ring.</td></tr>
+                        <tr><td><code>last_seq</code></td><td>Newest event KAM holds, whether or not it is in this page.</td></tr>
+                        <tr><td><code>next_after</code></td><td>Last event delivered in this page. Use this for the next request.</td></tr>
+                        <tr><td><code>reset</code></td><td>The epoch changed or earlier events were lost before the client read them.</td></tr>
+                    </tbody>
+                </table>
+                <h3>The 5,000-Event Example</h3>
+                <p>KAM holds events 1 to 5000 but returns only 1000 per request. The first response says <code>last_seq: 5000</code> and <code>next_after: 1000</code>. KAMmon asks for events after 1000, not after 5000. That delivers the next page without skipping 4000 events.</p>
+                <p>The first request uses <code>after=0</code> without an epoch. Subsequent requests use both the returned epoch and <code>next_after</code>. When caught up, an empty array is normal. If the ring is empty, all three sequence fields are zero.</p>
+                <p>KAMmon polls every one or two seconds. There is no permanent stream, broker, long-poll request or server-side client cursor. A restart or overwritten ring produces a visible history boundary or gap.</p>
+                <h3>What Survives a Restart?</h3>
+                <table>
+                    <thead><tr><th>Data</th><th>Where it lives</th><th>After restart</th></tr></thead>
+                    <tbody>
+                        <tr><td>KAM event ring</td><td>KAM memory</td><td>Lost when KAM restarts; epoch changes.</td></tr>
+                        <tr><td>KAMmon charts</td><td>KAMmon memory</td><td>Lost when KAMmon restarts; it rebuilds from available ring events.</td></tr>
+                        <tr><td>Messages, room state and scripts</td><td>KAM SQLite database</td><td>Existing persistence rules apply; these are not a complete packet archive.</td></tr>
+                        <tr><td>Radio and channel settings</td><td><code>kam.yml</code></td><td>Loaded by KAM at startup.</td></tr>
+                    </tbody>
+                </table>
+                <p>A 24-hour chart fills while KAMmon runs. It cannot promise 24 hours of history immediately after restart. Signal values are <code>null</code> when unknown, not zero. Airtime is an estimate, and repeated packets still occupied the channel.</p>
+            </section>
+
+            <section id="examples">
+                <h2>Examples</h2>
+                <p>Run these read commands in a terminal on the KAM computer while KAM is running. Channel and room reads are implemented; modem-query examples below remain planned. Automated tests verify phases 1-2; real-radio acceptance is still pending.</p>
+                <h3>Read Status</h3>
+                <pre><code class="language-bash">curl --fail-with-body http://127.0.0.1:8766/v1/status</code></pre>
+                <p>List endpoints have a named outer object. A channel-list response with no configured channels is:</p>
+                <pre><code class="language-json">{"channels": []}</code></pre>
+                <h3>Read a Page of Events</h3>
+                <pre><code class="language-bash">curl --fail-with-body 'http://127.0.0.1:8766/v1/events?after=0&amp;limit=1000'</code></pre>
+                <p>The following is a complete empty-ring response. The identifier is illustrative:</p>
+                <pre><code class="language-json">{
+  "epoch": "7f3a9c2e41b8d605",
+  "first_seq": 0,
+  "last_seq": 0,
+  "next_after": 0,
+  "reset": false,
+  "events": []
+}</code></pre>
+                <p>For a nonempty page, use the actual returned values in the next request. The shell variables below are placeholders to replace with that response:</p>
+                <pre><code class="language-bash">EPOCH='replace-with-returned-epoch'
+AFTER='replace-with-returned-next_after'
+curl --fail-with-body "http://127.0.0.1:8766/v1/events?epoch=$EPOCH&amp;after=$AFTER&amp;limit=1000"</code></pre>
+                <h3>Read Channel Messages</h3>
+                <p>The <code>#</code> in a channel name must be encoded as <code>%23</code> in a URL; otherwise the browser treats it as a page fragment.</p>
+                <pre><code class="language-bash">curl --fail-with-body 'http://127.0.0.1:8766/v1/channels/%23emmen/messages?limit=20'</code></pre>
+                <p>If more records exist, use <code>next_before_id</code> as <code>before_id</code> for the next page. Message pages are newest first; event pages are oldest first.</p>
+                <h3>Read Rooms</h3>
+                <pre><code class="language-bash">curl --fail-with-body http://127.0.0.1:8766/v1/rooms
+curl --fail-with-body http://127.0.0.1:8766/v1/rooms/lobby/clients
+curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</code></pre>
+                <p>Room lists include per-room counters and remembered-client totals. Client roles describe the existing radio login; they are not REST permissions. The room subsystem returns <code>503</code> when disabled.</p>
+                <h3>Query a Signal Reading (Planned)</h3>
+                <pre><code class="language-bash">curl --fail-with-body -X POST http://127.0.0.1:8766/v1/modem/query \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"GetCurrentRssi"}'</code></pre>
+                <p>Illustrative response, with RSSI (received signal strength) in dBm:</p>
+                <pre><code class="language-json">{
+  "command": "GetCurrentRssi",
+  "at": "2026-10-11T15:00:00.000Z",
+  "duration_ms": 8,
+  "supported": true,
+  "value": -106
+}</code></pre>
+            </section>
+
+            <section id="troubleshooting">
+                <h2>Troubleshooting</h2>
+                <table>
+                    <thead><tr><th>What you see</th><th>Meaning</th><th>Next step</th></tr></thead>
+                    <tbody>
+                        <tr><td>Connection refused on 8766</td><td>The current build lacks this feature, monitoring is off, or the listener failed to start.</td><td>Check implementation status, configuration and KAM's startup log.</td></tr>
+                        <tr><td><code>events: []</code></td><td>The client is caught up or no events are available.</td><td>Continue polling; it is not an error.</td></tr>
+                        <tr><td><code>reset: true</code></td><td>KAM restarted or the ring replaced unread events.</td><td>Mark the gap and continue with the returned epoch and <code>next_after</code>.</td></tr>
+                        <tr><td><code>400</code> Bad Request</td><td>Malformed JSON, unknown field, invalid cursor or invalid page size.</td><td>Correct the request. Do not retry the same invalid input.</td></tr>
+                        <tr><td><code>404</code> Not Found</td><td>Unknown resource or an endpoint missing from an older build.</td><td>Check the room/client/path and the API version.</td></tr>
+                        <tr><td><code>409</code> Conflict</td><td>A change/test is already running, a script revision is stale, or configuration changed during apply.</td><td>Read current state before submitting again.</td></tr>
+                        <tr><td><code>422</code> Unprocessable Entity</td><td>The request parsed but its values failed validation.</td><td>Fix the named field or script diagnostic.</td></tr>
+                        <tr><td><code>500</code> Internal Error</td><td>For example, saving settings failed.</td><td>Read apply/recovery details and the KAM log.</td></tr>
+                        <tr><td><code>502</code>, <code>503</code> or <code>504</code></td><td>Modem failure, unavailable/busy subsystem, or timeout.</td><td>Read the snapshot and failure details; do not blindly resend a setting change.</td></tr>
+                        <tr><td><code>supported: false</code></td><td>The board has no callback or sensor for that reading.</td><td>Treat the value as unavailable, not as a failed radio link.</td></tr>
+                        <tr><td><code>tx_paused: true</code> after failed recovery</td><td>KAM could not confidently restore previous modem settings.</td><td>Read <code>last_change</code>; correct the fault, then explicitly apply known settings or restart KAM.</td></tr>
+                    </tbody>
+                </table>
+                <p>If an apply request disconnects or times out, it may already have sent commands. Read <code>GET /v1/modem</code> and its <code>last_change</code> field before deciding what to do. A failed HTTP request does not prove that the modem stayed unchanged.</p>
+            </section>
+
+            <section id="reference">
+                <h2>Endpoint Reference</h2>
+                <p>Status, event, channel and read-only room endpoints on port 8766 are implemented. Room-client removal and modem controls remain planned. <code>GET</code> reads data, <code>POST</code> requests an action, <code>PUT</code> applies a setting and <code>DELETE</code> removes a record. Paths beginning with <code>/v1</code> identify version 1 of the contract.</p>
+                <table>
+                    <thead><tr><th>Method &amp; path</th><th>Purpose</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>GET /v1/status</code></td><td>Node identity, uptime, link, radio echo, queue/counter summaries and event-ring bounds.</td></tr>
+                        <tr><td><code>GET /v1/events</code></td><td>Bounded pages of recent packet, room, script and modem events.</td></tr>
+                        <tr><td><code>GET /v1/channels</code></td><td>Configured names, key strategy, enabled state and retained message counts. Never keys.</td></tr>
+                        <tr><td><code>GET /v1/channels/{name}/messages</code></td><td>Decoded text with paging and substring search.</td></tr>
+                        <tr><td><code>GET /v1/rooms</code></td><td>Active rooms, public identities, remembered clients, activity and counters.</td></tr>
+                        <tr><td><code>GET /v1/rooms/{id}/clients</code></td><td>Radio-client keys, existing protocol roles, last activity, push state and optional advert labels.</td></tr>
+                        <tr><td><code>GET /v1/rooms/{id}/posts</code></td><td>Newest retained posts and authors.</td></tr>
+                        <tr><td><code>DELETE /v1/rooms/{id}/clients/{key}</code></td><td>Forget a session and cancel its pending pushes. This does not ban the radio.</td></tr>
+                        <tr><td><code>GET /v1/modem</code></td><td>Cached diagnostics; does not send a modem command on each read.</td></tr>
+                        <tr><td><code>POST /v1/modem/query</code></td><td>One typed read-only modem command.</td></tr>
+                        <tr><td><code>PUT /v1/modem/radio?preview=true</code></td><td>Validate and list intended commands without sending or saving.</td></tr>
+                        <tr><td><code>PUT /v1/modem/radio</code></td><td>Apply, check echo, save and recover on failure.</td></tr>
+                    </tbody>
+                </table>
+                <p>Use actual ids and public keys in paths, not the braces shown in the table. Room keys are 64 lowercase hexadecimal characters. Times use RFC 3339 UTC timestamps. Unknown measurements are <code>null</code>; empty lists are <code>[]</code>.</p>
+                <p>Removing a room client deletes its session, not its credentials. It may log in again under the existing room rules. No endpoint in this feature changes a radio client's role or edits KAMmon's web users.</p>
+            </section>
+
+            <section id="modem">
+                <h2>Modem Changes</h2>
+                <p><strong>Planned behavior:</strong> KAMmon asks KAM to perform the change; KAMmon never writes raw KISS frames. The serial port and baud rate cannot be changed here. Frequency, bandwidth, spreading factor and coding rate are required; transmit power and a complete CSMA object are optional.</p>
+                <p><strong>CSMA</strong> (carrier-sense multiple access) is the modem's wait-and-retry behavior before transmitting. <strong>LoRa</strong> is the long-range radio modulation; its frequency, bandwidth, spreading factor and coding rate must match your network. Choose legal settings for your hardware and region, not merely numbers inside an API range.</p>
+                <ol>
+                    <li>Validate all requested values and take the single radio-change gate.</li>
+                    <li>Pause new transmissions, retain queued packets, and wait for the active transmission to finish. Suspend reset-probe and diagnostic work during the change; continue receiving.</li>
+                    <li>Send the typed commands and compare the modem's cached radio and power echo. Keep signal reporting enabled.</li>
+                    <li>Check that <code>kam.yml</code> has not changed, then save atomically with the existing writer.</li>
+                    <li>Update runtime defaults used by the reset probe, airtime estimator and scheduler, then resume transmission.</li>
+                    <li>On any failure after changing the modem, try restoring previous settings, including when saving the file fails.</li>
+                </ol>
+                <div class="info-box info-box-amber"><p><strong>Echo is not hardware verification.</strong> The modem may acknowledge settings its radio chip rejected. A matching readback confirms the modem stored the requested numbers, not that reception or transmission works with them. CSMA setting commands have no individual replies.</p></div>
+                <p>If restoration succeeds, transmission resumes. If restoration fails, KAM keeps transmission paused, continues receiving and reports uncertain modem state. A later successful explicit apply or successful startup reapplication clears that pause. This recovery does not guarantee continued reception if the radio hardware or serial link has itself failed.</p>
+                <p>Apply has up to 10 seconds for waiting, changing and saving, plus a maximum 5 seconds for recovery. Recovery can finish even if the caller disconnects. The caller keeps no asynchronous job in KAM; the snapshot contains only the latest operation outcome.</p>
+                <p>Saving uses KAM's existing YAML writer, which rewrites the file and drops comments, just like channel upserts. Signal reporting is always enabled and is not an editable setting.</p>
+            </section>
+
+            <section id="scripts">
+                <h2>Script Testing</h2>
+                <p><strong>Starlark</strong> is the restricted scripting language KAM uses for automation. Existing script management remains on port 8765 with its current revision checks. The planned additions are in-memory last-run information and <code>POST /scripts/dry-run</code>.</p>
+                <p>A dry run compiles and runs supplied source against a <strong>fixture</strong>, a made-up input message. Calls to <code>reply(channel, text)</code> are captured as output instead of being transmitted. The test does not save the script, change its enabled state or freeze the live version.</p>
+                <table>
+                    <thead><tr><th>Test limit</th><th>Meaning</th></tr></thead>
+                    <tbody>
+                        <tr><td>500 ms default; 3000 ms maximum</td><td>Compilation and execution are bounded. This does not change a live script's configured timeout.</td></tr>
+                        <tr><td>One test at a time</td><td>A concurrent test gets <code>409</code>; no job queue is added.</td></tr>
+                        <tr><td>16 replies, 4096 UTF-8 bytes</td><td>Maximum captured output across channel names and reply text. Exceeding either stops the test with an error.</td></tr>
+                        <tr><td><code>ok: false</code> with HTTP <code>200</code></td><td>The test completed but the script failed. Inspect its error and captured replies.</td></tr>
+                    </tbody>
+                </table>
+                <p>The input must name an enabled channel. Defaults include sender <code>test</code>, empty body, zero hops and no signal metadata. A disconnected caller cancels the test. Successful or failed dry runs never update live execution statistics.</p>
+                <p>Read the <a href="FeatureStarlark.html">Starlark manual</a> for the current message dictionary and <code>reply</code> behavior. Run statistics reset when KAM restarts; they are not a permanent execution log.</p>
+            </section>
+
+            <section id="sources">
+                <h2>Sources</h2>
+                <p>This manual explains the public behavior; <a href="../docs/FeatureMonitorApi.md">FeatureMonitorApi.md is the detailed API contract and implementation plan</a>. Its decisions, JSON examples and requirement ids govern the API.</p>
+                <ul>
+                    <li><a href="../docs/APP_STRUCTURE.md">Application structure</a>: existing owners, storage and runtime flows.</li>
+                    <li><a href="../docs/SYSTEM_DESIGN.md">System design</a>: existing goroutines, locking and shutdown.</li>
+                    <li><a href="../internal/automation/api.go">Existing script API source</a>: port 8765 and current route behavior.</li>
+                    <li><a href="FeatureKissModem.html">KISS modem manual</a>: radio commands, echoes, diagnostics and link limitations.</li>
+                    <li><a href="FeatureRoomServer.html">Room-server manual</a>: current password and radio-client role semantics.</li>
+                </ul>
+            </section>
+        </article>
+        <footer>Backend API manual. Updated 12 October 2026. Phases 1-2 are implemented; real-radio acceptance remains pending.</footer>
+    </main>
+</body>
+</html>

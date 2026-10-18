@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"kam.bytecoder.nl/internal/models"
@@ -52,7 +53,26 @@ func (e *ModemError) Is(target error) bool {
 
 // RadioClient provides methods to interact with the radio hardware via KISS
 type RadioClient struct {
-	manager *Manager
+	manager    *Manager
+	identityMu sync.RWMutex
+	deviceName *string
+	version    *uint8
+}
+
+func (c *RadioClient) CachedIdentity() (*string, *uint8) {
+	c.identityMu.RLock()
+	defer c.identityMu.RUnlock()
+	var name *string
+	var version *uint8
+	if c.deviceName != nil {
+		value := *c.deviceName
+		name = &value
+	}
+	if c.version != nil {
+		value := *c.version
+		version = &value
+	}
+	return name, version
 }
 
 func NewRadioClient(m *Manager) *RadioClient {

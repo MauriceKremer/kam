@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Standalone KAMmon design prototype. All telemetry and changes are simulated.">
+<title>KAMmon · Design prototype</title>
+<link rel="stylesheet" href="../manuals/manuals.css">
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+<style>
+:root { color-scheme:dark; --bg-0:#101012; --bg-1:#18181b; --bg-2:#222225; --bg-3:#2c2c30; --text-primary:#f5f5f7; --text-secondary:#c5c5ca; --text-muted:#a1a1a8; --signal:#80b8ff; --signal-hover:#afd2ff; --success:#3ddc91; --warning:#f5b544; --danger:#ff7188; --border-subtle:#ffffff0f; --border-default:#ffffff1f; --glass-bg:#18181b; --glass-highlight:#ffffff08; --kam-font-body:"Hanken Grotesk",sans-serif; }
+:root[data-theme="light"] { color-scheme:light; --bg-0:#ffffff; --bg-1:#f8fafc; --bg-2:#f1f5f9; --bg-3:#e2e8f0; --text-primary:#0f172a; --text-secondary:#334155; --text-muted:#526174; --signal:#2563eb; --signal-hover:#1d4ed8; --success:#147a43; --warning:#a45b00; --danger:#c42c48; --border-subtle:#0000000f; --border-default:#0000001f; --glass-bg:#f8fafc; --glass-highlight:#00000005; }
+body { display:grid; grid-template-columns:224px minmax(0,1fr); font:400 15px/1.5 var(--kam-font-body); }
+[hidden] { display:none !important; }
+button,input,select,textarea { font:inherit; color:inherit; }
+button { cursor:pointer; } button:disabled { cursor:not-allowed; opacity:.4; }
+button,.control,input,select { border:1px solid var(--border-default); border-radius:6px; background:var(--bg-2); padding:8px 12px; }
+button { display:inline-flex; gap:8px; align-items:center; justify-content:center; white-space:nowrap; }
+button:hover:not(:disabled) { background:var(--bg-3); }
+button.primary { background:var(--signal); color:var(--bg-0); border-color:var(--signal); font-weight:650; }
+button svg,.icon { width:17px; height:17px; flex:none; }
+button.icon-button { width:34px; height:34px; padding:7px; }
+body > aside { padding:28px 16px; display:flex; flex-direction:column; gap:28px; background:var(--bg-1); }
+.brand { font:700 21px/1.25 var(--kam-font-brand); color:var(--text-primary); white-space:nowrap; }
+.brand small { font:500 13px var(--kam-font-body); color:var(--text-muted); display:block; margin-top:8px; }
+.brand .mon { color:var(--signal); font-size:16px; }
+.nav-label { font-size:11px; color:var(--text-muted); margin:0 12px 10px; text-transform:uppercase; }
+.navigation { display:grid; gap:4px; }
+.navigation button { border:0; background:transparent; justify-content:flex-start; color:var(--text-muted); padding:11px 12px; width:100%; }
+.navigation button[aria-current="page"] { background:var(--glass-highlight); color:var(--text-primary); box-shadow:inset 2px 0 var(--text-secondary); font-weight:600; }
+.nav-count { margin-left:auto; font:11px var(--kam-font-code); color:var(--text-muted); }
+.node-state { margin-top:auto; border-top:1px solid var(--border-default); padding:20px 8px 0; font-size:12px; color:var(--text-muted); }
+.node-state strong { display:block; color:var(--text-secondary); margin-bottom:7px; }
+.dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--success); margin-right:7px; }
+body > main { max-width:none; padding:0 32px 48px; margin:0; overflow-wrap:normal; }
+.topbar { min-height:70px; display:flex; align-items:center; justify-content:space-between; gap:16px; border-bottom:1px solid var(--border-default); }
+.breadcrumb { color:var(--text-muted); font-size:12px; display:flex; gap:10px; align-items:center; }
+.breadcrumb strong { color:var(--text-secondary); font-weight:500; }
+.session { display:flex; align-items:center; gap:12px; font-size:12px; }
+.session select { max-width:180px; font-size:12px; padding:6px; }
+.session button { font-size:12px; }
+.page-heading { display:flex; justify-content:space-between; align-items:center; gap:20px; margin:28px 0 24px; }
+h1,h2,h3,h4,h5 { background-image:none; color:var(--signal); -webkit-text-fill-color:var(--signal); margin:0; }
+main h1 { font:700 28px/1.1 var(--kam-font-brand); margin:0 0 6px; }
+h2 { font-size:16px; font-weight:600; } h3 { font-size:14px; }
+p { margin:0; } .muted { color:var(--text-muted); } .small { font-size:12px; } .mono { font-family:var(--kam-font-code); font-size:12px; }
+.actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.segmented { display:inline-flex; padding:3px; border:1px solid var(--border-default); border-radius:6px; background:var(--bg-1); }
+.segmented button { border:0; padding:5px 10px; background:transparent; font-size:12px; color:var(--text-muted); }
+.segmented button[aria-pressed="true"] { background:var(--bg-3); color:var(--text-primary); }
+.metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border-top:1px solid var(--border-default); border-bottom:1px solid var(--border-default); margin-bottom:28px; }
+.metric { padding:20px 24px; border-right:1px solid var(--border-default); } .metric:first-child { padding-left:0; } .metric:last-child { border:0; }
+.metric-label { color:var(--text-muted); font-size:12px; display:flex; align-items:center; gap:7px; }
+.metric-value { font-size:30px; font-weight:550; line-height:1.3; margin:8px 0 4px; font-variant-numeric:tabular-nums; }
+.metric-value small { font-size:15px; color:var(--text-muted); font-weight:400; }
+.good { color:var(--success); } .warn { color:var(--warning); }
+.overview-grid { display:grid; grid-template-columns:minmax(0,1fr) 280px; column-gap:32px; }
+.section { min-width:0; padding:0 0 24px; } .section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:18px; }
+.section-head .small { margin-top:3px; }
+.section-head { flex-wrap:wrap; }
+.section-head > div { min-width:0; }
+.chart { position:relative; height:215px; background:repeating-linear-gradient(to bottom,transparent 0,transparent calc(25% - 1px),var(--border-subtle) calc(25% - 1px),var(--border-subtle) 25%); }
+.chart canvas { width:100%; height:100%; display:block; }
+.chart-labels { display:flex; justify-content:space-between; color:var(--text-muted); font:10px var(--kam-font-code); margin-top:10px; }
+.legend { display:flex; gap:18px; flex-wrap:wrap; font-size:11px; color:var(--text-muted); margin-top:16px; }
+.legend span::before { content:""; width:8px; height:8px; background:var(--key); display:inline-block; margin-right:7px; border-radius:2px; }
+.composition { border-left:1px solid var(--border-default); padding-left:28px; }
+.stack { display:flex; height:12px; gap:3px; margin:22px 0 24px; overflow:hidden; border-radius:3px; }
+.stack span { background:var(--key); flex:var(--weight); }
+.type-row { display:flex; align-items:center; gap:8px; margin:14px 0; font-size:12px; }
+.type-row .swatch { width:7px; height:7px; background:var(--key); border-radius:2px; }
+.type-row strong { margin-left:auto; font-weight:500; } .type-row .muted { width:32px; text-align:right; }
+.lower-grid { display:grid; grid-template-columns:minmax(0,1fr) 280px; gap:32px; border-top:1px solid var(--border-default); padding-top:24px; }
+.table-scroll { overflow:auto; max-width:100%; }
+table { border-collapse:collapse; width:100%; font-size:12px; white-space:nowrap; }
+th { color:var(--text-muted); font-size:10px; text-transform:uppercase; font-weight:500; text-align:left; padding:10px 12px; background:#ffffff02; }
+td { padding:13px 12px; border-bottom:1px solid var(--border-subtle); color:var(--text-secondary); } th:first-child,td:first-child { padding-left:0; }
+.packet-tag { font:10px var(--kam-font-code); padding:3px 6px; border-radius:3px; background:#80b8ff12; color:var(--signal); }
+.packet-tag.advert { background:#f5b54412; color:var(--warning); } .packet-tag.ack { background:#3ddc9112; color:var(--success); }
+.room-preview { padding:16px 0; border-bottom:1px solid var(--border-subtle); }
+.room-preview:first-of-type { padding-top:0; } .room-preview header { display:flex; justify-content:space-between; gap:8px; margin-bottom:7px; }
+.room-preview p { color:var(--text-muted); font-size:12px; } .room-preview .room-stats { display:flex; gap:16px; margin-top:12px; font:11px var(--kam-font-code); }
+.text-button { background:none; border:0; color:var(--signal); padding:0; font-size:12px; }
+.runtime { margin-top:20px; padding-top:20px; border-top:1px solid var(--border-default); display:flex; gap:10px; align-items:flex-start; }
+.runtime .icon { color:var(--success); margin-top:2px; }
+.view[hidden] { display:none !important; }
+.filterbar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px; } .filterbar input { min-width:160px; flex:1; }
+.room-layout { display:grid; grid-template-columns:240px minmax(0,1fr); gap:32px; }
+.room-selector { padding:16px; margin-bottom:8px; width:100%; justify-content:space-between; background:var(--bg-1); text-align:left; }
+.room-selector[aria-pressed="true"] { border-color:var(--signal); } .room-selector small { display:block; font-size:11px; color:var(--text-muted); margin-top:6px; }
+.room-detail { min-width:0; } .room-detail .metrics { grid-template-columns:repeat(3,minmax(0,1fr)); margin-top:20px; }
+.account-form { display:flex; gap:8px; flex-wrap:wrap; padding:20px 0; border-top:1px solid var(--border-default); margin-top:24px; }
+.account-form input { min-width:120px; flex:1; }
+.script-layout { display:grid; grid-template-columns:210px minmax(0,1fr); gap:24px; }
+.script-entry { width:100%; padding:14px 12px; border:0; background:none; justify-content:space-between; text-align:left; }
+.script-entry[aria-pressed="true"] { background:var(--bg-2); } .script-entry small { display:block; font-size:11px; color:var(--text-muted); margin-top:4px; }
+.editor { border:1px solid var(--border-default); border-radius:6px; overflow:hidden; min-width:0; }
+.editor-toolbar { padding:10px 14px; display:flex; justify-content:space-between; align-items:center; gap:10px; background:var(--bg-1); border-bottom:1px solid var(--border-default); }
+textarea { width:100%; resize:vertical; min-height:330px; display:block; padding:24px; border:0; outline-offset:-3px; border-radius:0; background:var(--bg-0); font:12px/1.9 var(--kam-font-code); tab-size:4; white-space:pre; }
+.console { min-height:115px; padding:16px; border-top:1px solid var(--border-default); background:var(--bg-1); font:11px/1.8 var(--kam-font-code); white-space:pre-wrap; }
+.prototype-badge { display:block; color:var(--text-muted); font:10px var(--kam-font-code); margin-top:16px; }
+.toast { position:fixed; bottom:24px; right:24px; background:var(--bg-3); padding:12px 18px; border:1px solid var(--border-default); border-radius:6px; z-index:8; max-width:calc(100% - 48px); }
+dialog { width:380px; max-width:calc(100% - 32px); padding:28px; border:1px solid var(--border-default); border-radius:8px; background:var(--bg-1); color:var(--text-primary); }
+dialog::backdrop { background:#000b; } dialog h2 { margin-bottom:8px; } dialog label { display:block; margin-top:16px; font-size:12px; } dialog input { width:100%; margin-top:6px; } dialog .actions { margin-top:24px; }
+.locked { padding:16px 0; color:var(--text-muted); border-bottom:1px solid var(--border-default); margin-bottom:20px; display:flex; align-items:center; gap:8px; }
+.dashboard { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:32px; }
+.overview-grid { display:block; } .composition { border-left:0; padding:24px 0 0; border-top:1px solid var(--border-default); }
+.type-list { display:grid; grid-template-columns:1fr 1fr; gap:0 24px; }
+.lower-grid { display:flex; flex-direction:column-reverse; border-top:0; padding:0 0 0 28px; border-left:1px solid var(--border-default); gap:24px; }
+.lower-grid table th:nth-child(4),.lower-grid table td:nth-child(4),.lower-grid table th:nth-child(5),.lower-grid table td:nth-child(5) { display:none; }
+.room-stats { flex-wrap:wrap; gap:4px 16px !important; }
+.admin-clients { padding-top:12px; margin-top:12px; border-top:1px solid var(--border-subtle); }
+.admin-clients .client-summary { display:flex; justify-content:space-between; gap:8px; padding-top:6px; font-size:12px; }
+.activity-caption { padding:16px 0 24px; color:var(--text-muted); font-size:12px; }
+.client-activity { display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11px; color:var(--text-muted); }
+.client-activity::before { content:""; width:8px; height:8px; flex:none; border:1px solid currentColor; border-radius:50%; }
+.client-activity.fresh { color:var(--success); }
+.client-activity.recent { color:var(--warning); }
+.client-activity.fresh::before,.client-activity.recent::before { background:currentColor; }
+.client-activity.stale::before { width:14px; height:0; border:0; border-top:2px dotted currentColor; border-radius:0; }
+.client-activity strong { font-weight:600; }
+.activity-legend { display:flex; gap:8px 16px; flex-wrap:wrap; margin:0 0 24px; }
+.room-clients { margin:24px 0; }
+.room-selector[aria-pressed="true"] { border-color:var(--border-default); box-shadow:inset 2px 0 var(--text-secondary); background:var(--bg-2); }
+.legend span:nth-child(1),.stack span:nth-child(1),.type-row:nth-child(1) .swatch { --key:var(--signal) !important; }
+.legend span:nth-child(2),.stack span:nth-child(3),.type-row:nth-child(3) .swatch { --key:var(--success) !important; }
+.legend span:nth-child(3),.stack span:nth-child(2),.type-row:nth-child(2) .swatch { --key:var(--warning) !important; }
+.legend span:nth-child(4),.stack span:nth-child(4),.type-row:nth-child(4) .swatch { --key:var(--text-muted) !important; }
+.packet-tag { color:var(--signal); background:color-mix(in srgb,var(--signal) 9%,var(--bg-0)); }
+.packet-tag.advert { color:var(--warning); background:color-mix(in srgb,var(--warning) 9%,var(--bg-0)); }
+.packet-tag.ack { color:var(--success); background:color-mix(in srgb,var(--success) 9%,var(--bg-0)); }
+.channel-layout { display:grid; grid-template-columns:240px minmax(0,1fr); gap:32px; }
+.channel-list { min-width:0; } .channel-detail { min-width:0; }
+.channel-choice { display:flex; justify-content:space-between; gap:8px; width:100%; padding:16px; margin-bottom:8px; text-align:left; background:transparent; }
+.channel-choice small { display:block; color:var(--text-muted); margin-top:4px; font-size:11px; }
+.channel-choice > span:first-child { min-width:0; }
+.channel-choice small { white-space:normal; }
+.channel-choice > .mono { flex:none; }
+.channel-choice[aria-pressed="true"] { background:var(--bg-2); box-shadow:inset 2px 0 var(--text-secondary); }
+.channel-detail .metrics { grid-template-columns:repeat(3,minmax(0,1fr)); margin-top:24px; }
+.channel-detail .metric-value { font-size:24px; }
+.message { padding:16px 0; border-bottom:1px solid var(--border-subtle); }
+.message header { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+.message p { color:var(--text-secondary); overflow-wrap:anywhere; }
+.message footer { display:flex; gap:16px; flex-wrap:wrap; border:0; padding:0; margin:8px 0 0; font-size:11px; }
+.channel-overview { border-top:1px solid var(--border-default); padding-top:24px; }
+.modem-layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:32px; }
+.modem-layout > * { min-width:0; }
+.modem-side { border-left:1px solid var(--border-default); padding-left:28px; }
+.form-section { border:0; border-bottom:1px solid var(--border-default); margin:0 0 24px; padding:0 0 24px; min-width:0; }
+.form-section legend { font:600 16px/1.25 var(--kam-font-heading); color:var(--signal); padding:0; margin-bottom:16px; }
+.field-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.field { display:grid; gap:6px; font-size:12px; color:var(--text-secondary); min-width:0; }
+.field input,.field select { width:100%; min-width:0; }
+.field small { color:var(--text-muted); font-size:11px; }
+.check-row { display:flex; align-items:center; gap:8px; font-size:12px; margin-top:16px; }
+.check-row input { accent-color:var(--signal); }
+.modem-note { border-left:2px solid var(--warning); padding-left:16px; margin:16px 0 24px; color:var(--text-secondary); font-size:12px; }
+.readings { margin:16px 0 24px; }
+.reading { display:flex; justify-content:space-between; gap:12px; border-bottom:1px solid var(--border-subtle); padding:10px 0; font-size:12px; }
+.reading dt { color:var(--text-muted); } .reading dd { margin:0; font-family:var(--kam-font-code); font-size:11px; text-align:right; }
+.modem-log { max-height:320px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; border:1px solid var(--border-default); border-radius:6px; }
+.command-form { display:grid; gap:12px; margin:24px 0; }
+.command-preview { margin:16px 0; border:1px solid var(--border-default); border-radius:6px; padding:16px; background:var(--bg-2); white-space:pre-wrap; overflow-wrap:anywhere; font:11px/1.8 var(--kam-font-code); }
+#modem-confirm { width:540px; }
+.sample-note { display:block; margin-top:24px; color:var(--text-muted); font-size:11px; }
+@media(max-width:1100px) { .modem-layout { grid-template-columns:minmax(0,1fr); } .modem-side { border-left:0; border-top:1px solid var(--border-default); padding:24px 0 0; } }
+@media(max-width:767px) { .channel-layout { grid-template-columns:minmax(0,1fr); gap:16px; } .channel-list { display:flex; gap:8px; overflow:auto; } .channel-choice { min-width:200px; } .field-grid { grid-template-columns:minmax(0,1fr); } .channel-detail .metric { padding:12px 8px !important; } .channel-detail .metric-value { font-size:20px; } .channel-detail .metric-value small { font-size:12px; } }
+@media(min-width:1600px) { body > main { padding-left:48px; padding-right:48px; } .chart { height:270px; } }
+@media(max-width:1100px) { body { grid-template-columns:190px minmax(0,1fr); } body > main { padding-left:24px; padding-right:24px; } .metric { padding:16px; } .session { gap:6px; } .breadcrumb { display:none; } .dashboard { grid-template-columns:minmax(0,1fr); } .lower-grid { display:grid; grid-template-columns:1fr 1fr; border-left:0; border-top:1px solid var(--border-default); padding:24px 0 0; } }
+@media(max-width:767px) { body { display:block; } body > aside { position:static; height:auto; padding:16px; display:block; border-bottom:1px solid var(--border-default); } .brand { font-size:18px; } .brand small,.nav-label,.node-state { display:none; } .navigation { display:flex; overflow-x:auto; gap:4px; margin-top:16px; } .navigation button { width:auto; flex:none; padding:8px; font-size:12px; } .nav-count { display:none; } body > main { padding:0 16px 32px; } .topbar { min-height:58px; } .session { flex-wrap:wrap; padding:8px 0; width:100%; justify-content:space-between; } .session select { max-width:155px; } .page-heading { flex-wrap:wrap; margin:24px 0 18px; } main h1 { font-size:24px; } .metrics { grid-template-columns:1fr 1fr; margin-bottom:24px; } .metric { padding:16px !important; border-bottom:1px solid var(--border-subtle); } .metric:nth-child(2) { border-right:0; } .metric-value { font-size:26px; } .overview-grid,.lower-grid { display:block; } .type-list { grid-template-columns:1fr; } .composition { border:0; border-top:1px solid var(--border-default); padding:24px 0 0; } .chart { height:190px; } .lower-grid { padding:24px 0 0; } .room-layout,.script-layout { grid-template-columns:minmax(0,1fr); gap:16px; } .room-list,.script-list { display:flex; gap:8px; overflow:auto; } .room-selector,.script-entry { min-width:190px; } .editor-toolbar { flex-wrap:wrap; } textarea { padding:16px; font-size:11px; } .room-detail .metric-value { font-size:22px; } .room-detail .metric { padding:12px 8px !important; } }
+.small,.mono,.node-state,.breadcrumb,.session,.session select,.session button,.segmented button,.metric-label,.type-row,table,.room-preview p,.text-button,.admin-clients .client-summary,.activity-caption,.field,.check-row,.modem-note,.reading,dialog label,.navigation button { font-size:13px; }
+.nav-label,.nav-count,.legend,.room-preview .room-stats,.room-selector small,.script-entry small,.channel-choice small,.message footer,.field small,.reading dd,.console,.command-preview,.sample-note,.client-activity { font-size:12px; }
+.chart-labels,th,.packet-tag,.prototype-badge { font-size:11px; }
+textarea { font-size:13px; }
+@media(max-width:767px) { textarea { font-size:12px; } }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to content</a>
+<aside aria-label="Main navigation">
+  <div class="brand">KAM<span class="mon">mon</span><small>MeshCore observatory</small></div>
+  <div><p class="nav-label">Workspace</p><nav class="navigation">
+    <button data-view="overview" aria-current="page"><i data-lucide="panels-top-left"></i>Overview</button>
+    <button data-view="traffic"><i data-lucide="radio"></i>Traffic<span class="nav-count">1,284</span></button>
+    <button data-view="channels"><i data-lucide="hash"></i>Channels<span class="nav-count">4</span></button>
+    <button data-view="rooms"><i data-lucide="messages-square"></i>Rooms<span class="nav-count">3</span></button>
+    <button data-view="accounts"><i data-lucide="users"></i>Accounts</button>
+    <button data-view="scripts"><i data-lucide="square-terminal"></i>Automations<span class="nav-count">3</span></button>
+    <button data-view="modem"><i data-lucide="sliders-horizontal"></i>KISS modem</button>
+  </nav></div>
+  <div class="node-state"><strong><span class="dot"></span>Emmen · home node</strong>KAM connected<br><span class="mono" id="node-radio">868.000 MHz · SF8 / BW125</span><br>Uptime 3d 14h 26m<span class="prototype-badge">PROTOTYPE · SAMPLE DATA</span></div>
+</aside>
+<main id="content">
+  <div class="topbar"><div class="breadcrumb">Emmen / <strong>home node</strong><span class="dot"></span></div><div class="session"><button class="icon-button" id="theme-toggle" title="Switch to light mode" aria-label="Switch to light mode" aria-pressed="false"><i data-lucide="sun"></i></button><span id="session-state"><i data-lucide="shield-check" class="icon"></i> maurice · Local admin</span><select id="access-mode" aria-label="Preview access mode"><option value="local">Local administrator</option><option value="remote">Remote viewer</option></select><button id="signout" title="Sign out"><i data-lucide="log-out"></i><span>Sign out</span></button></div></div>
+  <div class="page-heading"><div><h1 id="page-title">Network overview</h1><p class="muted small" id="page-subtitle">Emmen · Netherlands &nbsp; / &nbsp; Sunday, 11 October</p></div><div class="actions"><span class="small good"><span class="dot"></span>Sample feed</span><div class="segmented" aria-label="Time range"><button aria-pressed="false" data-range="15m">15m</button><button aria-pressed="true" data-range="1h">1h</button><button aria-pressed="false" data-range="24h">24h</button></div><button class="icon-button" id="pause" title="Pause sample feed" aria-label="Pause sample feed"><i data-lucide="pause"></i></button></div></div>
+  <div class="locked" id="locked" hidden><i data-lucide="lock-keyhole" class="icon"></i>Authenticated remote session · View only</div>
+  <section class="view" id="overview" aria-label="Network overview">
+    <div class="metrics"><div class="metric"><div class="metric-label">Observed packet airtime <i class="icon" data-lucide="activity"></i></div><div class="metric-value" id="occupancy">8.4<small>%</small></div><p class="small muted">Received + transmitted packets</p></div><div class="metric"><div class="metric-label">Node TX duty cycle</div><div class="metric-value">0.6<small>%</small></div><p class="small muted"><span class="good">Within limit</span> · 1.0% configured</p></div><div class="metric"><div class="metric-label">Packets observed</div><div class="metric-value" id="packets">1,284</div><p class="small muted">1,246 RX <span class="muted">/</span> 38 TX</p></div><div class="metric"><div class="metric-label">Room posts · last hour</div><div class="metric-value">26 <small>/ 3 rooms</small></div><p class="small muted">Last room activity 12 seconds ago</p></div></div>
+    <div class="dashboard"><div class="overview-grid"><section class="section"><div class="section-head"><div><h2>Airtime</h2><p class="small muted">Observed channel activity · 1-minute buckets</p></div><span class="mono muted" id="chart-ceiling">20%</span></div><div class="chart"><canvas id="airtime-chart" role="img" aria-label="Sample stacked airtime chart: adverts, group texts, room traffic and other traffic. Occupancy averages 8.4 percent."></canvas></div><div class="chart-labels"><span>14:00</span><span>14:15</span><span>14:30</span><span>14:45</span><span>15:00</span></div><div class="legend"><span style="--key:#80b8ff">Group text</span><span style="--key:#3ddc91">Room traffic</span><span style="--key:#f5b544">Adverts</span><span style="--key:#73737d">Other</span></div></section><section class="section composition"><h2>Packet mix</h2><p class="muted small">By packet count · last hour</p><div class="stack" aria-label="Group text 46%, adverts 28%, room traffic 18%, other 8%"><span style="--key:#80b8ff;--weight:46"></span><span style="--key:#f5b544;--weight:28"></span><span style="--key:#3ddc91;--weight:18"></span><span style="--key:#73737d;--weight:8"></span></div><div class="type-list"><div class="type-row"><span class="swatch" style="--key:#80b8ff"></span>Group text<strong>591</strong><span class="muted">46%</span></div><div class="type-row"><span class="swatch" style="--key:#f5b544"></span>Adverts<strong>360</strong><span class="muted">28%</span></div><div class="type-row"><span class="swatch" style="--key:#3ddc91"></span>Room traffic<strong>231</strong><span class="muted">18%</span></div><div class="type-row"><span class="swatch" style="--key:#73737d"></span>Other / unknown<strong>102</strong><span class="muted">8%</span></div></div><p class="small muted">Room traffic groups requests, posts and ACKs attributed to this node's rooms.</p></section></div>
+    <div class="lower-grid"><section class="section"><div class="section-head"><h2>Recent packets</h2><button class="text-button" data-jump="traffic">All traffic<i data-lucide="arrow-up-right"></i></button></div><div class="table-scroll"><table><thead><tr><th>Time</th><th>Type</th><th>Source / destination</th><th>Route</th><th>SNR</th></tr></thead><tbody id="recent-packets"></tbody></table></div></section><section class="section"><div class="section-head"><h2>Rooms</h2><button class="text-button" data-jump="rooms" title="Open rooms"><i data-lucide="arrow-up-right"></i></button></div><div id="room-previews"></div><div class="runtime"><i data-lucide="square-terminal" class="icon"></i><div><h3>Automation healthy</h3><p class="small muted">2 ready · 1 disabled<br>Last execution 12 seconds ago</p></div></div></section></div></div>
+  </section>
+  <section class="view" id="traffic" hidden aria-label="Traffic monitor"><div class="filterbar"><input id="traffic-search" type="search" placeholder="Search source or destination" aria-label="Search traffic"><select id="packet-filter" aria-label="Packet type"><option value="all">All packet types</option><option>Group text</option><option>Advert</option><option>ACK</option><option>Request</option><option>Text</option></select><button id="export"><i data-lucide="download"></i>Export CSV</button></div><div class="table-scroll"><table><thead><tr><th>Time</th><th>Direction</th><th>Type</th><th>Source / destination</th><th>Route</th><th>SNR</th><th>Airtime</th></tr></thead><tbody id="traffic-packets"></tbody></table></div><p class="muted small" style="margin-top:16px">Observed packets only · Unattributed or encrypted payloads remain classified by their visible packet type.</p></section>
+  <section class="view" id="rooms" hidden aria-label="Room monitor"><div class="room-layout"><div class="room-list" id="room-list"></div><div class="room-detail"><div class="section-head"><div><h2 id="room-name">Emmen local</h2><p class="muted small"><span class="dot"></span>Serving · <span id="room-key" class="mono">8e2c…b91a</span></p></div><button class="text-button" data-jump="accounts"><i data-lucide="users"></i>Accounts</button></div><div class="metrics"><div class="metric"><p class="metric-label">Last activity</p><p class="metric-value" id="room-activity">12s <small>ago</small></p></div><div class="metric"><p class="metric-label">Posts last hour</p><p class="metric-value" id="room-posts">16</p></div><div class="metric"><p class="metric-label">Remembered clients</p><p class="metric-value" id="room-clients-count">9</p></div></div><p class="activity-caption">Last activity is a client event heard by the room, not an online indicator. Remembered sessions can outlast radio contact.</p><section class="room-clients" id="room-clients-admin"><div class="section-head"><div><h2>Client activity</h2><p class="muted small">Local admin · Proposed contact labels; public key is the identity</p></div></div><div class="table-scroll"><table><thead><tr><th>Client label / key</th><th>Role</th><th>Last activity</th></tr></thead><tbody id="room-client-rows"></tbody></table></div></section><h2 style="margin-bottom:16px">Room feed</h2><div id="room-feed"></div></div></div></section>
+  <section class="view" id="accounts" hidden aria-label="Room accounts"><div class="section-head"><div><h2>Room membership</h2><p class="muted small">Room roles are separate from KAMmon login accounts.</p></div><select id="account-room" aria-label="Manage accounts for room"><option>Emmen local</option><option>NL makers</option><option>Field operations</option></select></div><p class="activity-caption">Proposed management · Changes here affect sample data only. KAM currently assigns room roles through password login. Contributor = read/write; Viewer = guest (receive only).</p><div class="table-scroll"><table><thead><tr><th>Admin label / key</th><th>Public key</th><th>Room role</th><th>Last activity</th><th>Actions</th></tr></thead><tbody id="account-rows"></tbody></table></div><form class="account-form" id="account-form"><input id="member-name" placeholder="Local contact label" aria-label="Local contact label" required><input id="member-key" placeholder="Public key (64 hex characters)" aria-label="Member public key" pattern="[a-fA-F0-9]{64}" required><select id="member-role" aria-label="Room role"><option>Contributor</option><option>Admin</option><option>Viewer</option></select><button class="primary mutation" type="submit"><i data-lucide="user-plus"></i>Add member</button></form></section>
+  <section class="view" id="scripts" hidden aria-label="Starlark workspace"><div class="script-layout"><div><div class="section-head"><h2>Scripts</h2><button class="icon-button mutation" id="new-script" title="New script" aria-label="New script"><i data-lucide="plus"></i></button></div><div class="script-list" id="script-list"></div></div><div class="editor"><div class="editor-toolbar"><span class="mono" id="script-title">echo.star <span class="muted">· rev 4</span></span><div class="actions"><button class="mutation" id="validate"><i data-lucide="check-check"></i>Validate</button><button class="mutation" id="test-script"><i data-lucide="play"></i>Dry run</button><button class="primary mutation" id="save-script"><i data-lucide="save"></i>Save</button></div></div><textarea id="source" aria-label="Starlark source" spellcheck="false"></textarea><div class="editor-toolbar"><label class="small"><input type="checkbox" id="script-enabled" class="mutation" checked> Enabled</label><label class="small">Timeout <input id="timeout" class="mutation" type="number" min="1" value="500" style="width:80px;padding:4px"> ms</label><span class="small muted" id="save-state">Saved revision 4</span></div><div class="console" id="console" role="status">READY · Compiled successfully\nLast execution: 14:59:48 · 2.1 ms · 1 reply queued</div></div></div></section>
+  <section class="view" id="channels" hidden aria-label="Channel monitor">
+    <div class="channel-layout">
+      <div><div class="section-head"><h2>Configured channels</h2><span class="mono muted">4</span></div><div class="channel-list" id="channel-list"></div><p class="small muted">Channels share the modem's radio settings; they are not separate frequencies.</p></div>
+      <div class="channel-detail">
+        <div class="section-head"><div><h2 id="channel-name">#emmen</h2><p class="small muted" id="channel-strategy">Derived key · Decoding enabled</p></div><span class="small good" id="channel-state">Listening</span></div>
+        <div class="metrics"><div class="metric"><p class="metric-label">Decoded messages · 1h</p><p class="metric-value" id="channel-count">286</p></div><div class="metric"><p class="metric-label">Last decoded message</p><p class="metric-value" id="channel-last">2s <small>ago</small></p></div><div class="metric"><p class="metric-label">Received airtime · 1h</p><p class="metric-value" id="channel-airtime">89.2 <small>s</small></p></div></div>
+        <p class="activity-caption">Airtime attributed to decoded RX packets, not total RF occupancy. Messages KAM cannot decrypt are not assigned to a channel here.</p>
+        <div class="filterbar"><input type="search" id="channel-search" aria-label="Search channel messages" placeholder="Search sender or message"></div>
+        <div class="section-head"><h2>Decoded messages</h2><span class="small muted">Sample history · Receive only</span></div><div id="channel-messages"></div>
+        <p class="sample-note">Channel keys and enabled states live in kam.yml; valid channel changes reload while KAM runs. No key material is displayed here.</p>
+      </div>
+    </div>
+  </section>
+  <section class="view" id="modem" hidden aria-label="KISS modem controls">
+    <div class="modem-layout">
+      <div>
+        <div class="section-head"><div><h2>Radio configuration</h2><p class="small muted">SetHardware · CMD 0x06 · Runtime command preview</p></div><span class="mono muted" id="modem-echo-state">Sample echo</span></div>
+        <form id="modem-form">
+          <fieldset class="form-section"><legend>LoRa parameters</legend><div class="field-grid">
+            <label class="field">Frequency · MHz<input class="mutation" id="radio-frequency" type="number" min="300" max="2500" step="0.000001" value="868.000000" required><small>SetRadio 0x09 · 300–2500 MHz</small></label>
+            <label class="field">Bandwidth · kHz<input class="mutation" id="radio-bandwidth" type="number" min="7.8" max="500" step="0.001" value="125" required><small>7.8–500 kHz · Match your local network</small></label>
+            <label class="field">Spreading factor<select class="mutation" id="radio-sf"><option value="5">SF5</option><option value="6">SF6</option><option value="7">SF7</option><option value="8" selected>SF8</option><option value="9">SF9</option><option value="10">SF10</option><option value="11">SF11</option><option value="12">SF12</option></select></label>
+            <label class="field">Coding rate<select class="mutation" id="radio-cr"><option value="5" selected>4/5</option><option value="6">4/6</option><option value="7">4/7</option><option value="8">4/8</option></select></label>
+            <label class="field">TX power · dBm<input class="mutation" id="radio-power" type="number" min="1" max="22" step="1" value="14" required><small>SetTxPower 0x0A · 1–22 dBm</small></label>
+          </div><label class="check-row"><input class="mutation" id="radio-signal" type="checkbox" checked>Signal metadata reporting · SetSignalReport 0x19</label></fieldset>
+          <fieldset class="form-section"><legend>Channel access · CSMA</legend><div class="field-grid">
+            <label class="field">TX delay · ms<input class="mutation" id="csma-delay" type="number" min="0" max="2550" step="10" value="500" required><small>CMD 0x01 · 10 ms units</small></label>
+            <label class="field">Persistence<input class="mutation" id="csma-persistence" type="number" min="0" max="255" step="1" value="63" required><small>CMD 0x02 · Probability (p + 1) / 256</small></label>
+            <label class="field">Slot time · ms<input class="mutation" id="csma-slot" type="number" min="0" max="2550" step="10" value="100" required><small>CMD 0x03 · 10 ms units</small></label>
+          </div><p class="small muted" style="margin-top:16px">FullDuplex stays off (CMD 0x05): LoRa is half-duplex. TXtail is unused by the reviewed firmware.</p></fieldset>
+          <div class="modem-note"><strong>Echo, not hardware verification.</strong> SetRadio / SetTxPower OK means received. GetRadio / GetTxPower return cached values, not proof the chip accepted them. Use settings legal for your radio and region.</div>
+          <div class="actions"><button class="primary mutation" type="submit"><i data-lucide="list-checks"></i>Review commands</button><button class="mutation" id="modem-discard" type="button"><i data-lucide="rotate-ccw"></i>Restore sample echo</button></div>
+          <p class="sample-note">Prototype only · No serial commands or configuration writes occur. A future runtime change must also account for KAM's reset probe and startup settings; radio changes in kam.yml currently require a restart.</p>
+        </form>
+      </div>
+      <aside class="modem-side" aria-label="Modem diagnostics">
+        <div class="section-head"><h2>Modem snapshot</h2><span class="small muted">Sample</span></div>
+        <dl class="readings"><div class="reading"><dt>Device</dt><dd>Emmen KISS</dd></div><div class="reading"><dt>Serial link</dt><dd>115200 baud</dd></div><div class="reading"><dt>Cached radio</dt><dd id="modem-radio-readback">868 MHz / 125 kHz<br>SF8 / 4/5 / 14 dBm</dd></div><div class="reading"><dt>Current RSSI</dt><dd>−106 dBm</dd></div><div class="reading"><dt>Noise floor</dt><dd>−114 dBm</dd></div><div class="reading"><dt>Channel busy</dt><dd>Clear</dd></div><div class="reading"><dt>MCU temperature</dt><dd>32.4 °C</dd></div><div class="reading"><dt>Battery callback</dt><dd>Unsupported</dd></div></dl>
+        <form id="diagnostic-form" class="command-form"><label class="field">Query command<select class="mutation" id="diagnostic-command" aria-label="Modem query command"></select></label><label class="field" id="airtime-length-field" hidden>Packet length · bytes<input class="mutation" id="airtime-length" type="number" min="1" max="255" step="1" value="64" required></label><label class="field" id="sensor-mask-field" hidden>Sensor permissions<select class="mutation" id="sensor-mask"><option value="1">Base · 1</option><option value="2">Location · 2</option><option value="4">Environment · 4</option><option value="7">All · 7</option></select></label><button class="mutation" type="submit"><i data-lucide="send"></i>Run sample query</button></form>
+        <div class="section-head"><h2>Command log</h2><span class="small muted">Simulated</span></div><div class="console modem-log" id="modem-log" role="log" aria-live="polite">SAMPLE SESSION · No modem connected\n06 / 17 Ping → 97 Pong\n06 / 0B GetRadio → 8B cached radio values</div>
+        <p class="sample-note">Noise floor 0 means not calibrated. Missing sensor callbacks are unsupported, not a failed link. Reboot and crypto commands remain deferred in KAM.</p>
+      </aside>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast" role="status" hidden></div>
+<dialog id="modem-confirm" aria-labelledby="modem-confirm-title"><h2 id="modem-confirm-title">Review runtime commands</h2><p class="small muted">Simulated only · Nothing will be sent to your radio.</p><pre class="command-preview" id="modem-command-preview"></pre><p class="small muted">The CSMA commands do not reply. A Ping barrier confirms a round trip, not that each setting took effect.</p><div class="actions"><button id="modem-cancel"><i data-lucide="x"></i>Cancel</button><button class="primary mutation" id="modem-apply"><i data-lucide="check"></i>Simulate apply</button></div></dialog>
+<dialog id="login"><form id="login-form"><h2>Sign in to KAMmon</h2><p class="small muted">Remote viewer · Prototype session</p><label>Username<input id="username" autocomplete="username" value="observer" required></label><label>Password<input type="password" autocomplete="current-password" required></label><div class="actions"><button class="primary" type="submit"><i data-lucide="log-in"></i>Sign in</button></div><p class="muted small" style="margin-top:16px">Demo only. Use any fictional password.</p></form></dialog>
+<script>
+const titles = {overview:['Network overview','Emmen · Netherlands / Sunday, 11 October'],traffic:['Traffic monitor','Packet stream · RX and TX · Sample telemetry'],channels:['Channel monitor','Shared-key conversations · Decoded group text'],modem:['KISS modem','Radio settings, channel access and typed CMD queries'],rooms:['Room monitor','Sessions, posts and synchronization'],accounts:['Room accounts','Membership and room permissions'],scripts:['Starlark workspace','Source, validation and execution history']};
+const channels = [
+  {name:'#emmen',strategy:'Derived',enabled:true,count:286,last:'2s',airtime:89.2,messages:[{sender:'PA3M',text:'Good afternoon Emmen. Signal check from the forest route.',time:'14:59:58',snr:'+8.5 dB',rssi:'−97 dBm',route:'Flood · 2 hops'},{sender:'MeshMike',text:'Received clearly at the south relay.',time:'14:57:16',snr:'+6.2 dB',rssi:'−102 dBm',route:'Flood · 1 hop'},{sender:'PA3M',text:'!echo hello',time:'14:55:32',snr:'+7.0 dB',rssi:'−99 dBm',route:'Flood · 2 hops'}]},
+  {name:'#public',strategy:'Public',enabled:true,count:241,last:'14s',airtime:81.7,messages:[{sender:'Scout',text:'Checkpoint north confirmed. Heading back to Emmen.',time:'14:59:46',snr:'+3.2 dB',rssi:'−111 dBm',route:'Flood · 3 hops'},{sender:'MeshMike',text:'Anyone receiving the new relay?',time:'14:59:24',snr:'+9.2 dB',rssi:'−95 dBm',route:'Flood · 2 hops'}]},
+  {name:'#makers',strategy:'Explicit',enabled:true,count:64,last:'4m',airtime:20.1,messages:[{sender:'LoRaLab',text:'New antenna is up. Testing now.',time:'14:56:00',snr:'+6.0 dB',rssi:'−103 dBm',route:'Flood · 1 hop'}]},
+  {name:'#field',strategy:'Explicit',enabled:false,count:0,last:null,airtime:0,messages:[]}
+];
+const queryCommands = [
+  {name:'Ping',code:'17',reply:'97 Pong'}, {name:'GetRadio',code:'0B'}, {name:'GetTxPower',code:'0C'},
+  {name:'GetCurrentRssi',code:'0D',reply:'8D · −106 dBm'}, {name:'IsChannelBusy',code:'0E',reply:'8E · 0 / clear'},
+  {name:'GetAirtime',code:'0F'}, {name:'GetNoiseFloor',code:'10',reply:'90 · −114 dBm'},
+  {name:'GetVersion',code:'11',reply:'91 · version byte 1 / reserved 0'}, {name:'GetStats',code:'12',reply:'92 · RX 1246 / TX 38 / errors 0'},
+  {name:'GetBattery',code:'13',reply:'F1 / 03 NoCallback · Unsupported on sample board'}, {name:'GetMCUTemp',code:'14',reply:'94 · 324 / 32.4 °C'},
+  {name:'GetSensors',code:'15',reply:'95 · empty payload / no sensors'}, {name:'GetDeviceName',code:'16',reply:'96 · Emmen KISS'}, {name:'GetSignalReport',code:'1A'}
+];
+let sampleRadio={frequency:868,bandwidth:125,sf:8,cr:5,power:14,signal:true,delay:500,persistence:63,slot:100};
+let pendingRadio=null, currentChannel=0;
+const rooms = [{name:'Emmen local',clients:9,postsHour:16,activity:'12 seconds ago',activityShort:'12s',key:'8e2c…b91a',last:'PA3M · Anyone on the forest route today?'},{name:'NL makers',clients:6,postsHour:8,activity:'4 minutes ago',activityShort:'4m',key:'72aa…04f2',last:'LoRaLab · New antenna is up. Testing now.'},{name:'Field operations',clients:3,postsHour:2,activity:'21 minutes ago',activityShort:'21m',key:'91bf…c763',last:'Scout · Checkpoint north confirmed.'}];
+const packets = [
+ ['14:59:58','RX','Group text','PA3M → #emmen','Flood · 2 hops','+8.5','312 ms'],['14:59:54','RX','Advert','Emmen repeater','Flood · 1 hop','+11.2','187 ms'],['14:59:51','TX','ACK','Emmen local → PA3M','Direct','—','94 ms'],['14:59:49','RX','Text','LoRaLab → NL makers','Direct','+6.0','284 ms'],['14:59:46','RX','Group text','Scout → #public','Flood · 3 hops','+3.2','348 ms'],['14:59:42','RX','Request','PA3M → Emmen local','Direct','+7.8','156 ms'],['14:59:38','RX','Advert','Canal relay','Flood · 2 hops','+4.5','187 ms'],['14:59:32','TX','Group text','KAM → #emmen','Flood','—','312 ms'],['14:59:28','RX','ACK','Scout → Field operations','Direct','+5.1','94 ms'],['14:59:24','RX','Group text','MeshMike → #public','Flood · 2 hops','+9.2','326 ms']];
+const accountSets = [
+ [{name:'Maurice',key:'ed83…42bc',role:'Admin',seen:'12 seconds ago',ageSeconds:12},{name:'PA3M',key:'72f1…88ca',role:'Contributor',seen:'2 minutes ago',ageSeconds:120},{name:'',key:'b590…f2e8',role:'Contributor',seen:'2 days ago',ageSeconds:172800}],
+ [{name:'LoRaLab',key:'b590…f2e8',role:'Contributor',seen:'4 minutes ago',ageSeconds:240},{name:'Maurice',key:'ed83…42bc',role:'Admin',seen:'18 minutes ago',ageSeconds:1080},{name:'',key:'cb28…b6f4',role:'Viewer',seen:'Not heard since restart',ageSeconds:null}],
+ [{name:'Scout',key:'4a71…390d',role:'Contributor',seen:'21 minutes ago',ageSeconds:1260},{name:'Maurice',key:'ed83…42bc',role:'Admin',seen:'2 hours ago',ageSeconds:7200},{name:'',key:'65f3…211e',role:'Viewer',seen:'Not heard since restart',ageSeconds:null}]
+];
+const scripts = [{name:'echo.star',enabled:true,revision:4,source:'def on_group_text(msg):\n    if msg.text.startswith("!echo "):\n        reply(msg, msg.text[6:])\n',timeout:500},{name:'welcome.star',enabled:true,revision:2,source:'def on_group_text(msg):\n    if msg.text == "!hello":\n        reply(msg, "Hello from Emmen!")\n',timeout:500},{name:'status.star',enabled:false,revision:1,source:'def on_group_text(msg):\n    if msg.text == "!status":\n        reply(msg, "Emmen node online.")\n',timeout:500}];
+let currentView='overview', currentScript=0, currentRoom=0, signedIn=true, paused=false;
+const byId = id => document.getElementById(id);
+function icons() { if(window.lucide) lucide.createIcons(); }
+function escapeText(value) { const element=document.createElement('span'); element.textContent=value; return element.innerHTML; }
+function toast(message) { byId('toast').textContent=message; byId('toast').hidden=false; clearTimeout(toast.timer); toast.timer=setTimeout(()=>byId('toast').hidden=true,3000); }
+function setView(view) { currentView=view; document.querySelectorAll('.view').forEach(element=>element.hidden=element.id!==view); document.querySelectorAll('[data-view]').forEach(button=>{ if(button.dataset.view===view) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current'); }); byId('page-title').textContent=titles[view][0]; byId('page-subtitle').textContent=titles[view][1]; document.querySelector('.segmented[aria-label="Time range"]').hidden=view!=='overview'; byId('pause').hidden=view!=='overview'; if(view==='overview') drawChart(); }
+function drawChart() { const canvas=byId('airtime-chart'); const rect=canvas.getBoundingClientRect(); if(!rect.width) return; const ratio=devicePixelRatio||1; canvas.width=rect.width*ratio; canvas.height=rect.height*ratio; const ctx=canvas.getContext('2d'); ctx.scale(ratio,ratio); const tokens=getComputedStyle(document.documentElement); const colors=['--text-muted','--warning','--success','--signal'].map(token=>tokens.getPropertyValue(token).trim()); const step=rect.width/60; const range=document.querySelector('[data-range][aria-pressed="true"]').dataset.range; for(let bucket=0;bucket<60;bucket++){ let base=rect.height; const activity=range==='24h'?1.12:range==='15m'?.78:1; const height=(22+Math.abs(Math.sin(bucket*1.7)*Math.cos(bucket*.24))*105+(bucket===38?48:0))*activity; [0.12,0.27,0.22,0.39].forEach((fraction,index)=>{const slice=height*fraction; ctx.fillStyle=colors[index]; ctx.fillRect(bucket*step+1,base-slice,Math.max(1,step-3),slice); base-=slice;}); } }
+function packetClass(type) { return type==='Advert'?'advert':type==='ACK'?'ack':''; }
+function renderPackets() { byId('recent-packets').innerHTML=packets.slice(0,6).map(packet=>`<tr><td class="mono muted">${packet[0]}</td><td><span class="packet-tag ${packetClass(packet[2])}">${packet[2]}</span></td><td>${packet[3]}</td><td class="muted">${packet[4]}</td><td class="mono">${packet[5]}</td></tr>`).join(''); const search=byId('traffic-search').value.toLowerCase(),filter=byId('packet-filter').value; const matching=packets.filter(packet=>packet[3].toLowerCase().includes(search)&&(filter==='all'||packet[2]===filter)); byId('traffic-packets').innerHTML=matching.length?matching.map(packet=>`<tr><td class="mono muted">${packet[0]}</td><td class="${packet[1]==='TX'?'good':'muted'}">${packet[1]}</td><td><span class="packet-tag ${packetClass(packet[2])}">${packet[2]}</span></td><td>${packet[3]}</td><td class="muted">${packet[4]}</td><td class="mono">${packet[5]}</td><td class="mono muted">${packet[6]}</td></tr>`).join(''):'<tr><td colspan="7">No matching packets.</td></tr>'; }
+function isLocalAdmin() { return byId('access-mode').value==='local'&&signedIn; }
+function renderChannels() {
+  byId('channel-list').innerHTML=channels.map((channel,index)=>`<button class="channel-choice" data-channel="${index}" aria-pressed="${index===currentChannel}"><span>${channel.name}<small>${channel.strategy} key · ${channel.enabled?'Decoding enabled':'Disabled'}</small></span><span class="mono muted">${channel.count}</span></button>`).join('');
+  const channel=channels[currentChannel];
+  byId('channel-name').textContent=channel.name; byId('channel-strategy').textContent=channel.strategy+' key · '+(channel.enabled?'Decoding enabled':'Disabled');
+  byId('channel-state').textContent=channel.enabled?'Decoding enabled':'Disabled';byId('channel-state').className='small '+(channel.enabled?'good':'muted');
+  byId('channel-count').textContent=channel.count;byId('channel-last').innerHTML=channel.last?channel.last+' <small>ago</small>':'—';byId('channel-airtime').innerHTML=channel.airtime.toFixed(1)+' <small>s</small>';
+  const search=byId('channel-search').value.toLowerCase();const matching=channel.messages.filter(message=>(message.sender+' '+message.text).toLowerCase().includes(search));
+  byId('channel-messages').innerHTML=matching.length?matching.map(message=>`<article class="message"><header><strong>${escapeText(message.sender)}</strong><span class="mono muted">${message.time}</span></header><p>${escapeText(message.text)}</p><footer><span>${message.route}</span><span>SNR ${message.snr}</span><span>RSSI ${message.rssi}</span></footer></article>`).join(''):`<p class="activity-caption">${channel.enabled?'No messages match this filter.':'Decoding is disabled for this channel. No sample history is available.'}</p>`;
+}
+function radioSummary(config) { return config.frequency+' MHz / '+config.bandwidth+' kHz / SF'+config.sf+' / 4/'+config.cr; }
+function radioCommands(config) { return [
+  '06 / 09 SetRadio · '+Math.round(config.frequency*1000000)+' Hz, '+Math.round(config.bandwidth*1000)+' Hz, SF'+config.sf+', CR'+config.cr,
+  '06 / 0B GetRadio · Read cached echo', '06 / 0A SetTxPower · '+config.power+' dBm', '06 / 0C GetTxPower · Read cached echo',
+  '06 / 19 SetSignalReport · '+(config.signal?'1 / enabled':'0 / disabled'),
+  '01 TXDELAY · '+config.delay/10+' units / '+config.delay+' ms', '02 Persistence · '+config.persistence,
+  '03 SlotTime · '+config.slot/10+' units / '+config.slot+' ms', '05 FullDuplex · 0 / off', '06 / 17 Ping · Round-trip barrier'
+]; }
+function modemLog(lines) { const log=byId('modem-log');log.textContent+='\n\nSIMULATED · '+new Date().toLocaleTimeString('en-GB')+'\n'+lines.join('\n');log.scrollTop=log.scrollHeight; }
+function restoreRadioForm() { const fields={frequency:'radio-frequency',bandwidth:'radio-bandwidth',sf:'radio-sf',cr:'radio-cr',power:'radio-power',delay:'csma-delay',persistence:'csma-persistence',slot:'csma-slot'};Object.entries(fields).forEach(([name,id])=>byId(id).value=sampleRadio[name]);byId('radio-signal').checked=sampleRadio.signal; }
+function readRadioForm() { return {frequency:Number(byId('radio-frequency').value),bandwidth:Number(byId('radio-bandwidth').value),sf:Number(byId('radio-sf').value),cr:Number(byId('radio-cr').value),power:Number(byId('radio-power').value),signal:byId('radio-signal').checked,delay:Number(byId('csma-delay').value),persistence:Number(byId('csma-persistence').value),slot:Number(byId('csma-slot').value)}; }
+function updateDiagnosticFields() { const command=byId('diagnostic-command').value;byId('airtime-length-field').hidden=command!=='GetAirtime';byId('airtime-length').disabled=!isLocalAdmin()||command!=='GetAirtime';byId('sensor-mask-field').hidden=command!=='GetSensors';byId('sensor-mask').disabled=!isLocalAdmin()||command!=='GetSensors'; }
+function clientLabel(account) { return isLocalAdmin()&&account.name?account.name:account.key; }
+function activityState(ageSeconds) { if(ageSeconds==null||!Number.isFinite(ageSeconds)||ageSeconds<0)return 'unknown';if(ageSeconds<300)return 'fresh';if(ageSeconds<3600)return 'recent';if(ageSeconds>86400)return 'stale';return 'older'; }
+function clientActivity(account) { const state=activityState(account.ageSeconds);const labels={fresh:'Heard less than 5 minutes ago',recent:'Heard less than one hour ago',older:'Heard 1–24 hours ago',stale:'Stored client; not heard for over 24 hours. Session is not expired.',unknown:'Last radio activity is unknown; this does not prove the client is stale.'};return `<span class="client-activity ${state}" title="${labels[state]}">${state==='stale'?'<strong>Stale Node</strong> · ':state==='unknown'?'<strong>Unknown</strong> · ':''}${escapeText(account.seen)}</span>`; }
+function clientSummary(account) { return `<div class="client-summary"><span>${escapeText(clientLabel(account))}</span>${clientActivity(account)}</div>`; }
+function renderRooms() {
+  const local=isLocalAdmin();
+  byId('room-previews').innerHTML=rooms.map((room,index)=>`<article class="room-preview"><header><h3>${room.name}</h3><span class="good small">Serving</span></header><p>Last activity ${room.activity}</p><div class="room-stats"><span>${room.postsHour} posts / last hour</span><span>${room.clients} remembered</span></div>${local?`<div class="admin-clients"><p class="small muted">Recent clients · Admin labels</p>${accountSets[index].slice(0,2).map(clientSummary).join('')}</div>`:''}</article>`).join('');
+  byId('room-list').innerHTML=rooms.map((room,index)=>`<button class="room-selector" aria-pressed="${index===currentRoom}" data-room="${index}"><span>${room.name}<small>Last activity ${room.activity}<br>${room.postsHour} posts / last hour</small></span><i data-lucide="chevron-right"></i></button>`).join('');
+  const room=rooms[currentRoom];
+  byId('room-name').textContent=room.name; byId('room-key').textContent=room.key;
+  byId('room-activity').innerHTML=room.activityShort+' <small>ago</small>'; byId('room-posts').textContent=room.postsHour; byId('room-clients-count').textContent=room.clients;
+  byId('room-clients-admin').hidden=!local;
+  byId('room-client-rows').innerHTML=local?accountSets[currentRoom].map(account=>`<tr><td>${escapeText(clientLabel(account))}${account.name?`<br><span class="mono muted">${account.key}</span>`:''}</td><td>${account.role}</td><td>${clientActivity(account)}</td></tr>`).join(''):'';
+  byId('room-feed').innerHTML=[room.last,'Maurice · Good signal from the home node.','PA3M · Thanks, received!'].map((text,index)=>{const author=text.split(' · ')[0]; const key=accountSets.flat().find(account=>account.name===author)?.key||'72f1…88ca'; return `<article class="room-preview"><header><strong>${local?author:key}</strong><span class="mono muted">14:${59-index*4}</span></header><p>${text.split(' · ')[1]}</p></article>`;}).join(''); icons();
+}
+function renderAccounts() { const accounts=accountSets[byId('account-room').selectedIndex]; byId('account-rows').innerHTML=accounts.map((account,index)=>`<tr><td>${escapeText(clientLabel(account))}</td><td class="mono muted">${escapeText(account.key)}</td><td><select class="mutation role-change" data-account="${index}" aria-label="Role for ${escapeText(clientLabel(account))}">${['Admin','Contributor','Viewer'].map(role=>`<option ${role===account.role?'selected':''}>${role}</option>`).join('')}</select></td><td class="muted">${account.seen}</td><td><button class="icon-button mutation remove-account" data-account="${index}" title="Remove member" aria-label="Remove ${escapeText(clientLabel(account))}"><i data-lucide="user-minus"></i></button></td></tr>`).join(''); updateAccess(); icons(); }
+function renderScripts() { byId('script-list').innerHTML=scripts.map((script,index)=>`<button class="script-entry" data-script="${index}" aria-pressed="${index===currentScript}"><span class="mono">${escapeText(script.name)}<small>${script.enabled?'READY':'Disabled'} · revision ${script.revision}</small></span><span class="dot" style="background:${script.enabled?'var(--success)':'var(--text-muted)'}"></span></button>`).join(''); const script=scripts[currentScript]; byId('source').value=script.source; byId('script-title').textContent=script.name+' · rev '+script.revision; byId('script-enabled').checked=script.enabled; byId('timeout').value=script.timeout; byId('save-state').textContent='Saved revision '+script.revision; }
+function updateAccess() { const local=isLocalAdmin(); document.querySelectorAll('.mutation').forEach(element=>element.disabled=!local); byId('source').readOnly=!local; byId('member-name').disabled=!local; byId('member-key').disabled=!local; byId('member-role').disabled=!local; byId('locked').hidden=local; byId('session-state').textContent=local?'maurice · Local admin':signedIn?byId('username').value+' · Remote viewer':'Signed out'; renderRooms(); updateDiagnosticFields(); }
+document.querySelectorAll('[data-view],[data-jump]').forEach(button=>button.addEventListener('click',()=>setView(button.dataset.view||button.dataset.jump)));
+byId('theme-toggle').onclick=()=>{const light=document.documentElement.dataset.theme!=='light';document.documentElement.dataset.theme=light?'light':'dark';byId('theme-toggle').setAttribute('aria-pressed',String(light));const label=light?'Switch to dark mode':'Switch to light mode';byId('theme-toggle').title=label;byId('theme-toggle').setAttribute('aria-label',label);byId('theme-toggle').innerHTML=`<i data-lucide="${light?'moon':'sun'}"></i>`;icons();drawChart();};
+byId('channel-list').onclick=event=>{const button=event.target.closest('[data-channel]');if(button){currentChannel=Number(button.dataset.channel);byId('channel-search').value='';renderChannels();}};
+byId('channel-search').oninput=renderChannels;
+byId('diagnostic-command').innerHTML=queryCommands.map(command=>`<option value="${command.name}">${command.name} · 0x${command.code}</option>`).join('');
+byId('diagnostic-command').onchange=updateDiagnosticFields;
+byId('modem-form').onsubmit=event=>{event.preventDefault();if(!isLocalAdmin()||!event.target.reportValidity())return;pendingRadio=readRadioForm();byId('modem-command-preview').textContent=radioCommands(pendingRadio).join('\n');byId('modem-confirm').showModal();};
+byId('modem-cancel').onclick=()=>{pendingRadio=null;byId('modem-confirm').close();};
+byId('modem-confirm').addEventListener('cancel',()=>pendingRadio=null);
+byId('modem-apply').onclick=()=>{if(!isLocalAdmin()||!pendingRadio)return;sampleRadio=pendingRadio;pendingRadio=null;byId('modem-confirm').close();modemLog(radioCommands(sampleRadio).map((command,index)=>command+' → '+(['F0 OK / received','8B / matching cached echo','F0 OK / received','8C / '+sampleRadio.power+' dBm','9A / '+(sampleRadio.signal?'enabled':'disabled'),'No reply','No reply','No reply','No reply','97 Pong'][index])));byId('modem-radio-readback').textContent=radioSummary(sampleRadio)+' / '+sampleRadio.power+' dBm';byId('node-radio').textContent=sampleRadio.frequency+' MHz · SF'+sampleRadio.sf+' / BW'+sampleRadio.bandwidth;byId('modem-echo-state').textContent='Sample echo matches · Chip unverified';toast('Simulated apply · No modem or kam.yml changed');};
+byId('modem-discard').onclick=()=>{if(isLocalAdmin()){restoreRadioForm();toast('Inputs restored to the sample cached values');}};
+byId('diagnostic-form').onsubmit=event=>{event.preventDefault();if(!isLocalAdmin()||!event.target.reportValidity())return;const command=queryCommands.find(item=>item.name===byId('diagnostic-command').value);let reply=command.reply;let argument='';if(command.name==='GetRadio')reply='8B · '+radioSummary(sampleRadio)+' / cached values';if(command.name==='GetTxPower')reply='8C · '+sampleRadio.power+' dBm / cached value';if(command.name==='GetSignalReport')reply='9A · '+(sampleRadio.signal?'enabled':'disabled');if(command.name==='GetAirtime'){argument=' · '+byId('airtime-length').value+' bytes';reply='8F · 312 ms / illustrative value, not calculated';}if(command.name==='GetSensors')argument=' · permissions '+byId('sensor-mask').value;modemLog(['06 / '+command.code+' '+command.name+argument+' → '+reply]);};
+document.querySelectorAll('[data-range]').forEach(button=>button.onclick=()=>{document.querySelectorAll('[data-range]').forEach(element=>element.setAttribute('aria-pressed',String(element===button))); const range=button.dataset.range; const totals=range==='24h'?[24692,731,[11358,6914,4445,1975]]:range==='15m'?[306,9,[141,86,55,24]]:[1284,38,[591,360,231,102]]; byId('packets').textContent=totals[0].toLocaleString('en-US'); document.querySelectorAll('.metric .small')[2].textContent=(totals[0]-totals[1]).toLocaleString('en-US')+' RX / '+totals[1]+' TX'; document.querySelectorAll('.type-row strong').forEach((element,index)=>element.textContent=totals[2][index].toLocaleString('en-US')); byId('occupancy').innerHTML=(range==='24h'?'9.2':range==='15m'?'6.1':'8.4')+'<small>%</small>'; document.querySelector('.composition > .small').textContent='By packet count · '+range; document.querySelectorAll('.chart-labels span').forEach((element,index)=>element.textContent=range==='24h'?['15:00 yesterday','21:00','03:00','09:00','15:00'][index]:range==='15m'?['14:45','14:49','14:53','14:57','15:00'][index]:['14:00','14:15','14:30','14:45','15:00'][index]); toast('Sample window: '+range);drawChart();});
+byId('pause').onclick=()=>{paused=!paused;byId('pause').innerHTML=`<i data-lucide="${paused?'play':'pause'}"></i>`;byId('pause').title=paused?'Resume sample feed':'Pause sample feed';byId('pause').setAttribute('aria-label',byId('pause').title);toast(paused?'Sample feed paused':'Sample feed resumed');icons();};
+byId('traffic-search').oninput=renderPackets; byId('packet-filter').onchange=renderPackets;
+byId('export').onclick=()=>{const csv=['Time,Direction,Type,Source / destination,Route,SNR,Airtime',...packets.filter(packet=>packet[3].toLowerCase().includes(byId('traffic-search').value.toLowerCase())&&(byId('packet-filter').value==='all'||packet[2]===byId('packet-filter').value)).map(packet=>packet.map(cell=>'"'+cell.replaceAll('"','""')+'"').join(','))].join('\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));const link=document.createElement('a');link.href=url;link.download='kammon-sample-traffic.csv';link.click();URL.revokeObjectURL(url);};
+byId('room-list').onclick=event=>{const button=event.target.closest('[data-room]');if(button){currentRoom=Number(button.dataset.room);byId('account-room').selectedIndex=currentRoom;renderRooms();renderAccounts();}};
+byId('account-room').onchange=renderAccounts;
+byId('account-rows').onchange=event=>{if(event.target.matches('.role-change')){accountSets[byId('account-room').selectedIndex][Number(event.target.dataset.account)].role=event.target.value;renderRooms();toast('Proposed room role change · Sample data only');}};
+byId('account-rows').onclick=event=>{const button=event.target.closest('.remove-account');if(button&&!button.disabled){accountSets[byId('account-room').selectedIndex].splice(Number(button.dataset.account),1);renderAccounts();toast('Member removed from sample room');}};
+byId('account-form').onsubmit=event=>{event.preventDefault();if(byId('access-mode').value!=='local')return;accountSets[byId('account-room').selectedIndex].push({name:byId('member-name').value,key:byId('member-key').value.slice(0,4)+'…'+byId('member-key').value.slice(-4),role:byId('member-role').value,seen:'Never'});event.target.reset();renderAccounts();toast('Member added to sample room');};
+byId('script-list').onclick=event=>{const button=event.target.closest('[data-script]');if(button){currentScript=Number(button.dataset.script);renderScripts();}};
+byId('source').oninput=()=>byId('save-state').textContent='Unsaved changes';
+byId('new-script').onclick=()=>{scripts.push({name:'untitled-'+(scripts.length+1)+'.star',enabled:false,revision:0,source:'def on_group_text(msg):\n    pass\n',timeout:500});currentScript=scripts.length-1;renderScripts();byId('source').focus();};
+byId('validate').onclick=()=>byId('console').textContent='SIMULATED VALIDATION · Source captured ('+byId('source').value.length+' characters).\nA real Starlark compiler is not connected to this prototype.';
+byId('test-script').onclick=()=>byId('console').textContent='SIMULATED DRY RUN · Fixture: #emmen / PA3M / "!echo hello"\nExpected echo example output: "hello"\nNo script was executed. No packet was transmitted.';
+byId('save-script').onclick=()=>{if(!byId('timeout').reportValidity())return;const script=scripts[currentScript];script.source=byId('source').value;script.enabled=byId('script-enabled').checked;script.timeout=Number(byId('timeout').value);script.revision++;renderScripts();byId('console').textContent='SAMPLE SAVE · Revision '+script.revision+' held in memory only.\nNo validation, compilation or deployment has occurred.';toast('Saved in prototype memory');};
+byId('access-mode').onchange=()=>{if(byId('access-mode').value==='remote'){signedIn=false;byId('login').showModal();}else{signedIn=true;}renderAccounts();};
+byId('signout').onclick=()=>{signedIn=false;byId('access-mode').value='remote';renderAccounts();byId('login').showModal();};
+byId('login').addEventListener('cancel',event=>event.preventDefault());
+byId('login-form').onsubmit=event=>{event.preventDefault();signedIn=true;byId('login').close();event.target.querySelector('[type="password"]').value='';updateAccess();toast('Signed in to the sample view-only session');};
+window.addEventListener('resize',drawChart);
+renderPackets();renderChannels();renderRooms();renderAccounts();renderScripts();
+document.querySelector('#rooms .activity-caption').textContent='Last heard is radio activity, not a live connection. Stale Node means a stored client was not heard for over 24 hours; its session has not expired. Unknown means no reliable last-heard time is available.';
+const activityLegend=document.createElement('div');activityLegend.className='activity-legend';activityLegend.setAttribute('aria-label','Client radio activity legend');activityLegend.innerHTML='<span class="client-activity fresh">Less than 5 min</span><span class="client-activity recent">5–60 min</span><span class="client-activity older">1–24 hours</span><span class="client-activity stale">Stale Node · Over 24 hours</span><span class="client-activity unknown">Unknown</span>';document.querySelector('#rooms .activity-caption').after(activityLegend);
+byId('modem-log').textContent='SAMPLE SESSION · No modem connected\n06 / 17 Ping → 97 Pong\n06 / 0B GetRadio → 8B cached radio values';
+const prototypeURL=new URL(location.href); prototypeURL.searchParams.delete('variant'); history.replaceState(null,'',prototypeURL);
+window.addEventListener('load',()=>{icons();drawChart();});
+</script>
+</body>
+</html>

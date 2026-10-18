@@ -72,6 +72,40 @@ type Options struct {
 	Random io.Reader
 }
 
+type MonitorCounters struct {
+	LoginsOK          uint64
+	LoginsFailed      uint64
+	LoginsRateLimited uint64
+	PostsAccepted     uint64
+	PostsRejected     uint64
+	PushesSent        uint64
+	PushesAcked       uint64
+	PushTimeouts      uint64
+}
+
+type MonitorClient struct {
+	PublicKey      string
+	Role           uint8
+	LastActivityAt *time.Time
+	PushState      string
+}
+
+type MonitorRoom struct {
+	ID             string
+	Name           string
+	Enabled        bool
+	PublicKey      string
+	MaxClients     int
+	Clients        []MonitorClient
+	LastActivityAt *time.Time
+	LastPostAt     *time.Time
+	Counters       MonitorCounters
+}
+
+type monitorSnapshotRequest struct {
+	reply chan []MonitorRoom
+}
+
 // Stats is a snapshot of service counters.
 type Stats struct {
 	LoginsOK            uint64
@@ -109,15 +143,18 @@ type Service struct {
 	random io.Reader
 	mesh   models.MeshConfig
 
-	regions      []region
-	defaultScope *mesh.TransportKey
-	rooms        []*roomState
-	limiter      loginLimiter
-	lastUnique   uint32
-	cnt          counters
-	clients      atomic.Int64
+	regions       []region
+	defaultScope  *mesh.TransportKey
+	rooms         []*roomState
+	limiter       loginLimiter
+	lastUnique    uint32
+	cnt           counters
+	clients       atomic.Int64
+	monitorMu     sync.RWMutex
+	monitorRecord func(models.MonitorEvent)
 
 	in        chan kiss.RxPacket
+	monitor   chan monitorSnapshotRequest
 	stop      chan struct{}
 	done      chan struct{}
 	started   atomic.Bool
@@ -145,6 +182,7 @@ func NewService(opts Options) (*Service, error) {
 		mesh:    opts.Mesh,
 		limiter: newLoginLimiter(),
 		in:      make(chan kiss.RxPacket, inboundQueue),
+		monitor: make(chan monitorSnapshotRequest),
 		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
 	}
@@ -224,6 +262,93 @@ func (s *Service) Stats() Stats {
 	}
 }
 
+func (s *Service) MonitorAddresses() map[byte]string {
+	addresses := make(map[byte]string, len(s.rooms))
+	for _, room := range s.rooms {
+		if _, exists := addresses[room.hash]; exists {
+			addresses[room.hash] = ""
+		} else {
+			addresses[room.hash] = room.cfg.ID
+		}
+	}
+	return addresses
+}
+
+func (s *Service) SetMonitorRecorder(record func(models.MonitorEvent)) {
+	s.monitorMu.Lock()
+	s.monitorRecord = record
+	s.monitorMu.Unlock()
+}
+
+func (s *Service) recordRoomEvent(roomID, event, client, role string, at time.Time) {
+	s.monitorMu.RLock()
+	record := s.monitorRecord
+	s.monitorMu.RUnlock()
+	if record == nil {
+		return
+	}
+	roomName, clientName := roomID, client
+	value := models.MonitorEvent{Kind: "room", At: at.UTC().Truncate(time.Millisecond), Room: &roomName, Event: event, Client: clientName, Role: role}
+	record(value)
+}
+
+// MonitorSnapshot copies room state on its owning worker goroutine.
+func (s *Service) MonitorSnapshot(ctx context.Context) ([]MonitorRoom, error) {
+	reply := make(chan []MonitorRoom, 1)
+	select {
+	case s.monitor <- monitorSnapshotRequest{reply: reply}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.done:
+		return nil, errors.New("room service is stopped")
+	}
+	select {
+	case snapshot := <-reply:
+		return snapshot, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.done:
+		return nil, errors.New("room service is stopped")
+	}
+}
+
+func (s *Service) monitorSnapshot() []MonitorRoom {
+	snapshot := make([]MonitorRoom, 0, len(s.rooms))
+	for _, r := range s.rooms {
+		item := MonitorRoom{ID: r.cfg.ID, Name: r.cfg.Name, Enabled: r.cfg.Enabled, PublicKey: hex.EncodeToString(r.pub[:]), MaxClients: r.cfg.MaxClients, Clients: make([]MonitorClient, 0, len(r.clients)), Counters: MonitorCounters{
+			LoginsOK: r.cnt.loginsOK.Load(), LoginsFailed: r.cnt.loginsFailed.Load(), LoginsRateLimited: r.cnt.loginsRateLimited.Load(),
+			PostsAccepted: r.cnt.postsAccepted.Load(), PostsRejected: r.cnt.postsRejected.Load(), PushesSent: r.cnt.pushesSent.Load(),
+			PushesAcked: r.cnt.pushesAcked.Load(), PushTimeouts: r.cnt.pushTimeouts.Load(),
+		}}
+		for _, c := range r.clients {
+			state := "idle"
+			if c.failures >= maxPushFailures {
+				state = "paused"
+			} else if c.hasPending {
+				state = "awaiting_ack"
+			}
+			lastHeard := optionalTime(c.lastActivity)
+			item.Clients = append(item.Clients, MonitorClient{PublicKey: hex.EncodeToString(c.pub[:]), Role: c.role, LastActivityAt: lastHeard, PushState: state})
+			if lastHeard != nil && (item.LastActivityAt == nil || lastHeard.After(*item.LastActivityAt)) {
+				stamp := *lastHeard
+				item.LastActivityAt = &stamp
+			}
+		}
+		if len(r.posts) > 0 {
+			lastPost := r.posts[len(r.posts)-1].CreatedAt
+			if !lastPost.IsZero() {
+				item.LastPostAt = &lastPost
+				if item.LastActivityAt == nil || lastPost.After(*item.LastActivityAt) {
+					stamp := lastPost
+					item.LastActivityAt = &stamp
+				}
+			}
+		}
+		snapshot = append(snapshot, item)
+	}
+	return snapshot
+}
+
 func (s *Service) run() {
 	defer close(s.done)
 	ticker := time.NewTicker(tickInterval)
@@ -235,6 +360,8 @@ func (s *Service) run() {
 			return
 		case pkt := <-s.in:
 			s.process(pkt.Packet, s.now())
+		case request := <-s.monitor:
+			request.reply <- s.monitorSnapshot()
 		case <-ticker.C:
 			s.tick(s.now())
 		}

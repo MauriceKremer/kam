@@ -25,8 +25,9 @@ type KamConfig struct {
 	Channels []ChannelConfig `yaml:"channels"`
 	// Mesh and Rooms are validated lazily by ResolveRooms so a mistake in a
 	// room never prevents the radio from ingesting.
-	Mesh  *MeshConfig  `yaml:"mesh,omitempty"`
-	Rooms []RoomConfig `yaml:"rooms,omitempty"`
+	Mesh    *MeshConfig    `yaml:"mesh,omitempty"`
+	Rooms   []RoomConfig   `yaml:"rooms,omitempty"`
+	Monitor *MonitorConfig `yaml:"monitor,omitempty"`
 }
 
 // RadioConfig defines the default serial and RF settings.

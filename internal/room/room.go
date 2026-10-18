@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"time"
@@ -46,9 +47,10 @@ type client struct {
 	// lastTimestamp is the newest timestamp seen on the client's own clock; it
 	// provides replay protection.
 	lastTimestamp uint32
-	// lastActivity is zero until the client is seen in this run; a client that
-	// has not been seen is not pushed to.
+	// lastActivity is the last valid request time; it survives restarts for
+	// monitoring and eviction. active is current-run contact and gates pushes.
 	lastActivity time.Time
+	active       bool
 	// syncSince is the cursor: posts newer than it are still owed.
 	syncSince uint32
 
@@ -66,6 +68,19 @@ type client struct {
 
 func (c *client) outPathKnown() bool { return c.outPathLen != mesh.OutPathUnknown }
 
+func roleName(role uint8) string {
+	switch role {
+	case RoleAdmin:
+		return "admin"
+	case RoleReadWrite:
+		return "read_write"
+	case RoleReadOnly:
+		return "read_only"
+	default:
+		return "guest"
+	}
+}
+
 func (c *client) clearOutPath() {
 	c.outPathLen = mesh.OutPathUnknown
 	c.outPath = nil
@@ -76,7 +91,16 @@ func (c *client) record() db.RoomClient {
 	return db.RoomClient{
 		PublicKey: append([]byte(nil), c.pub[:]...), Role: c.role, SyncSince: c.syncSince,
 		LastTimestamp: c.lastTimestamp, OutPathLen: c.outPathLen, OutPath: append([]byte(nil), c.outPath...),
+		LastHeardAt: optionalTime(c.lastActivity),
 	}
+}
+
+func optionalTime(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	stamp := value.UTC()
+	return &stamp
 }
 
 // roomState is everything one room owns. Only the service worker touches it.
@@ -90,6 +114,7 @@ type roomState struct {
 	clients    []*client
 	byKey      map[[32]byte]*client
 	posts      []db.RoomPost // newest BacklogPosts posts, oldest first
+	cnt        counters
 	nextClient int
 	nextPush   time.Time
 
@@ -159,6 +184,9 @@ func (r *roomState) restoreClient(rc db.RoomClient) *client {
 		return nil
 	}
 	c := &client{secret: secret, role: rc.Role & 0x03, syncSince: rc.SyncSince, lastTimestamp: rc.LastTimestamp, outPathLen: mesh.OutPathUnknown}
+	if rc.LastHeardAt != nil {
+		c.lastActivity = *rc.LastHeardAt
+	}
 	copy(c.pub[:], rc.PublicKey)
 	if mesh.ValidPathLen(rc.OutPathLen) && len(rc.OutPath) == int(rc.OutPathLen&0x3F)*(int(rc.OutPathLen>>6)+1) {
 		c.outPathLen = rc.OutPathLen
@@ -326,6 +354,8 @@ func (s *Service) handleAck(data []byte) bool {
 				c.syncSince = c.pushedPost
 				c.dirty = true
 				s.cnt.pushesAcked.Add(1)
+				r.cnt.pushesAcked.Add(1)
+				s.recordRoomEvent(r.cfg.ID, "push_acked", hex.EncodeToString(c.pub[:]), roleName(c.role), s.now())
 				return true
 			}
 		}
@@ -353,6 +383,10 @@ func (s *Service) handleAnon(pkt mesh.Packet, now time.Time) {
 	copy(pub[:], p[1:1+mesh.PubKeySize])
 	if !s.limiter.allow(pub, now) {
 		s.cnt.loginsRateLimited.Add(1)
+		if len(matching) > 0 {
+			matching[0].cnt.loginsRateLimited.Add(1)
+			s.recordRoomEvent(matching[0].cfg.ID, "login_rate_limited", hex.EncodeToString(pub[:]), "", now)
+		}
 		slog.Info("[Room] login attempt rate limited", "key", shortKey(pub[:]))
 		return
 	}
@@ -429,12 +463,15 @@ func (r *roomState) onLogin(pkt mesh.Packet, pub, secret [32]byte, plain []byte,
 		c = r.byKey[pub]
 		if c != nil {
 			c.lastActivity = now
+			c.active = true
 		}
 	}
 	if c == nil {
 		role, ok := r.authorize(password)
 		if !ok {
 			s.cnt.loginsFailed.Add(1)
+			r.cnt.loginsFailed.Add(1)
+			s.recordRoomEvent(r.cfg.ID, "login_failed", hex.EncodeToString(pub[:]), "", now)
 			slog.Info("[Room] login refused", "room", r.cfg.ID, "key", shortKey(pub[:]))
 			return
 		}
@@ -447,6 +484,8 @@ func (r *roomState) onLogin(pkt mesh.Packet, pub, secret [32]byte, plain []byte,
 		c = r.putClient(pub, secret)
 		if c == nil {
 			s.cnt.loginsFailed.Add(1)
+			r.cnt.loginsFailed.Add(1)
+			s.recordRoomEvent(r.cfg.ID, "login_failed", hex.EncodeToString(pub[:]), "", now)
 			slog.Warn("[Room] login refused: client table is full of admins", "room", r.cfg.ID)
 			return
 		}
@@ -456,6 +495,7 @@ func (r *roomState) onLogin(pkt mesh.Packet, pub, secret [32]byte, plain []byte,
 		s.tx.Cancel(r.pushTag(c))
 		c.failures = 0
 		c.lastActivity = now
+		c.active = true
 		c.role = role
 		c.secret = secret
 	}
@@ -465,6 +505,8 @@ func (r *roomState) onLogin(pkt mesh.Packet, pub, secret [32]byte, plain []byte,
 	c.dirty = true
 	r.nextPush = now.Add(pushNotifyDelay) // let the response arrive before posts
 	s.cnt.loginsOK.Add(1)
+	r.cnt.loginsOK.Add(1)
+	s.recordRoomEvent(r.cfg.ID, "login_ok", hex.EncodeToString(c.pub[:]), roleName(c.role), now)
 	slog.Info("[Room] login accepted", "room", r.cfg.ID, "key", shortKey(pub[:]), "role", c.role)
 
 	response := r.loginResponse(c, now)
@@ -513,6 +555,7 @@ func (r *roomState) onPath(c *client, plain []byte, now time.Time) {
 	c.outPathLen = pathLen
 	c.outPath = path
 	c.lastActivity = now
+	c.active = true
 	c.dirty = true
 	if extraType == mesh.PayloadAck && len(extra) >= 4 {
 		r.svc.handleAck(extra[:4])
@@ -537,6 +580,8 @@ func (r *roomState) onText(c *client, pkt mesh.Packet, plain []byte, now time.Ti
 	}
 	isRetry := sentAt == c.lastTimestamp
 	c.lastActivity = now
+	c.active = true
+	c.dirty = true
 	c.failures = 0
 
 	text := cString(plain[5:])
@@ -545,6 +590,8 @@ func (r *roomState) onText(c *client, pkt mesh.Packet, plain []byte, now time.Ti
 		c.dirty = true
 		if kind == mesh.TxtTypePlain {
 			s.cnt.postsRejected.Add(1)
+			r.cnt.postsRejected.Add(1)
+			s.recordRoomEvent(r.cfg.ID, "post_rejected", hex.EncodeToString(c.pub[:]), roleName(c.role), now)
 		}
 		return // no reply and no ACK
 	}
@@ -553,6 +600,8 @@ func (r *roomState) onText(c *client, pkt mesh.Packet, plain []byte, now time.Ti
 	if !isRetry && text != "" {
 		if err := r.addPost(c, text, sentAt, now); err != nil {
 			s.cnt.postsRejected.Add(1)
+			r.cnt.postsRejected.Add(1)
+			s.recordRoomEvent(r.cfg.ID, "post_rejected", hex.EncodeToString(c.pub[:]), roleName(c.role), now)
 			slog.Error("[Room] post not stored; no ACK sent so the client retries", "room", r.cfg.ID, "key", shortKey(c.pub[:]), "error", err)
 			return
 		}
@@ -570,7 +619,7 @@ func (r *roomState) addPost(c *client, text string, clientTimestamp uint32, now 
 	text = mesh.TruncateUTF8(text, maxPostTextLen)
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		post := db.RoomPost{Timestamp: s.uniqueNow(now), Author: append([]byte(nil), c.pub[:]...), Text: text}
+		post := db.RoomPost{Timestamp: s.uniqueNow(now), Author: append([]byte(nil), c.pub[:]...), Text: text, CreatedAt: now.UTC().Truncate(time.Second)}
 		ctx, cancel := storeContext()
 		err := s.store.AppendPost(ctx, r.cfg.ID, post, c.pub[:], clientTimestamp)
 		cancel()
@@ -582,6 +631,8 @@ func (r *roomState) addPost(c *client, text string, clientTimestamp uint32, now 
 			}
 			r.nextPush = now.Add(pushNotifyDelay)
 			s.cnt.postsAccepted.Add(1)
+			r.cnt.postsAccepted.Add(1)
+			s.recordRoomEvent(r.cfg.ID, "post", hex.EncodeToString(c.pub[:]), roleName(c.role), now)
 			return nil
 		}
 		lastErr = err
@@ -607,6 +658,7 @@ func (r *roomState) onRequest(c *client, pkt mesh.Packet, plain []byte, now time
 	}
 	c.lastTimestamp = sentAt
 	c.lastActivity = now
+	c.active = true
 	c.failures = 0
 	c.dirty = true
 

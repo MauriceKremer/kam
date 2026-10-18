@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.starlark.net/starlark"
@@ -62,11 +63,23 @@ type Runtime struct {
 	cancel     context.CancelFunc
 	done       chan struct{}
 
-	mu         sync.RWMutex
-	mutationMu sync.Mutex
-	intakeMu   sync.Mutex
-	scripts    map[string]*compiledScript
-	once       sync.Once
+	mu             sync.RWMutex
+	mutationMu     sync.Mutex
+	intakeMu       sync.Mutex
+	scripts        map[string]*compiledScript
+	once           sync.Once
+	monitorDropped atomic.Uint64
+}
+
+func (r *Runtime) MonitorStats() (enabled int, depth int, dropped uint64) {
+	r.mu.RLock()
+	for _, script := range r.scripts {
+		if script.definition.Enabled {
+			enabled++
+		}
+	}
+	r.mu.RUnlock()
+	return enabled, len(r.queue), r.monitorDropped.Load()
 }
 
 func NewRuntime(parent context.Context, repository Repository, sender Sender) (*Runtime, error) {
@@ -121,6 +134,7 @@ func (r *Runtime) Handle(message parsers.GroupTextMessage) {
 	select {
 	case r.queue <- copy:
 	default:
+		r.monitorDropped.Add(1)
 		slog.Warn("[Automation] group-text event dropped: queue full", "channel", message.ChannelName, "sender", message.Sender)
 	}
 }

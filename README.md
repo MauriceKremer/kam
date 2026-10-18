@@ -98,6 +98,38 @@ DB path precedence: `-db` flag > `kam.yml db_path` > `kam.db`.
 
 Other commands: `kam channel upsert ...` (add or change a channel in `kam.yml`) and `kam room show` (print room keys and adverts, see [Room servers](#room-servers)).
 
+## Backend Monitoring API
+
+KAM exposes a separate loopback API on `127.0.0.1:8766`, independent of the
+script API on port 8765. Phase 1 offers `GET /v1/status` and `GET /v1/events`.
+No dashboard is required: KAM continues its radio work without API clients.
+Channel-history, room-management, modem-control and dry-run endpoints remain planned.
+
+```yaml
+monitor:
+  enabled: true
+  listen: "127.0.0.1:8766"
+  event_ring: 8192
+```
+
+These are the defaults when the block is omitted. `enabled: false` removes the
+listener and event recorder. Invalid monitoring settings or a busy port are
+logged without stopping radio ingestion. Changes to this block require a restart.
+The API has no authentication and serves loopback hosts only; KAMmon owns its
+web authentication. JSON events contain metadata, never message bodies or keys.
+
+```sh
+curl --fail-with-body http://127.0.0.1:8766/v1/status
+curl --fail-with-body 'http://127.0.0.1:8766/v1/events?after=0&limit=1000'
+```
+
+Continue using the returned `epoch` and `next_after`, not `last_seq` (the newest
+event in KAM's ring). An empty `events` array means caught up. `reset: true`
+means KAM restarted or unread events were overwritten. Signal readings and failed
+TX airtime are `null` when unknown. Events are held in bounded memory only;
+restarting KAM loses the ring. See [the backend API manual](manuals/FeatureMonitorApi.html)
+and [the contract](docs/FeatureMonitorApi.md).
+
 ## Automation (Starlark scripts)
 
 KAM runs operator-managed [Starlark](https://github.com/google/starlark-go) scripts for every decoded group text. Scripts live in SQLite (`automation_scripts`), not in `kam.yml`, and are managed at runtime through a local HTTP API. Design and status: [`docs/FeatureStarlark.md`](docs/FeatureStarlark.md).

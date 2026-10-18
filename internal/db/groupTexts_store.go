@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS group_texts (
   time_drift_seconds INTEGER NOT NULL,
   hop_count INTEGER NOT NULL DEFAULT 0,
   hop_stations TEXT NOT NULL DEFAULT '[]',
+	snr_quarter_db INTEGER,
+	rssi_dbm INTEGER,
   received_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -61,6 +63,12 @@ func migrateGroupTextsColumns(db *sql.DB) error {
 	if err := add("hop_stations", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
+	if err := add("snr_quarter_db", "INTEGER"); err != nil {
+		return err
+	}
+	if err := add("rssi_dbm", "INTEGER"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -97,6 +105,8 @@ type GroupTextRecord struct {
 	TimeDriftSeconds int64
 	HopCount         int
 	HopStations      string // JSON array of hex-encoded path hashes, e.g. `["a1","b2c3"]`
+	SNRQuarterDB     *int
+	RSSIDBM          *int
 }
 
 func InsertGroupTextsBatch(db *sql.DB, records []GroupTextRecord) error {
@@ -107,8 +117,8 @@ func InsertGroupTextsBatch(db *sql.DB, records []GroupTextRecord) error {
 INSERT INTO group_texts (
   channel_name, sender, body, txt_type, attempt,
   public_key_prefix, message_timestamp, time_drift_seconds,
-  hop_count, hop_stations
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+	hop_count, hop_stations, snr_quarter_db, rssi_dbm
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 `
 	tx, err := db.Begin()
 	if err != nil {
@@ -138,6 +148,8 @@ INSERT INTO group_texts (
 			r.TimeDriftSeconds,
 			r.HopCount,
 			hopStations,
+			r.SNRQuarterDB,
+			r.RSSIDBM,
 		); err != nil {
 			return fmt.Errorf("insert group text %d: %w", i, err)
 		}

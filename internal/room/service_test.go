@@ -2,6 +2,7 @@ package room
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/binary"
 	"io"
@@ -25,6 +26,7 @@ func TestSessionsSurviveARestartButPushesWaitForActivity(t *testing.T) {
 	pkt, _ := author.text("while you were away", floodVia())
 	h.svc.process(pkt, h.now)
 	h.tx.only(t)
+	lastHeardAt := h.room.byKey[reader.pub()].lastActivity
 	h.svc.flushAll(h.now) // what Stop does
 
 	h2 := newHarnessWith(t, harnessOptions{repo: h.repo})
@@ -35,8 +37,8 @@ func TestSessionsSurviveARestartButPushesWaitForActivity(t *testing.T) {
 	if c == nil || c.role != RoleReadWrite || c.outPathLen != 0x01 || !bytes.Equal(c.outPath, []byte{0xAA}) || c.syncSince != 0 || c.lastTimestamp == 0 {
 		t.Fatalf("restored client: %+v", c)
 	}
-	if !c.lastActivity.IsZero() {
-		t.Fatal("a restored client counts as active before it is heard from")
+	if !c.lastActivity.Equal(lastHeardAt) {
+		t.Fatalf("restored last-heard time = %v, want %v", c.lastActivity, lastHeardAt)
 	}
 
 	// No login is needed to be understood, but nothing is pushed to a silent client.
@@ -72,6 +74,60 @@ func TestSessionsSurviveARestartButPushesWaitForActivity(t *testing.T) {
 	if h2.postCount() != 2 {
 		t.Fatalf("posts: %d", h2.postCount())
 	}
+}
+
+func TestMonitorSnapshotIsServedByTheRoomWorker(t *testing.T) {
+	h := newHarness(t, nil)
+	h.svc.Start()
+	defer h.svc.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	snapshot, err := h.svc.MonitorSnapshot(ctx)
+	if err != nil || len(snapshot) != 1 || snapshot[0].ID != "lobby" || snapshot[0].Clients == nil {
+		t.Fatalf("snapshot = %+v, %v", snapshot, err)
+	}
+	snapshot[0].Name = "mutated"
+	second, err := h.svc.MonitorSnapshot(ctx)
+	if err != nil || second[0].Name != h.room.cfg.Name {
+		t.Fatalf("snapshot exposed worker state: %+v, %v", second, err)
+	}
+}
+
+func TestRoomActivityPublishesMonitorEvents(t *testing.T) {
+	h := newHarness(t, nil)
+	var events []models.MonitorEvent
+	h.svc.SetMonitorRecorder(func(event models.MonitorEvent) { events = append(events, event) })
+	client := h.loggedIn(1, "guest-pass")
+	pkt, _ := client.text("monitor event post", floodVia())
+	h.svc.process(pkt, h.now)
+	if len(events) < 2 || events[0].Kind != "room" || events[0].Event != "login_ok" || events[0].Room == nil || *events[0].Room != "lobby" || events[1].Event != "post" {
+		t.Fatalf("room monitor events = %+v", events)
+	}
+}
+
+func TestSuccessfulPostPersistsUpdatedLastHeardTime(t *testing.T) {
+	h := newHarness(t, nil)
+	client := h.loggedIn(1, "guest-pass")
+	h.svc.flushAll(h.now)
+	h.now = h.now.Add(10 * time.Second)
+	pkt, _ := client.text("heard while posting", floodVia())
+	h.svc.process(pkt, h.now)
+	want := h.room.byKey[client.pub()].lastActivity
+	h.svc.flushAll(h.now)
+	stored, err := h.repo.LoadClients(testContext(), "lobby")
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := client.pub()
+	for _, record := range stored {
+		if bytes.Equal(record.PublicKey, publicKey[:]) {
+			if record.LastHeardAt == nil || !record.LastHeardAt.Equal(want) {
+				t.Fatalf("persisted last heard = %v, want %v", record.LastHeardAt, want)
+			}
+			return
+		}
+	}
+	t.Fatal("posted client's session was not persisted")
 }
 
 func TestClientStateIsFlushedPeriodicallyOnStopAndRetriedAfterFailure(t *testing.T) {

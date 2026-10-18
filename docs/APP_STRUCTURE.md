@@ -53,6 +53,7 @@ flowchart TD
 | `internal/room` | The room server: logins and roles, posts committed before they are acknowledged, round-robin push sync, keep-alive, signed adverts, rate limiting, and identity files. One worker owns all room state. |
 | `internal/db` | Opens SQLite, maintains advert, group-text, automation and room schemas, persists incoming records through bounded background writer queues, and provides the revision-checked `AutomationRepository` and the `RoomRepository` (own connection, `synchronous=FULL`). |
 | `internal/automation` | Compiles and runs operator-managed Starlark scripts on a single worker fed by a bounded queue, enforces per-script timeouts (`FROZEN`), exposes `reply` through the shared sender, and serves the loopback Local Management API. |
+| `internal/monitor` | Status, events, and read-only channel/room HTTP API on loopback port 8766. Owns a bounded metadata-only event ring; copies event pages under a short lock and encodes responses after releasing it. |
 
 ## Runtime Flows
 
@@ -105,6 +106,9 @@ flowchart LR
 
 ## Lifecycle and Data Ownership
 
+- Monitoring is enabled by default, with a separate best-effort HTTP listener and 8192-event ring. The router observes RX including duplicates/unhandled types, and the writer captures TX submission metadata through completion/abandonment. A small `models.MonitorSink` interface separates transport from HTTP handling. Disabling monitoring leaves no observer or listener. No client registration, monitoring database or event-aggregation worker is introduced.
+- The node starts the monitor independently of automation and rooms, and shuts its HTTP server down before stopping those owners. Status reads existing counters and cached startup identity, not live modem queries. Channel endpoints read configured channel metadata and persisted group texts; room endpoints request a snapshot from the room worker and read posts/labels from SQLite. No monitor handler opens the modem or accesses worker-owned room maps directly.
+
 - `main` resolves flags and configuration, then delegates runtime ownership to `node.Node`.
 - The node loads channel secrets into memory from YAML. Channel configuration is not stored in SQLite; runtime channel upserts are written back to YAML and immediately applied to the parser registry.
 - While running, the node polls the YAML file for content changes every 500 ms. `kam channel upsert` writes channel changes atomically; the watcher validates the new YAML and swaps the complete channel registry. Invalid YAML is logged and ignored, leaving the last valid registry active.
@@ -112,7 +116,7 @@ flowchart LR
 - `kiss.Manager` is the sole owner of the serial connection. It serializes radio control requests and routes inbound frames to the supported advert and group-text parsers.
 - Advert and group-text persistence is asynchronous. The route loop enqueues records to bounded queues; dedicated writers batch inserts into SQLite. Queue saturation can drop records rather than block packet routing.
 - The automation runtime is a group-text subscriber. Its handler clones the message and does a bounded, non-blocking enqueue; its worker runs enabled scripts sequentially, and `reply` sends through the shared sender and the transmit scheduler.
-- Room servers subscribe to the packet tap. The handler does a bounded, non-blocking enqueue; one worker owns every room's client table, push state and advert timers. Posts are committed to SQLite before their ACK is queued; client sessions are written in batches every 5 seconds and on shutdown. Room settings are read at start-up only.
+- Room servers subscribe to the packet tap. The handler does a bounded, non-blocking enqueue; one worker owns every room's client table, push state and advert timers. Posts are committed to SQLite before their ACK is queued; client sessions, including last-heard timestamps, are written in batches every 5 seconds and on shutdown. The monitor requests bounded snapshots through that worker. Room settings are read at start-up only.
 - Every outbound packet, whether a group text or a room packet, goes through the `TxScheduler`, which hands the modem one frame at a time and waits for `TxDone`.
 - On cancellation, the node stops intake (both subscriptions), the Local Management API and the automation runtime, then the room worker (which flushes client state), then the transmit scheduler, and finally the manager. Manager shutdown closes persistence, which drains and flushes its queues, before closing SQLite and the serial port.
 
@@ -149,7 +153,7 @@ Room servers are implemented for plan phases 1-3; the requirements, decisions an
 - Each room has its own Ed25519 identity, stored as a hex seed in `<database directory>/rooms/<id>.key` (mode `0600`). The public key is the room's address.
 - `kam room show` prints each room's public key, a `meshcore://contact/add` URI and the signed advert as hex, creating a missing identity file first.
 - An invalid room is reported and stays disabled; other rooms and radio ingestion are unaffected.
-- Not yet implemented: status, telemetry and access-list requests (no reply), the over-the-air CLI, HTTP endpoints, and the post-v1 items in FeatureRoomServer §11.
+- The loopback monitor API exposes read-only room summaries, clients, and posts. Client removal remains planned with the monitor API phase 4. Status, telemetry and access-list requests (no reply), the over-the-air CLI, and the post-v1 items in FeatureRoomServer §11 are not implemented.
 
 ## Source Map
 

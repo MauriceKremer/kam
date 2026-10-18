@@ -49,7 +49,13 @@ func (c *RadioClient) GetVersion(ctx context.Context) (FirmwareVersion, error) {
 	if err != nil {
 		return FirmwareVersion{}, err
 	}
-	return decodeVersionResponse(payload)
+	version, err := decodeVersionResponse(payload)
+	if err == nil {
+		c.identityMu.Lock()
+		c.version = &version.Version
+		c.identityMu.Unlock()
+	}
+	return version, err
 }
 
 func (c *RadioClient) GetStats(ctx context.Context) (ModemStats, error) {
@@ -92,5 +98,9 @@ func (c *RadioClient) DeviceName(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return decodeDeviceNameResponse(payload), nil
+	name := decodeDeviceNameResponse(payload)
+	c.identityMu.Lock()
+	c.deviceName = &name
+	c.identityMu.Unlock()
+	return name, nil
 }

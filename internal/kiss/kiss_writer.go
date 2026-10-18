@@ -3,6 +3,8 @@ package kiss
 import (
 	"log/slog"
 	"time"
+
+	"kam.bytecoder.nl/internal/models"
 )
 
 // Frame wraps a raw KISS payload with FEND framing and byte stuffing.
@@ -24,6 +26,7 @@ func Frame(payload []byte) []byte {
 
 func (m *Manager) writeLoop() {
 	var inFlight []byte
+	var observation *models.MonitorEvent
 	var retries int
 	var gateTimer *time.Timer
 	var gateC <-chan time.Time
@@ -43,6 +46,7 @@ func (m *Manager) writeLoop() {
 	}
 	release := func() {
 		inFlight = nil
+		observation = nil
 		retries = 0
 		stopTimer(&gateTimer, &gateC)
 		stopTimer(&busyTimer, &busyC)
@@ -57,7 +61,7 @@ func (m *Manager) writeLoop() {
 		busyTimer = time.NewTimer(500 * time.Millisecond)
 		busyC = busyTimer.C
 	}
-	defer release()
+	defer func() { m.finishObservation(observation, nil); release() }()
 
 	for {
 		select {
@@ -94,10 +98,13 @@ func (m *Manager) writeLoop() {
 				continue
 			}
 			copyFrame := append([]byte(nil), frame...)
+			pendingObservation := m.observeTX(frame)
 			if err := m.writeFrame(copyFrame); err != nil {
+				m.finishObservation(pendingObservation, nil)
 				continue
 			}
 			inFlight = copyFrame
+			observation = pendingObservation
 			retries = 0
 			startGateTimer()
 		case event := <-m.txGateEvents:
@@ -105,6 +112,7 @@ func (m *Manager) writeLoop() {
 				continue
 			}
 			if event.done {
+				m.finishObservation(observation, &event.ok)
 				release()
 			} else if event.busy {
 				if retries == 0 {
@@ -112,6 +120,7 @@ func (m *Manager) writeLoop() {
 					startBusyTimer()
 				} else {
 					slog.Warn("dropping KISS data frame after repeated TxBusy")
+					m.finishObservation(observation, nil)
 					release()
 					m.publishModemEvent(TxAbandoned{})
 				}
@@ -121,6 +130,7 @@ func (m *Manager) writeLoop() {
 			busyC = nil
 			if inFlight != nil && retries == 1 {
 				if err := m.writeFrame(inFlight); err != nil {
+					m.finishObservation(observation, nil)
 					release()
 					continue
 				}
@@ -130,6 +140,7 @@ func (m *Manager) writeLoop() {
 		case <-gateC:
 			m.counters.txGateTimeout.Add(1)
 			slog.Warn("KISS TX gate timed out; releasing pending data frame")
+			m.finishObservation(observation, nil)
 			release()
 			m.publishModemEvent(TxAbandoned{})
 		}

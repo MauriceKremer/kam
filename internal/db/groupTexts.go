@@ -158,7 +158,16 @@ func groupTextToRecord(m parsers.GroupTextMessage) GroupTextRecord {
 		TimeDriftSeconds: m.TimeDriftSeconds,
 		HopCount:         m.HopCount,
 		HopStations:      marshalHopStations(m.HopStations),
+		SNRQuarterDB:     optionalInt(m.HasRxMeta, m.SNR),
+		RSSIDBM:          optionalInt(m.HasRxMeta, m.RSSI),
 	}
+}
+
+func optionalInt(ok bool, value int) *int {
+	if !ok {
+		return nil
+	}
+	return &value
 }
 
 // marshalHopStations renders per-hop path hashes as a JSON array of hex strings

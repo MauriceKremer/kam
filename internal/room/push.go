@@ -3,6 +3,7 @@ package room
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"log/slog"
 	"time"
 
@@ -34,7 +35,7 @@ func (r *roomState) tickPush(now time.Time) {
 	}
 	c := r.clients[r.nextClient]
 	pushed := false
-	if !c.hasPending && !c.lastActivity.IsZero() && c.failures < maxPushFailures {
+	if !c.hasPending && c.active && c.failures < maxPushFailures {
 		if post, ok := r.nextPostFor(c, now); ok {
 			pushed = r.push(c, post, now)
 		}
@@ -61,6 +62,8 @@ func (r *roomState) expirePending(now time.Time) {
 		}
 		c.failures++
 		r.svc.cnt.pushTimeouts.Add(1)
+		r.cnt.pushTimeouts.Add(1)
+		r.svc.recordRoomEvent(r.cfg.ID, "push_timeout", hex.EncodeToString(c.pub[:]), roleName(c.role), now)
 		slog.Info("[Room] push not acknowledged", "room", r.cfg.ID, "key", shortKey(c.pub[:]), "failures", c.failures)
 		if c.failures >= maxPushFailures && c.outPathKnown() {
 			c.clearOutPath() // rediscover the route on the next exchange (RS-PUSH-6)
@@ -115,5 +118,7 @@ func (r *roomState) push(c *client, post db.RoomPost, now time.Time) bool {
 	c.ackDeadline = now.Add(timeout)
 	c.pushedPost = post.Timestamp
 	r.svc.cnt.pushesSent.Add(1)
+	r.cnt.pushesSent.Add(1)
+	r.svc.recordRoomEvent(r.cfg.ID, "push_sent", hex.EncodeToString(c.pub[:]), roleName(c.role), now)
 	return true
 }

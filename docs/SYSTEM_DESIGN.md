@@ -127,6 +127,7 @@ send.Sender  --> kiss.TxScheduler (legacy TxChan adapter, queued as group text)
 | `internal/kiss/parsers` | Per-payload-type parsers: `ParseAdvert` (Ed25519 verify), `ParseGroupText` (decrypt via channel secret), public-channel secret registry. |
 | `internal/kiss/send` | `Builder` constructs outbound group-text frames; `Sender` queues them on the transmit scheduler. |
 | `internal/room` | `Service`: logins and roles, posts, push sync, keep-alive, adverts, login rate limiting, identity files. One worker goroutine owns all room state. |
+| `internal/monitor` | Loopback status/events and read-only channel/room resources. Room state is copied through a worker request; the bounded event ring also receives room activity events. |
 | `internal/db` | SQLite handle + WAL. `Persistence` implements `kiss.Persistence`. `AdvertQueue` + `GroupTextQueue` = batched background writers. `AutomationRepository` stores Starlark scripts (`automation_scripts`) on its own single connection. `RoomRepository` stores `rooms`, `room_posts` and `room_clients` on its own single connection with `synchronous=FULL`. Channel config lives in YAML. |
 | `internal/automation` | `Runtime` loads, compiles, and runs operator-managed Starlark scripts for each group text on one bounded-queue worker; `reply(channel, text)` is the only host function. `NewAPI` is the loopback-only Local Management API. ECHO is the example script `docs/examples/echo.star`. See [FeatureStarlark.md](FeatureStarlark.md). |
 
@@ -199,6 +200,7 @@ main goroutine
 | 7a | Local Management API server | `automation.ServeLocalAPI` | `ServeLocalAPI`→`Shutdown` | HTTP on `127.0.0.1:8765`; one short-lived goroutine per request |
 | 7b | tx scheduler | `kiss.TxScheduler` | `Start`→`Stop` | recv legacy `TxChan` frames, a timer, and `TxDone`/`TxAbandoned` modem events; sends one frame at a time to `Manager.txChan` |
 | 7c | room worker | `room.Service` | `Start`→`Stop` | recv a bounded packet queue (64) and a 50 ms tick; owns every room's state; writes `RoomRepository`, submits to the scheduler |
+| 7d | Monitor API server | `node.Node` / `monitor.Listen` | node startup→HTTP shutdown | loopback HTTP on port 8766, with at most 8 admitted requests; bounded event pages, SQLite channel/post reads, and worker-owned room snapshots |
 | 8 | (planned) analytics/metrics aggregator | future package | subscribe via `SubscribeGroupText` | same tap pattern as the automation runtime |
 | * | radio request | caller (e.g. `main`/`New`) | per `Get`/`Set` call | register waiter on `ResponseRegistry`, push `txChan`, block on resp |
 
@@ -206,6 +208,14 @@ main goroutine
 > intended growth direction explicit. Today the automation worker (7) is the
 > only non-persistence consumer of the group-text tap, and the room worker (7c)
 > is the only consumer of the packet tap.
+
+The monitor does not add an aggregator goroutine. RX records briefly wait for
+RxMeta using a bounded single pending record and timeout callback; TX records
+stay with the in-flight writer frame. Room events are emitted by the room worker.
+Room HTTP snapshots are copied on that worker rather than reading its maps from
+request goroutines. Recording and HTTP page copies share a short ring lock; JSON
+encoding, HTTP writes and existing persistence work never hold it. The node
+shuts the monitor listener down before the underlying owners.
 
 ---
 
@@ -337,8 +347,13 @@ queries SQLite), and the timers for adverts, session flush and retention.
   client, 1.2 s after a push and 150 ms when idle. A push that never left the
   scheduler queue by its ACK timeout (for example held back by the duty-cycle
   cap) is withdrawn without counting as a failure.
-- **Persistence.** Client sessions are written in batches every 5 s and on stop;
-  posts are not batched. Retention prunes by count and age every 10 minutes.
+- **Persistence.** Client sessions, including nullable `last_heard_at`, are
+   written in batches every 5 s and on stop; posts are not batched. Restoring a
+   last-heard timestamp does not mark a client active for push delivery. Retention
+   prunes by count and age every 10 minutes.
+- **Monitoring.** Room counters and client/post summaries are copied through a
+   request handled by the worker. The monitor reads retained posts and advert
+   labels from SQLite outside the room-state ownership boundary.
 - **Failure isolation.** A room that cannot start is logged and skipped; radio
   ingestion continues.
 

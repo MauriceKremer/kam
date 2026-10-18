@@ -44,7 +44,9 @@ type TxRequest struct {
 	// Delay holds the packet back this long after submission.
 	Delay time.Duration
 	// Tag lets the producer cancel the packet while it is still queued.
-	Tag string
+	Tag    string
+	Origin string
+	Room   string
 }
 
 // TxSink is the part of Manager the scheduler drives.
@@ -219,7 +221,7 @@ func (s *TxScheduler) Submit(req TxRequest) error {
 	}
 	s.seq++
 	s.queue = append(s.queue, &txItem{
-		req:       TxRequest{Raw: append([]byte(nil), req.Raw...), Priority: req.Priority, Delay: req.Delay, Tag: req.Tag},
+		req:       TxRequest{Raw: append([]byte(nil), req.Raw...), Priority: req.Priority, Delay: req.Delay, Tag: req.Tag, Origin: req.Origin, Room: req.Room},
 		seq:       s.seq,
 		notBefore: s.cfg.Now().Add(req.Delay),
 	})
@@ -372,10 +374,18 @@ func (s *TxScheduler) pump() time.Duration {
 	frame := make([]byte, 0, 1+len(item.req.Raw))
 	frame = append(frame, CMD_DATA)
 	frame = append(frame, item.req.Raw...)
-	select {
-	case s.sink.TxChan() <- frame:
-	default:
-		return 50 * time.Millisecond // modem queue momentarily full
+	if observed, ok := s.sink.(interface {
+		TryTransmit([]byte, string, string) bool
+	}); ok {
+		if !observed.TryTransmit(frame, item.req.Origin, item.req.Room) {
+			return 50 * time.Millisecond
+		}
+	} else {
+		select {
+		case s.sink.TxChan() <- frame:
+		default:
+			return 50 * time.Millisecond
+		}
 	}
 	s.removeLocked(item)
 	if item.req.Priority != TxPriorityGroupText {

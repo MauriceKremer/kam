@@ -1,0 +1,526 @@
+package monitor
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/netip"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"kam.bytecoder.nl/internal/models"
+)
+
+type Event = models.MonitorEvent
+
+type EventsResponse struct {
+	Epoch     string  `json:"epoch"`
+	FirstSeq  uint64  `json:"first_seq"`
+	LastSeq   uint64  `json:"last_seq"`
+	NextAfter uint64  `json:"next_after"`
+	Reset     bool    `json:"reset"`
+	Events    []Event `json:"events"`
+}
+
+type Channel struct {
+	Name           string     `json:"name"`
+	KeyStrategy    string     `json:"key_strategy"`
+	Enabled        bool       `json:"enabled"`
+	StoredMessages int64      `json:"stored_messages"`
+	LastMessageAt  *time.Time `json:"last_message_at"`
+}
+
+type ChannelMessage struct {
+	ID         int64     `json:"id"`
+	ReceivedAt time.Time `json:"received_at"`
+	Sender     *string   `json:"sender"`
+	Body       *string   `json:"body"`
+	HopCount   int       `json:"hop_count"`
+	SNRDB      *float64  `json:"snr_db"`
+	RSSIDBm    *int      `json:"rssi_dbm"`
+}
+
+type ChannelPage struct {
+	Messages     []ChannelMessage `json:"messages"`
+	NextBeforeID *int64           `json:"next_before_id"`
+}
+
+type ChannelReader interface {
+	Channels(context.Context) ([]Channel, error)
+	Messages(context.Context, string, int, int64, string) (ChannelPage, error)
+}
+
+type RoomCounters struct {
+	LoginsOK          uint64 `json:"logins_ok"`
+	LoginsFailed      uint64 `json:"logins_failed"`
+	LoginsRateLimited uint64 `json:"logins_rate_limited"`
+	PostsAccepted     uint64 `json:"posts_accepted"`
+	PostsRejected     uint64 `json:"posts_rejected"`
+	PushesSent        uint64 `json:"pushes_sent"`
+	PushesAcked       uint64 `json:"pushes_acked"`
+	PushTimeouts      uint64 `json:"push_timeouts"`
+}
+
+type Room struct {
+	ID                string       `json:"id"`
+	Name              string       `json:"name"`
+	Enabled           bool         `json:"enabled"`
+	PublicKey         string       `json:"public_key"`
+	MaxClients        int          `json:"max_clients"`
+	ClientsRemembered int          `json:"clients_remembered"`
+	LastActivityAt    *time.Time   `json:"last_activity_at"`
+	LastPostAt        *time.Time   `json:"last_post_at"`
+	RetainedPosts     int64        `json:"retained_posts"`
+	Counters          RoomCounters `json:"counters"`
+}
+
+type RoomClient struct {
+	PublicKey      string     `json:"public_key"`
+	Role           string     `json:"role"`
+	LastActivityAt *time.Time `json:"last_activity_at"`
+	PushState      string     `json:"push_state"`
+	Label          *string    `json:"label"`
+}
+
+type RoomPost struct {
+	ID        uint32    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	AuthorKey string    `json:"author_key"`
+	Body      string    `json:"body"`
+}
+
+type RoomReader interface {
+	Rooms(context.Context) ([]Room, error)
+	Clients(context.Context, string) ([]RoomClient, error)
+	Posts(context.Context, string, int) ([]RoomPost, error)
+}
+
+type Ring struct {
+	mu       sync.Mutex
+	epoch    string
+	events   []Event
+	next     int
+	count    int
+	sequence uint64
+}
+
+func NewRing(capacity int) *Ring {
+	if capacity < 1 {
+		panic("monitor ring capacity must be positive")
+	}
+	var epoch [16]byte
+	if _, err := rand.Read(epoch[:]); err != nil {
+		panic(err)
+	}
+	return &Ring{epoch: hex.EncodeToString(epoch[:]), events: make([]Event, capacity)}
+}
+
+func boundedText(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	text := strings.ToValidUTF8(*value, "")
+	if len(text) > 64 {
+		text = text[:64]
+		for !utf8.ValidString(text) {
+			text = text[:len(text)-1]
+		}
+	}
+	return &text
+}
+
+func (r *Ring) Record(event Event) {
+	event.Name = boundedText(event.Name)
+	event.Channel = boundedText(event.Channel)
+	event.Room = boundedText(event.Room)
+	if value := boundedText(&event.Client); value != nil {
+		event.Client = *value
+	}
+	if value := boundedText(&event.Event); value != nil {
+		event.Event = *value
+	}
+	if value := boundedText(&event.Role); value != nil {
+		event.Role = *value
+	}
+	event.DestHash = boundedText(event.DestHash)
+	event.AdvertRole = boundedText(event.AdvertRole)
+	if event.SNRDB != nil {
+		value := *event.SNRDB
+		event.SNRDB = &value
+	}
+	if event.RSSIDBM != nil {
+		value := *event.RSSIDBM
+		event.RSSIDBM = &value
+	}
+	if event.AirtimeMS != nil {
+		value := *event.AirtimeMS
+		event.AirtimeMS = &value
+	}
+	if event.OK != nil {
+		value := *event.OK
+		event.OK = &value
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sequence++
+	event.Seq = r.sequence
+	event.At = event.At.UTC().Truncate(time.Millisecond)
+	r.events[r.next] = event
+	r.next = (r.next + 1) % len(r.events)
+	if r.count < len(r.events) {
+		r.count++
+	}
+}
+
+func (r *Ring) page(after uint64, epoch string, limit int) (EventsResponse, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	response := EventsResponse{Epoch: r.epoch, LastSeq: r.sequence, NextAfter: after, Events: []Event{}}
+	response.Reset = epoch != "" && epoch != r.epoch
+	if !response.Reset && after > r.sequence {
+		return response, fmt.Errorf("after is beyond last_seq")
+	}
+	if r.count == 0 {
+		response.NextAfter = 0
+		return response, nil
+	}
+	response.FirstSeq = r.sequence - uint64(r.count) + 1
+	if after > 0 && after < response.FirstSeq-1 {
+		response.Reset = true
+	}
+	if response.Reset || after == 0 {
+		after = response.FirstSeq - 1
+	}
+	response.NextAfter = after
+	start := int(after + 1 - response.FirstSeq)
+	oldest := (r.next - r.count + len(r.events)) % len(r.events)
+	for index := start; index < r.count && len(response.Events) < limit; index++ {
+		event := r.events[(oldest+index)%len(r.events)]
+		response.Events = append(response.Events, event)
+		response.NextAfter = event.Seq
+	}
+	return response, nil
+}
+
+type RadioStatus struct {
+	FrequencyHz     uint32 `json:"frequency_hz"`
+	BandwidthHz     uint32 `json:"bandwidth_hz"`
+	SpreadingFactor uint8  `json:"spreading_factor"`
+	CodingRate      uint8  `json:"coding_rate"`
+	TxPowerDBM      *uint8 `json:"tx_power_dbm"`
+	Source          string `json:"source"`
+}
+type ModemStatus struct {
+	Link            string  `json:"link"`
+	DeviceName      *string `json:"device_name"`
+	FirmwareVersion *uint8  `json:"firmware_version"`
+}
+type TXStatus struct {
+	Queued       int    `json:"queued"`
+	Submitted    uint64 `json:"submitted"`
+	Sent         uint64 `json:"sent"`
+	Completed    uint64 `json:"completed"`
+	Rejected     uint64 `json:"rejected"`
+	Evicted      uint64 `json:"evicted"`
+	Deferred     uint64 `json:"deferred"`
+	GateTimeouts uint64 `json:"gate_timeouts"`
+}
+type DutyStatus struct {
+	ConfiguredPercent float64 `json:"configured_percent"`
+	UsedMS            int64   `json:"used_ms"`
+	WindowS           int     `json:"window_s"`
+}
+type QueueStatus struct {
+	Depth   int    `json:"depth"`
+	Dropped uint64 `json:"dropped"`
+}
+type RoomStatus struct {
+	Enabled bool `json:"enabled"`
+	Count   int  `json:"count"`
+}
+type AutomationStatus struct {
+	Enabled        bool    `json:"enabled"`
+	ScriptsEnabled *int    `json:"scripts_enabled"`
+	QueueDepth     *int    `json:"queue_depth"`
+	EventsDropped  *uint64 `json:"events_dropped"`
+}
+type RingStatus struct {
+	Capacity int    `json:"capacity"`
+	FirstSeq uint64 `json:"first_seq"`
+	LastSeq  uint64 `json:"last_seq"`
+}
+type Status struct {
+	APIVersion  int                    `json:"api_version"`
+	Epoch       string                 `json:"epoch"`
+	Now         time.Time              `json:"now"`
+	StartedAt   time.Time              `json:"started_at"`
+	NodeName    string                 `json:"node_name"`
+	Modem       ModemStatus            `json:"modem"`
+	Radio       RadioStatus            `json:"radio"`
+	DutyCycle   DutyStatus             `json:"duty_cycle"`
+	TX          TXStatus               `json:"tx"`
+	Persistence map[string]QueueStatus `json:"persistence"`
+	Rooms       RoomStatus             `json:"rooms"`
+	Automation  AutomationStatus       `json:"automation"`
+	EventRing   RingStatus             `json:"event_ring"`
+}
+
+func NewHandler(ring *Ring, status func() Status) http.Handler {
+	return NewHandlerWithResources(ring, status, nil, nil)
+}
+
+func NewHandlerWithChannels(ring *Ring, status func() Status, channels ChannelReader) http.Handler {
+	return NewHandlerWithResources(ring, status, channels, nil)
+}
+
+func NewHandlerWithResources(ring *Ring, status func() Status, channels ChannelReader, rooms RoomReader) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/events", func(w http.ResponseWriter, request *http.Request) {
+		query := request.URL.Query()
+		after, err := strconv.ParseUint(query.Get("after"), 10, 64)
+		if query.Get("after") == "" {
+			after, err = 0, nil
+		}
+		if err != nil || (after > 0 && query.Get("epoch") == "") {
+			writeJSON(w, 400, map[string]string{"error": "after must be non-negative and a nonzero cursor requires epoch"})
+			return
+		}
+		limit := 1000
+		if query.Has("limit") {
+			limit, err = strconv.Atoi(query.Get("limit"))
+		}
+		if err != nil || limit < 1 || limit > 2000 {
+			writeJSON(w, 400, map[string]string{"error": "limit must be between 1 and 2000"})
+			return
+		}
+		page, err := ring.page(after, query.Get("epoch"), limit)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, page)
+	})
+	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, request *http.Request) {
+		value := status()
+		page, _ := ring.page(0, "", 1)
+		value.APIVersion, value.Epoch, value.Now = 1, page.Epoch, time.Now().UTC().Truncate(time.Millisecond)
+		value.EventRing = RingStatus{Capacity: len(ring.events), FirstSeq: page.FirstSeq, LastSeq: page.LastSeq}
+		writeJSON(w, 200, value)
+	})
+	if channels != nil {
+		mux.HandleFunc("GET /v1/channels", func(w http.ResponseWriter, request *http.Request) {
+			items, err := channels.Channels(request.Context())
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "could not read channels"})
+				return
+			}
+			if items == nil {
+				items = []Channel{}
+			}
+			writeJSON(w, 200, map[string]any{"channels": items})
+		})
+		mux.HandleFunc("GET /v1/channels/{name}/messages", func(w http.ResponseWriter, request *http.Request) {
+			name := request.PathValue("name")
+			items, err := channels.Channels(request.Context())
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "could not read channels"})
+				return
+			}
+			known := false
+			for _, item := range items {
+				if item.Name == name {
+					known = true
+					break
+				}
+			}
+			if !known {
+				writeJSON(w, 404, map[string]string{"error": "channel not found"})
+				return
+			}
+			query := request.URL.Query()
+			limit := 50
+			if query.Has("limit") {
+				limit, err = strconv.Atoi(query.Get("limit"))
+			}
+			if err != nil || limit < 1 || limit > 200 {
+				writeJSON(w, 400, map[string]string{"error": "limit must be between 1 and 200"})
+				return
+			}
+			var beforeID int64
+			if query.Has("before_id") {
+				beforeID, err = strconv.ParseInt(query.Get("before_id"), 10, 64)
+			}
+			if err != nil || beforeID < 0 || (query.Has("before_id") && beforeID == 0) {
+				writeJSON(w, 400, map[string]string{"error": "before_id must be a positive integer"})
+				return
+			}
+			search := query.Get("q")
+			if !utf8.ValidString(search) || len(search) > 200 {
+				writeJSON(w, 400, map[string]string{"error": "q must be at most 200 UTF-8 bytes"})
+				return
+			}
+			page, err := channels.Messages(request.Context(), name, limit, beforeID, search)
+			if err != nil {
+				writeJSON(w, 500, map[string]string{"error": "could not read channel messages"})
+				return
+			}
+			if page.Messages == nil {
+				page.Messages = []ChannelMessage{}
+			}
+			writeJSON(w, 200, map[string]any{"channel": name, "messages": page.Messages, "next_before_id": page.NextBeforeID})
+		})
+	}
+	mux.HandleFunc("GET /v1/rooms", func(w http.ResponseWriter, request *http.Request) {
+		if rooms == nil {
+			writeJSON(w, 503, map[string]string{"error": "rooms are disabled"})
+			return
+		}
+		items, err := rooms.Rooms(request.Context())
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "could not read rooms"})
+			return
+		}
+		if items == nil {
+			items = []Room{}
+		}
+		writeJSON(w, 200, map[string]any{"rooms": items})
+	})
+	mux.HandleFunc("GET /v1/rooms/{id}/clients", func(w http.ResponseWriter, request *http.Request) {
+		if rooms == nil {
+			writeJSON(w, 503, map[string]string{"error": "rooms are disabled"})
+			return
+		}
+		id := request.PathValue("id")
+		known, err := roomExists(request.Context(), rooms, id)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "could not read rooms"})
+			return
+		}
+		if !known {
+			writeJSON(w, 404, map[string]string{"error": "room not found"})
+			return
+		}
+		clients, err := rooms.Clients(request.Context(), id)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "could not read room clients"})
+			return
+		}
+		if clients == nil {
+			clients = []RoomClient{}
+		}
+		writeJSON(w, 200, map[string]any{"room": id, "clients": clients})
+	})
+	mux.HandleFunc("GET /v1/rooms/{id}/posts", func(w http.ResponseWriter, request *http.Request) {
+		if rooms == nil {
+			writeJSON(w, 503, map[string]string{"error": "rooms are disabled"})
+			return
+		}
+		id := request.PathValue("id")
+		known, err := roomExists(request.Context(), rooms, id)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "could not read rooms"})
+			return
+		}
+		if !known {
+			writeJSON(w, 404, map[string]string{"error": "room not found"})
+			return
+		}
+		limit := 20
+		var parseErr error
+		if request.URL.Query().Has("limit") {
+			limit, parseErr = strconv.Atoi(request.URL.Query().Get("limit"))
+		}
+		if parseErr != nil || limit < 1 || limit > 200 {
+			writeJSON(w, 400, map[string]string{"error": "limit must be between 1 and 200"})
+			return
+		}
+		posts, err := rooms.Posts(request.Context(), id, limit)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "could not read room posts"})
+			return
+		}
+		if posts == nil {
+			posts = []RoomPost{}
+		}
+		writeJSON(w, 200, map[string]any{"room": id, "posts": posts})
+	})
+	slots := make(chan struct{}, 8)
+	timed := http.TimeoutHandler(mux, 5*time.Second, `{"error":"request timed out"}`)
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		defer func() {
+			if recover() != nil {
+				slog.Error("monitor handler panicked")
+				writeJSON(w, 500, map[string]string{"error": "internal error"})
+			}
+		}()
+		host := request.Host
+		if address, _, err := net.SplitHostPort(host); err == nil {
+			host = address
+		}
+		address, err := netip.ParseAddr(strings.Trim(host, "[]"))
+		if !strings.EqualFold(host, "localhost") && (err != nil || !address.IsLoopback()) {
+			writeJSON(w, 403, map[string]string{"error": "monitor API serves loopback hosts only"})
+			return
+		}
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		default:
+			writeJSON(w, 503, map[string]string{"error": "busy"})
+			return
+		}
+		timed.ServeHTTP(w, request)
+	})
+}
+
+func roomExists(ctx context.Context, reader RoomReader, id string) (bool, error) {
+	rooms, err := reader.Rooms(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, room := range rooms {
+		if room.ID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func writeJSON(w http.ResponseWriter, code int, value any) {
+	body, err := json.Marshal(value)
+	if err != nil || len(body) > 8<<20 {
+		http.Error(w, "response unavailable", 500)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_, _ = w.Write(body)
+}
+
+func Listen(address string, handler http.Handler) (*http.Server, error) {
+	config := models.DefaultMonitorConfig()
+	config.Listen = address
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	server := &http.Server{Addr: listener.Addr().String(), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+	go func() {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			slog.Error("monitor listener stopped", "error", err)
+		}
+	}()
+	return server, nil
+}
