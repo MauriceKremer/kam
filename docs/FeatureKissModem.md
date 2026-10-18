@@ -1,6 +1,6 @@
 # Feature: KISS Modem Command Layer
 
-**Status:** Implemented in code; real-radio smoke testing and Phase 0 measurements remain pending.
+**Status:** Implemented in code. The real-radio smoke test and Phase 0 measurements ran 2026-10-18 on a Heltec V3 (firmware version 1) - see §11 for results and §9 for what the board changed. Still open: the physical unplug fail-stop drill (Phase 5) and one older-firmware build (R6).
 **Scope:** Cover the MeshCore KISS modem's command surface (standard KISS parameters, `SetHardware` sub-commands and unsolicited events) through the existing reader, router and writer, and put the typed command API in [cmd_radio.go](../internal/kiss/cmd_radio.go).
 **Reference firmware:** MeshCore `main`, files read 2026-10-10. `examples/kiss_modem` last changed in `3b69e78` (committed 2026-07-18); `docs/kiss_modem_protocol.md` last changed in `448d1b2` (2026-09-18).
 
@@ -8,7 +8,7 @@
 
 KAM talks to the modem through [kiss_reader.go](../internal/kiss/kiss_reader.go), [kiss_router.go](../internal/kiss/kiss_router.go) and [kiss_writer.go](../internal/kiss/kiss_writer.go). The typed command client covers the Tier 1 modem surface: 5 standard KISS parameters, radio configuration, TX power, signal reporting, diagnostics and unsolicited events. Crypto/identity commands and `Reboot` remain deferred (§2).
 
-Implementation status: the request slot and Ping barrier, typed errors, prioritized control queue, command validation, startup probe, TX gate, modem events/counters, link fail-stop and reset probe are implemented. Hardware capture, timing measurements and the optional hardware smoke test have not been run in this environment.
+Implementation status: the request slot and Ping barrier, typed errors, prioritized control queue, command validation, startup probe, TX gate, modem events/counters, link fail-stop and reset probe are implemented. The hardware smoke test and Phase 0 measurements ran on a real board on 2026-10-18 (§11); the unplug drill and an older-firmware check remain.
 
 Baseline findings addressed by this implementation:
 
@@ -383,6 +383,7 @@ Recorded 2026-10-10. D2 and D8 differ from the recommendation; their consequence
 | D6 | **Config and validation** | `tx_power_dbm` + `csma` block; `tx_power_dbm` only; none | Both, validated | **Both, validated** (§4.5, §6.4). Refinement: `tx_tail_ms` omitted from YAML (G9). |
 | D7 | **Link loss and resets** | Fail-stop plus probe; fail-stop only; out of scope | Fail-stop plus probe | **Fail-stop plus 30 s probe.** `Reboot` stays deferred. |
 | D8 | **Operator exposure** | Read-only `GET /radio/status`; none yet; read and write endpoints | Read-only endpoint | **No HTTP surface yet** (differs). |
+| D9 | **Busy attribution** (added 2026-10-18) | Mirror busy errors to the TX gate while a request holds the slot; slot only, drop at gate timeout; drop both frames immediately | Mirror to the gate | **Mirror to the gate.** The 2026-10-18 hardware run showed that with a request slot open, the busy reply was consumed by the slot and the in-flight frame died at its gate timeout. The gate now sees every busy-classified error and KM-TX-3's backoff-and-resend runs. Worst case accepted per R2: a duplicate transmission. |
 
 D2 and D4 are candidates for ADRs.
 
@@ -406,7 +407,7 @@ D2 and D4 are candidates for ADRs.
 | ID | Risk or question | Mitigation |
 |---|---|---|
 | R1 | The router is on the hot path for every frame; a classification bug could drop RxMeta or group texts. | Existing router tests stay green; add one test per table row in §5.2; the data-frame branch is unchanged. |
-| R2 | TxBusy attribution (G3): a TxBusy during a pending request, or a data TxBusy caused by an earlier TX that KAM does not know about. | Phase 0 trace to see which cases occur; gate retry rule tolerates a duplicate; counters expose it. |
+| R2 | TxBusy attribution (G3): a TxBusy during a pending request, or a data TxBusy caused by an earlier TX that KAM does not know about. | Phase 0 trace to see which cases occur; gate retry rule tolerates a duplicate; counters expose it. Observed on hardware 2026-10-18 and resolved by D9: the gate mirrors every busy-classified error. |
 | R3 | Default TXDELAY is 500 ms, tuned for analog radios; it adds latency to every transmission (FeatureRoomServer R2). | Measure in Phase 0; make it configurable (done in D6) but do not change the default silently. |
 | R4 | Gate timeout is derived from the firmware's own `1.5 x airtime` factors; the real `TxDone` latency is unmeasured. | Phase 0 measurement; the formula is a constant in one place. |
 | R5 | Re-applying radio settings during the probe while a transmission is in flight could disturb that transmission. | Re-apply only after a confirmed reset (zero cache), which means nothing is in flight; otherwise skip. |
@@ -428,6 +429,9 @@ D2 and D4 are candidates for ADRs.
 | DeepWiki "KISS Modem" | Encryption is "AES-128-CBC with HMAC-SHA256". | `KISS` says AES-128 block encryption with zero padding, no IV; FeatureRoomServer §5.2 records ECB from `Utils.cpp`. Not re-verified here because crypto is deferred. |
 | DeepWiki "KISS Modem" | RxMeta is sent "when enabled via `HW_CMD_SET_SIGNAL_REPORT`". | Enabled by default at boot (G7). |
 | `KISS` (protocol doc) | `Sensors` response is a CayenneLPP payload. | Empty when no sensors report (G6). Also undocumented: G1, G2, G5, G9, G10. |
+| This document §4.4 | G2 (zero radio cache after reboot), G5 (`Error/TxBusy` for a second data frame), G6 (empty sensors answer), G9 (TXtail dead). | Confirmed on the board, 2026-10-18 (§11). G2 checked after `Reboot`: `GetRadio` all-zero. G5 answered `0x07` in 3/3 attempts. G6: `GetSensors(3)` answered 0 bytes, no error. G9: no latency change between TXtail 0 and 100 ms. |
+| This document §4.4 (G10) | A noise-floor zero window exists right after boot. | Not reproduced: the first `NoiseFloor` ~0.5 s after `Reboot` returned -107 dBm, calibrated. The window is either shorter than that first query or absent. |
+| This document §4.4 (G5) follow-on | Only the *second* frame gets `Error/TxBusy`; the first frame completes normally. | The frame in flight never completed and never reported `TxDone` either: both frames were lost in 3/3 attempts. |
 
 These are listed for correction; this document does not edit them.
 
@@ -437,15 +441,29 @@ No time estimates. Each phase ends with an observable exit criterion.
 
 | Phase | Content | Exit criterion |
 |---|---|---|
-| **0. Hardware spikes** | Capture every Tier 1 exchange from a real board. Confirm G2 (zero cache after boot), G9 (TXtail), G10 (noise-floor zero window). Observe TxBusy and `TxDone` latency with and without a pending request. Measure TXDELAY effect. Try one older firmware. | **Pending hardware verification.** |
+| **0. Hardware spikes** | Capture every Tier 1 exchange from a real board. Confirm G2 (zero cache after boot), G9 (TXtail), G10 (noise-floor zero window). Observe TxBusy and `TxDone` latency with and without a pending request. Measure TXDELAY effect. Try one older firmware. | **Run 2026-10-18 (Heltec V3, fw 1):** Tier 1 exchanges captured; G2, G5/G6/G9 confirmed; TXDELAY and `TxDone` latency measured; the G5 follow-on and R2 busy attribution observed (§9, §11); G10 zero window not reproduced. Older-firmware check still open. |
 | **1. Request tracking** | Protocol constants, Manager request slot/control queue, router classification, typed errors, Ping barrier; remove `registry.go`. | **Implemented and unit-tested.** |
 | **2. Commands, config, startup** | Typed Tier 1 methods, validation, optional YAML keys and startup sequence. | **Implemented and package-tested.** |
 | **3. Events and pacing** | Event subscriptions, airtime, TX gate, retry, length checks and counters. | **Implemented and unit-tested.** |
-| **4. Diagnostics** | RSSI, noise floor, channel busy, stats, battery, temperature, sensors, version and device name. | **Implemented; hardware response captures pending.** |
-| **5. Link health** | `Manager.Done`, fail-stop in `Node.Run`, 30-second probe, reset detection and re-apply. | **Implemented; unplug/reset hardware smoke test pending.** |
+| **4. Diagnostics** | RSSI, noise floor, channel busy, stats, battery, temperature, sensors, version and device name. | **Implemented; hardware response captures recorded 2026-10-18 (§11).** |
+| **5. Link health** | `Manager.Done`, fail-stop in `Node.Run`, 30-second probe, reset detection and re-apply. | **Implemented. The reboot-reset drill ran in the smoke test (zero cache detected, config re-applied, 2026-10-18). The physical unplug drill is still open.** |
 
 ## 11. Verification
 
 - **Unit:** SetRadio and escaped RxMeta golden frames; malformed-response checks; radio/CSMA validation tables; request error and Ping-barrier tests; TxDone/TxBusy routing; writer serialization, retry and length tests; link fail-stop; `ModemError` sentinels.
 - **Fake modem (integration, in process):** a test double driven through `TestRxChan` and the control/data queue seams that mimics the firmware: echo cache starting at zero, `OK` for any well-formed `SetRadio`, `Error` for short payloads and unknown sub-commands, `NoCallback` where the firmware gives it, TxBusy on a second data frame, `TxDone` after a delay, a dropped response followed by a queued TxBusy, and a late `OK` after a timeout to prove the barrier.
-- **Hardware smoke test:** skipped unless `KAM_TEST_PORT` is set; runs the §6.3 sequence and a `TxDone` round trip with a short frame, and logs measured latencies for R3 and R4. Not run during this implementation pass; no radio port was provided.
+- **Hardware smoke test:** [smoke_test.go](../internal/kiss/smoke_test.go), skipped unless `KAM_TEST_PORT` is set; runs the §6.3 sequence, captures every diagnostics response, measures `TxDone` latencies for R3/R4, probes the second-frame TxBusy, then reboots the board and checks the zero cache. First run 2026-10-18, Heltec V3, firmware version 1, 869.618 MHz / 62.5 kHz / SF7 / CR5:
+
+| What | Result |
+|---|---|
+| §6.3 startup sequence | Pass; `SetRadio` echoed back exactly |
+| Diagnostics | RSSI -103 dBm; noise floor -117 dBm, calibrated; airtime(255) 848 ms; battery 3.8-4.1 V; MCU 28.0 °C; sensors 0 bytes (G6); `GetTxPower` 0 (zero cache); signal reports enabled |
+| R4 `TxDone` latency, 8-byte frame, TXDELAY 500 ms | 830-1030 ms, recheck 730-930 ms |
+| R3 TXDELAY effect, 0 vs 500 ms | 330-530 ms vs 730-1030 ms: the 500 ms default adds roughly 0.3-0.6 s per transmission |
+| G9 TXtail 0 vs 100 ms | No systematic change; treated as dead |
+| G5/G3 second frame while one is pending | `Error 0x07` (TX_BUSY) in 3/3 attempts. First run (before D9): the frame in flight never got `TxDone`; dropped at the gate timeout (`tx_busy=3`, `tx_busy_retry=0`, `tx_gate_timeout=3`). Re-run with D9: the writer backed off and resent twice, then dropped once after a repeated busy (`tx_busy=5`, `tx_busy_retry=2`, `tx_gate_timeout=1`). The modem can stay unable to transmit for seconds after the interference; nothing on air was verified.
+| G2 zero cache after reboot | Confirmed: `GetRadio` all-zero after `Reboot`; config re-applied and echo-checked afterwards |
+| G10 noise-floor zero window | Not reproduced: first reading ~0.5 s after reboot was -107 dBm, calibrated |
+| Older firmware (R6) | Not yet tried |
+
+  This consequence is now handled: D9 (2026-10-18) mirrors every busy-classified error to the TX gate in addition to the pending request slot, so KM-TX-3's backoff-and-resend fires instead of a silent gate-timeout drop. Regression test: `kiss_router_busy_test.go`. On the re-run the board exercised the retry path live.
