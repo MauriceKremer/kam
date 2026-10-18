@@ -1,4 +1,6 @@
 kam.bytecoder.nl
+/kam
+.DS_Store
 *.db
 *.db-shm
 *.db-wal
