@@ -18,6 +18,7 @@ Read the doc that matches the task before changing code:
 
 - [docs/APP_STRUCTURE.md](docs/APP_STRUCTURE.md): package layout, runtime flows, data ownership.
 - [docs/SYSTEM_DESIGN.md](docs/SYSTEM_DESIGN.md): goroutines, locks, shutdown order, end-to-end data flows.
+- [docs/APIdetails.md](docs/APIdetails.md): reference for the REST endpoints KAM serves today (implemented ones only), with parameters and responses. Whenever you implement a new endpoint, or change or remove an existing one, update this doc **and** the `GET /` index lists (the `endpoints` slices in [internal/monitor/api.go](internal/monitor/api.go) and [internal/automation/api.go](internal/automation/api.go)) in the same change. Planned-but-unimplemented endpoints stay in the feature document.
 
 Before creating, editing, styling, or reviewing `manuals/*.html`, read and follow the [KAM manuals style skill](.github/skills/kam-manuals-style/SKILL.md).
 

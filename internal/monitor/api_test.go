@@ -56,6 +56,60 @@ func TestEventsPaginationAndReset(t *testing.T) {
 	}
 }
 
+func TestIndexListsImplementedRoutes(t *testing.T) {
+	readIndex := func(handler http.Handler) []apiEndpoint {
+		t.Helper()
+		request := httptest.NewRequest("GET", "http://127.0.0.1/", nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", response.Code, response.Body)
+		}
+		var body struct {
+			API        string        `json:"api"`
+			APIVersion int           `json:"api_version"`
+			Endpoints  []apiEndpoint `json:"endpoints"`
+			ScriptAPI  string        `json:"script_api"`
+			Docs       string        `json:"docs"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.API != "kam" || body.APIVersion != 1 || body.ScriptAPI == "" || body.Docs == "" {
+			t.Fatalf("index header: %+v", body)
+		}
+		return body.Endpoints
+	}
+	paths := func(items []apiEndpoint) map[string]bool {
+		t.Helper()
+		seen := map[string]bool{}
+		for _, item := range items {
+			if item.Purpose == "" {
+				t.Fatalf("endpoint without purpose: %+v", item)
+			}
+			seen[item.Method+" "+item.Path] = true
+		}
+		return seen
+	}
+
+	base := paths(readIndex(NewHandler(NewRing(4), func() Status { return Status{} })))
+	for _, want := range []string{"GET /v1/status", "GET /v1/events", "GET /v1/rooms", "GET /v1/rooms/{id}/clients", "GET /v1/rooms/{id}/posts"} {
+		if !base[want] {
+			t.Fatalf("index missing %s: %+v", want, base)
+		}
+	}
+	if base["GET /v1/channels"] {
+		t.Fatalf("index lists channels without a channel reader: %+v", base)
+	}
+
+	full := paths(readIndex(NewHandlerWithResources(NewRing(4), func() Status { return Status{} }, &testChannelReader{}, &testRoomReader{})))
+	for _, want := range []string{"GET /v1/channels", "GET /v1/channels/{name}/messages"} {
+		if !full[want] {
+			t.Fatalf("index missing %s: %+v", want, full)
+		}
+	}
+}
+
 type testChannelReader struct {
 	channels []Channel
 	page     ChannelPage

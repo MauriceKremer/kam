@@ -230,6 +230,12 @@ Field notes:
 
 ## 7. Endpoints
 
+Implemented endpoints from this section are documented with parameters and
+responses in [APIdetails.md](APIdetails.md), and each listener serves a
+self-describing index at `GET /`. Update APIdetails.md and the index lists when
+an endpoint ships; this section keeps the whole plan, including parts still
+planned (§7.5, the §7.6 additions).
+
 ### 7.1 Status
 
 `GET /v1/status` returns everything KAMmon shows in its header and on the Overview page.

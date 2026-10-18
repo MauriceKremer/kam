@@ -18,12 +18,37 @@ import (
 
 const LocalAPIAddress = "127.0.0.1:8765"
 
+// apiEndpoint is one row of the self-describing index served at GET /.
+type apiEndpoint struct {
+	Method  string `json:"method"`
+	Path    string `json:"path"`
+	Purpose string `json:"purpose"`
+}
+
 const defaultTimeoutMS = int64(db.DefaultAutomationTimeout / time.Millisecond)
 
 // NewAPI returns the Local Management API handler. The API is unauthenticated, so it only serves loopback
 // Host headers and JSON bodies; that stops web pages from driving it via DNS rebinding or cross-site forms.
 func NewAPI(runtime *Runtime) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		endpoints := []apiEndpoint{
+			{Method: "GET", Path: "/scripts", Purpose: "list all scripts"},
+			{Method: "POST", Path: "/scripts", Purpose: "create a script (expected_revision 0)"},
+			{Method: "GET", Path: "/scripts/{id}", Purpose: "read one script"},
+			{Method: "PUT", Path: "/scripts/{id}", Purpose: "update a script (expected_revision)"},
+			{Method: "DELETE", Path: "/scripts/{id}?revision=N", Purpose: "delete a script"},
+			{Method: "POST", Path: "/scripts/validate", Purpose: "compile source without saving"},
+			{Method: "POST", Path: "/scripts/{id}/enable", Purpose: "enable the desired state (expected_revision)"},
+			{Method: "POST", Path: "/scripts/{id}/disable", Purpose: "disable the desired state (expected_revision)"},
+			{Method: "POST", Path: "/scripts/{id}/recover", Purpose: "recompile a FROZEN or BROKEN script"},
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"api":       "kam",
+			"endpoints": endpoints,
+			"docs":      "docs/APIdetails.md",
+		})
+	})
 	mux.HandleFunc("GET /scripts", func(w http.ResponseWriter, r *http.Request) {
 		scripts, err := runtime.repository.List(r.Context())
 		if err != nil {

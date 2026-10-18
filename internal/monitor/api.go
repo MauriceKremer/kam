@@ -21,6 +21,13 @@ import (
 
 type Event = models.MonitorEvent
 
+// apiEndpoint is one row of the self-describing index served at GET /.
+type apiEndpoint struct {
+	Method  string `json:"method"`
+	Path    string `json:"path"`
+	Purpose string `json:"purpose"`
+}
+
 type EventsResponse struct {
 	Epoch     string  `json:"epoch"`
 	FirstSeq  uint64  `json:"first_seq"`
@@ -452,6 +459,33 @@ func NewHandlerWithResources(ring *Ring, status func() Status, channels ChannelR
 		}
 		writeJSON(w, 200, map[string]any{"room": id, "posts": posts})
 	})
+	indexHandler := func(w http.ResponseWriter, request *http.Request) {
+		endpoints := []apiEndpoint{
+			{Method: "GET", Path: "/v1/status", Purpose: "one snapshot of the running node"},
+			{Method: "GET", Path: "/v1/events", Purpose: "event ring; poll with after, epoch, limit"},
+		}
+		if channels != nil {
+			endpoints = append(endpoints,
+				apiEndpoint{Method: "GET", Path: "/v1/channels", Purpose: "configured channels, never a key"},
+				apiEndpoint{Method: "GET", Path: "/v1/channels/{name}/messages", Purpose: "stored group texts, newest first"},
+			)
+		}
+		endpoints = append(endpoints,
+			apiEndpoint{Method: "GET", Path: "/v1/rooms", Purpose: "rooms with counters; 503 when rooms are disabled"},
+			apiEndpoint{Method: "GET", Path: "/v1/rooms/{id}/clients", Purpose: "remembered clients of one room"},
+			apiEndpoint{Method: "GET", Path: "/v1/rooms/{id}/posts", Purpose: "retained posts, newest first"},
+		)
+		writeJSON(w, 200, map[string]any{
+			"api":         "kam",
+			"api_version": 1,
+			"endpoints":   endpoints,
+			// The Local Management API address is fixed (automation.LocalAPIAddress);
+			// a literal here avoids a dependency from monitor onto automation.
+			"script_api": "http://127.0.0.1:8765/",
+			"docs":       "docs/APIdetails.md",
+		})
+	}
+	mux.HandleFunc("GET /{$}", indexHandler)
 	slots := make(chan struct{}, 8)
 	timed := http.TimeoutHandler(mux, 5*time.Second, `{"error":"request timed out"}`)
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

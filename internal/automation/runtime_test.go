@@ -831,6 +831,41 @@ func TestLocalAPIRefusesNonLoopbackBinding(t *testing.T) {
 }
 
 // serveAPI issues a request as a local client would: loopback Host and a JSON body.
+func TestAPIIndexListsRoutes(t *testing.T) {
+	runtime := newTestRuntime(t, openTestRepository(t), &recordingSender{})
+	response := serveAPI(NewAPI(runtime), http.MethodGet, "/", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("index status: got %d, body %s", response.Code, response.Body.String())
+	}
+	var index struct {
+		API       string        `json:"api"`
+		Endpoints []apiEndpoint `json:"endpoints"`
+		Docs      string        `json:"docs"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &index); err != nil {
+		t.Fatal(err)
+	}
+	if index.API != "kam" || index.Docs == "" || len(index.Endpoints) != 9 {
+		t.Fatalf("index: %+v", index)
+	}
+	seen := map[string]bool{}
+	for _, item := range index.Endpoints {
+		if item.Purpose == "" {
+			t.Fatalf("endpoint without purpose: %+v", item)
+		}
+		seen[item.Method+" "+item.Path] = true
+	}
+	for _, want := range []string{
+		"GET /scripts", "POST /scripts", "GET /scripts/{id}", "PUT /scripts/{id}",
+		"DELETE /scripts/{id}?revision=N", "POST /scripts/validate",
+		"POST /scripts/{id}/enable", "POST /scripts/{id}/disable", "POST /scripts/{id}/recover",
+	} {
+		if !seen[want] {
+			t.Fatalf("index missing %s: %+v", want, seen)
+		}
+	}
+}
+
 func serveAPI(handler http.Handler, method, target, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	request.Host = "127.0.0.1:8765"

@@ -101,9 +101,13 @@ Other commands: `kam channel upsert ...` (add or change a channel in `kam.yml`) 
 ## Backend Monitoring API
 
 KAM exposes a separate loopback API on `127.0.0.1:8766`, independent of the
-script API on port 8765. Phase 1 offers `GET /v1/status` and `GET /v1/events`.
-No dashboard is required: KAM continues its radio work without API clients.
-Channel-history, room-management, modem-control and dry-run endpoints remain planned.
+script API on port 8765. It serves `GET /v1/status` and `GET /v1/events`,
+read-only channel history (`GET /v1/channels`, `GET /v1/channels/{name}/messages`)
+and read-only room surfaces (`GET /v1/rooms`, `GET /v1/rooms/{id}/clients`,
+`GET /v1/rooms/{id}/posts`). Each listener also answers `GET /` with the routes
+it serves. No dashboard is required: KAM continues its radio work without API
+clients. Modem-control, room-client removal and dry-run endpoints remain planned;
+parameters and responses are documented in [`docs/APIdetails.md`](docs/APIdetails.md).
 
 ```yaml
 monitor:
@@ -127,7 +131,8 @@ Continue using the returned `epoch` and `next_after`, not `last_seq` (the newest
 event in KAM's ring). An empty `events` array means caught up. `reset: true`
 means KAM restarted or unread events were overwritten. Signal readings and failed
 TX airtime are `null` when unknown. Events are held in bounded memory only;
-restarting KAM loses the ring. See [the backend API manual](manuals/FeatureMonitorApi.html)
+restarting KAM loses the ring. Endpoint parameters and responses are documented
+in [`docs/APIdetails.md`](docs/APIdetails.md); see also [the backend API manual](manuals/FeatureMonitorApi.html)
 and [the contract](docs/FeatureMonitorApi.md).
 
 ## Automation (Starlark scripts)
@@ -147,7 +152,7 @@ def on_group_text(message):
 
 ### Local Management API
 
-`127.0.0.1:8765`, loopback only, no authentication. Requests need a loopback `Host` header and, for `POST`/`PUT`, `Content-Type: application/json`. Updates carry the revision you last read (`expected_revision`; `0`/omitted when creating) and fail with `409` if it is stale.
+`127.0.0.1:8765`, loopback only, no authentication. Requests need a loopback `Host` header and, for `POST`/`PUT`, `Content-Type: application/json`. Updates carry the revision you last read (`expected_revision`; `0`/omitted when creating) and fail with `409` if it is stale. Both loopback APIs answer `GET /` with the routes they serve; endpoint details live in [`docs/APIdetails.md`](docs/APIdetails.md).
 
 ```sh
 curl -s localhost:8765/scripts
@@ -158,6 +163,7 @@ curl -s -X POST localhost:8765/scripts/ping/disable -H 'Content-Type: applicatio
 
 | Method and path | Purpose |
 |---|---|
+| `GET /` | Show the routes this listener serves. |
 | `GET /scripts`, `GET /scripts/{id}` | List or read scripts, including `runtime_status` and `last_error`. |
 | `POST /scripts/validate` | Compile a source without saving it. |
 | `POST /scripts`, `PUT /scripts/{id}` | Create or replace a script (`{"script": {...}, "expected_revision": N}`); invalid source is rejected and never activated. |

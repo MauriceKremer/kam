@@ -57,7 +57,7 @@
                 <p>An <strong>API</strong>, or application programming interface, lets one program ask another program for information or request a change. Phases 1-2 of KAM's backend API provide status, recent radio and room events, configured channels with message history, and read-only room summaries, clients and posts. Any local dashboard or command-line script can use the same API.</p>
                 <p>For example, KAMmon could ask, "Which packets arrived since my last request?" KAM would return a list. KAMmon would draw the chart and decide which of its signed-in web users may see the details.</p>
                 <p><strong>KAM does the radio work. KAMmon provides the web interface.</strong> KAM remains an open system: it starts, receives, stores messages and runs scripts without KAMmon. It does not register KAMmon as a client, check whether KAMmon is alive, or wait for it to consume events.</p>
-                <div class="info-box info-box-blue"><p><strong>Available now:</strong> port 8766, the bounded event ring, status and event reads, channel list/history, and room list/client/post reads. Modem controls and room-client removal are still planned. The existing script-management API remains on port 8765.</p></div>
+                <div class="info-box info-box-blue"><p><strong>Available now:</strong> port 8766, the bounded event ring, status and event reads, channel list/history, and room list/client/post reads. Modem controls and room-client removal are still planned. The existing script-management API remains on port 8765. Both listeners answer <code>GET /</code> with the routes they serve right now.</p></div>
             </section>
 
             <section id="concepts">
@@ -204,6 +204,9 @@
             <section id="examples">
                 <h2>Examples</h2>
                 <p>Run these read commands in a terminal on the KAM computer while KAM is running. Channel and room reads are implemented; modem-query examples below remain planned. Automated tests verify phases 1-2; real-radio acceptance is still pending.</p>
+                <h3>Ask KAM What It Serves</h3>
+                <pre><code class="language-bash">curl --fail-with-body http://127.0.0.1:8766/</code></pre>
+                <p>Both listeners answer <code>GET /</code> with the routes each one serves, with a one-line purpose per route.</p>
                 <h3>Read Status</h3>
                 <pre><code class="language-bash">curl --fail-with-body http://127.0.0.1:8766/v1/status</code></pre>
                 <p>List endpoints have a named outer object. A channel-list response with no configured channels is:</p>
@@ -269,12 +272,13 @@ curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</cod
 
             <section id="reference">
                 <h2>Endpoint Reference</h2>
-                <p>Status, event, channel and read-only room endpoints on port 8766 are implemented. Room-client removal and modem controls remain planned. <code>GET</code> reads data, <code>POST</code> requests an action, <code>PUT</code> applies a setting and <code>DELETE</code> removes a record. Paths beginning with <code>/v1</code> identify version 1 of the contract.</p>
+                <p>Status, event, channel and read-only room endpoints on port 8766 are implemented. Room-client removal and modem controls remain planned. Both listeners answer <code>GET /</code> with the routes they serve, implemented ones only. <code>GET</code> reads data, <code>POST</code> requests an action, <code>PUT</code> applies a setting and <code>DELETE</code> removes a record. Paths beginning with <code>/v1</code> identify version 1 of the contract.</p>
                 <table>
                     <thead><tr><th>Method &amp; path</th><th>Purpose</th></tr></thead>
                     <tbody>
+                        <tr><td><code>GET /</code></td><td>The routes this listener serves right now.</td></tr>
                         <tr><td><code>GET /v1/status</code></td><td>Node identity, uptime, link, radio echo, queue/counter summaries and event-ring bounds.</td></tr>
-                        <tr><td><code>GET /v1/events</code></td><td>Bounded pages of recent packet, room, script and modem events.</td></tr>
+                        <tr><td><code>GET /v1/events</code></td><td>Bounded pages of recent packet and room events; script and modem events remain planned.</td></tr>
                         <tr><td><code>GET /v1/channels</code></td><td>Configured names, key strategy, enabled state and retained message counts. Never keys.</td></tr>
                         <tr><td><code>GET /v1/channels/{name}/messages</code></td><td>Decoded text with paging and substring search.</td></tr>
                         <tr><td><code>GET /v1/rooms</code></td><td>Active rooms, public identities, remembered clients, activity and counters.</td></tr>
