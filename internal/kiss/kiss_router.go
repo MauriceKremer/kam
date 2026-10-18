@@ -216,7 +216,8 @@ func (m *Manager) dispatchHardwareResponse(command byte, payload []byte) {
 		if len(payload) > 0 {
 			code = payload[0]
 		}
-		if code == MODEM_ERROR_TX_BUSY {
+		busy := code == MODEM_ERROR_TX_BUSY
+		if busy {
 			m.counters.txBusy.Add(1)
 		}
 		if request != nil {
@@ -224,26 +225,22 @@ func (m *Manager) dispatchHardwareResponse(command byte, payload []byte) {
 			case request.result <- requestResult{err: &ModemError{Code: code}}:
 			default:
 			}
-			m.requestMu.Unlock()
-			return
 		}
 		m.requestMu.Unlock()
-		if code == MODEM_ERROR_TX_BUSY {
+		// A TxBusy can also concern the data frame the writer is waiting
+		// on. Mirror it to the TX gate even when a request consumes the
+		// reply; without this the slot swallows the error and the frame
+		// dies at the gate timeout instead of being resent (D9, R2).
+		if busy {
 			select {
 			case m.txGateEvents <- txGateEvent{busy: true}:
 			default:
 				slog.Warn("TX gate event queue full; TxBusy may not be handled")
 			}
 			m.publishModemEvent(TxBusy{})
-		} else {
+		} else if request == nil {
 			m.publishModemEvent(ModemFault{Code: code})
 		}
-		return
-	}
-	if request == nil {
-		m.requestMu.Unlock()
-		m.counters.rxUnmatchedFrames.Add(1)
-		slog.Debug("unmatched modem response", "command", command, "payload", payload)
 		return
 	}
 	if request == nil {
