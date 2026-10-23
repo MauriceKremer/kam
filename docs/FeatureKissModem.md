@@ -402,6 +402,8 @@ D2 and D4 are candidates for ADRs.
 - `GetAirtime`, `GetCurrentRssi`, `GetNoiseFloor`, `Ping`, `GetVersion`, `GetDeviceName` and `GetRadio` all have consumers (startup, gate, probe).
 - A later `GET /radio/status` on the Local Management API needs a shared mux so it does not depend on the automation runtime; that refactor is not part of this feature.
 
+  *(Resolved by [FeatureUnifiedApi.md](FeatureUnifiedApi.md): one listener in `internal/api` is the shared mux; modem endpoints land there directly when their phase ships.)*
+
 ## 8. Risks and open questions
 
 | ID | Risk or question | Mitigation |

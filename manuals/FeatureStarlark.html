@@ -95,14 +95,14 @@
             <section id="quickstart">
                 <h2>Quick Start</h2>
                 <p>KAM must be running (the API starts with it). The example installs a script that answers <code>ping</code> on <code>#public</code>:</p>
-                <pre><code class="language-bash">curl -s -X POST localhost:8765/scripts \
+                <pre><code class="language-bash">curl -s -X POST localhost:8766/scripts \
   -H 'Content-Type: application/json' \
   -d '{"script":{"id":"ping","name":"ping","enabled":true,
        "source":"def on_group_text(message):\n    if message[\"channel\"] == \"#public\" and \"ping\" in message[\"body\"] and message[\"sender\"] != \"kam\":\n        reply(message[\"channel\"], \"pong, %d hops\" % message[\"hop_count\"])\n"}}'</code></pre>
                 <p>To install the bundled ECHO example, edit its three settings (<code>CHANNELS</code>, <code>MENTION</code>, <code>NODE_NAME</code>) and post it:</p>
                 <pre><code class="language-bash">jq -n --rawfile source docs/examples/echo.star \
   '{script: {id: "echo", name: "echo", enabled: true, source: $source}}' \
-  | curl -s -X POST localhost:8765/scripts -H 'Content-Type: application/json' -d @-</code></pre>
+  | curl -s -X POST localhost:8766/scripts -H 'Content-Type: application/json' -d @-</code></pre>
 
                 <div class="info-box info-box-amber">
                     <strong>Do not forget <code>"enabled": true</code>.</strong> A script created without it is stored but never runs. The same applies to updates: <code>PUT</code> replaces the whole script, so leave out <code>enabled</code> and you disable it.
@@ -246,7 +246,7 @@ def on_group_text(message):
             <!-- Management -->
             <section id="management">
                 <h2>Management via the Local Management API</h2>
-                <p>Scripts are managed over HTTP at <code class="text-blue-600">127.0.0.1:8765</code> (the address is fixed). The API is reachable only from the KAM machine and has <strong>no authentication</strong>: anyone who can log in to that machine can change scripts.</p>
+                <p>Scripts are managed over HTTP at <code class="text-blue-600">127.0.0.1:8766</code> (the same loopback listener as the monitoring API; the default is configurable with <code>monitor.listen</code> in <code>kam.yml</code>). The API is reachable only from the KAM machine and has <strong>no authentication</strong>: anyone who can log in to that machine can change scripts.</p>
 
                 <h3>Rules for every request</h3>
                 <ul>
@@ -273,18 +273,18 @@ def on_group_text(message):
 
                 <h3>Typical session</h3>
                 <pre><code class="language-bash"># 1. See what exists and read the current revision
-curl -s localhost:8765/scripts
+curl -s localhost:8766/scripts
 
 # 2. Check a change before saving it
-curl -s -X POST localhost:8765/scripts/validate -H 'Content-Type: application/json' \
+curl -s -X POST localhost:8766/scripts/validate -H 'Content-Type: application/json' \
   -d '{"source":"def on_group_text(message):\n    pass\n"}'
 
 # 3. Disable without deleting (revision 1)
-curl -s -X POST localhost:8765/scripts/ping/disable -H 'Content-Type: application/json' \
+curl -s -X POST localhost:8766/scripts/ping/disable -H 'Content-Type: application/json' \
   -d '{"expected_revision":1}'
 
 # 4. A frozen script: recover it with a longer timeout
-curl -s -X POST localhost:8765/scripts/ping/recover -H 'Content-Type: application/json' \
+curl -s -X POST localhost:8766/scripts/ping/recover -H 'Content-Type: application/json' \
   -d '{"expected_revision":2,"timeout_ms":1000}'</code></pre>
                 <p>Recovery fixes the status, not the cause. A script that froze because it is slow will freeze again unless you fix the source or raise <code>timeout_ms</code>.</p>
             </section>
@@ -321,7 +321,7 @@ curl -s -X POST localhost:8765/scripts/ping/recover -H 'Content-Type: applicatio
                         <tr><td><code>403</code> / <code>415</code></td><td>Non-loopback <code>Host</code> header / missing <code>Content-Type: application/json</code>.</td></tr>
                         <tr><td><code>409</code></td><td>Stale revision, id already exists, or name already used by another script. Re-read the script and retry.</td></tr>
                         <tr><td><code>422</code></td><td>The source did not compile, lacks <code>on_group_text</code>, calls an undefined name, or <code>timeout_ms</code> is missing or not positive.</td></tr>
-                        <tr><td>Cannot connect to port 8765</td><td>KAM is not running, the port is taken by another program (the log says <code>Local Management API unavailable</code>), or automation was disabled because its database setup failed. Radio ingestion keeps working in the last two cases.</td></tr>
+                        <tr><td>Cannot connect to the API</td><td>The listener is off (<code>monitor.enabled: false</code> takes it down together with the monitoring API), the port is taken by another program (the log says <code>local API listener unavailable</code>), or automation was disabled because its database setup failed — monitoring still works then, and the script routes answer "automation is disabled".</td></tr>
                     </tbody>
                 </table>
             </section>

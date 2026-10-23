@@ -34,11 +34,13 @@ remains read-only for these resources; client removal stays in phase 4.
 
 KAM has a Local Management API on `127.0.0.1:8765` that manages Starlark scripts. Phases 1-2 add status, recent RX/TX/room events and read-only channel/room resources on port 8766. Later phases provide modem control and client removal. Existing adverts and group texts remain in SQLite, and room client activity follows the existing room-service rules; the monitoring ring is not a persistent packet archive.
 
+> **Superseded by [FeatureUnifiedApi.md](FeatureUnifiedApi.md) D1:** one listener on `monitor.listen` (default 8766) serves monitoring and script management; port 8765 is closed.
+
 This plan adds one small package, `internal/monitor`, with three parts:
 
 1. **An event ring.** A fixed-size, in-memory list of recent events (packets heard, packets sent, room activity, script runs). Each event has a sequence number. Nothing is written to SQLite.
 2. **A second loopback listener** (default `127.0.0.1:8766`) with read endpoints for status, events, channels, rooms and the modem, and write endpoints for room clients and the modem radio.
-3. **Small additions to the script API on port 8765:** a dry run and in-memory run information.
+3. **Small additions to the script routes (now on the unified listener):** a dry run and in-memory run information.
 
 KAMmon polls `GET /v1/events?after=N` every one to two seconds, keeps its own in-memory history, and serves its own web pages. KAM never pushes and never authenticates anyone: it stays loopback only. KAMmon adds the web login.
 
@@ -101,7 +103,7 @@ Recorded 2026-10-11 from the planning questions.
 | D1 | How KAMmon receives live data | **Cursor pull over REST.** `GET /v1/events?after=N`, polled every 1-2 s. No streaming. |
 | D2 | What survives a KAMmon restart | **Nothing on disk.** KAMmon backfills from the KAM event ring and labels its history start. |
 | D3 | Local admin versus web viewer | **One listener, roles by user**, in KAMmon. Admin actions are accepted only from loopback. Not a KAM concern. |
-| D4 | Where the endpoints live | **A separate monitoring listener** on KAM, default `127.0.0.1:8766`. The script routes stay on 8765. |
+| D4 | Where the endpoints live | **A separate monitoring listener** on KAM, default `127.0.0.1:8766`. The script routes stay on 8765. *(Superseded by [FeatureUnifiedApi.md](FeatureUnifiedApi.md) D1: one listener serves both.)* |
 | D5 | Modem changes | **Apply, then save to `kam.yml`.** One source of truth; the reset probe reuses the saved values. |
 | D6 | Room client management | **List and remove clients.** Existing password-granted radio roles are shown read-only; no add-by-key or role-editing API. Revised during clarification. |
 | D7 | What web viewers see | **Per-channel allow list** in KAMmon. KAM always returns full data; KAMmon filters. |
@@ -120,6 +122,8 @@ Recorded 2026-10-11 from the planning questions.
 **Consequences of the decisions that go beyond the recommendation or change existing text**
 
 - **D4 versus [FeatureRoomServer.md](FeatureRoomServer.md) RS-OPS-2.** RS-OPS-2 expected room endpoints on the Local Management API. They are on the monitoring listener instead. KAMmon therefore holds two base URLs: scripts on 8765, everything else on 8766. The two listeners share no code path other than the guards in §5.
+
+  *(Superseded by [FeatureUnifiedApi.md](FeatureUnifiedApi.md) D1: one base URL on `monitor.listen`; room endpoints and scripts share the listener.)*
 - **D5 versus [FeatureKissModem.md](FeatureKissModem.md) D8 and the hot-reload non-goal.** Both said "no HTTP surface" and "radio settings stay startup-only". This plan replaces them. `APP_STRUCTURE.md` must be updated when it ships.
 - **D5 and comments.** `models.SaveKamConfig` rewrites `kam.yml` and drops comments. Channel upserts already do this. The manual must say so.
 - **D11 preserves RS-AUTH-10.** The earlier pinned-role proposal is superseded. Room roles still come from existing radio login rules, not from a KAMmon web role.
@@ -419,7 +423,7 @@ Failed-change examples (returned at the relevant error status, and also stored i
 
 `applied: true` means the entire requested change succeeded, not merely that some commands reached the modem. File-write failure is `500`; echo mismatch or modem rejection is `502`; timeout is `504`. Failure responses expose best-known state, never promise that interrupted changes did nothing.
 
-### 7.6 Scripts (existing port 8765)
+### 7.6 Scripts (now on the unified listener, [FeatureUnifiedApi.md](FeatureUnifiedApi.md))
 
 The routes `GET/POST /scripts`, `GET/PUT/DELETE /scripts/{id}`, `POST /scripts/validate` and `POST /scripts/{id}/enable|disable|recover` stay exactly as they are, with the same revision checks (`expected_revision`, `409` when stale). Two additions, both backward compatible:
 

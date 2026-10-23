@@ -1,6 +1,6 @@
 # Feature: Unified local REST API
 
-**Status:** Planned. Nothing in this document is implemented yet; the current two-listener behaviour is described in [APIdetails.md](APIdetails.md).
+**Status:** Implemented (phases 1-3: the ring extraction, the transport-only `internal/api`, and the one-listener cutover with scripts); this change also aligns the operator docs (UA-D-*). The two-listener behaviour this plan was written against is gone; the live service is described in [APIdetails.md](APIdetails.md). The §11 verification drills remain to be run.
 **Scope:** KAM's REST surface on the local device: one loopback listener that serves script management *and* the monitoring resources (status, events, channels, rooms), built as a transport-only API package that hands every operation to the capability that already owns the data. Includes the documentation alignment that must ship in the same change.
 **Written from:** Reading the KAM code and docs on 2026-10-23. No MeshCore sources are involved; every claim below is about KAM's own code and is tied to a named file or test.
 
@@ -269,7 +269,7 @@ Recorded 2026-10-23.
 | ID | Risk or question | Mitigation |
 |---|---|---|
 | R1 | Existing local automation (curl scripts, README/FeatureStarlark examples, any operator habit) targets 8765. | Port-only change, one release note, greps in §10; no path change (D4). The repo itself adds no runtime code that dials 8765 |
-| R2 | **Open:** does KAMmon read the index's `script_api` field or hardcode 8765? KAMmon is a separate project and cannot be checked from this repo. | Check KAMmon's source before the cutover phase; if it does, keep a `script_api` field carrying the unified address for one release, then drop it (revisit D12 with this fact) |
+| R2 | **Resolved during the cutover:** KAMmon (separate project) does not read the index's `script_api` field; it carries its own `kam_scripts_url` config key, default `http://127.0.0.1:8765`. | KAMmon needs a one-line config change (`kam_scripts_url: http://127.0.0.1:8766`) or a consolidation to one URL in its own repo; recorded here because the repo cannot change that project. `script_api` is dropped from the index as planned (D12) |
 | R3 | Ring extraction moves hot-path code (`ring.Record` is called per packet). | Pure move: the lock, the copying and both tests ([API-M-T] `TestSlowReaderDoesNotHoldRingLock`, the record benchmark) move unchanged; no behaviour edit in the same commit |
 | R4 | Wire-shape regressions in the move. | Golden/body-comparison tests per UA-B-1; the existing monitor and script tests already assert exact bodies |
 | R5 | Guard-test false positives (e.g. future generated files). | The guard reads `.go` files of its own package with `go/parser`; additions to it are reviewed like any code, and the allow-list is one line |

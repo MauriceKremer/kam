@@ -98,16 +98,18 @@ DB path precedence: `-db` flag > `kam.yml db_path` > `kam.db`.
 
 Other commands: `kam channel upsert ...` (add or change a channel in `kam.yml`) and `kam room show` (print room keys and adverts, see [Room servers](#room-servers)).
 
-## Backend Monitoring API
+## Local REST API
 
-KAM exposes a separate loopback API on `127.0.0.1:8766`, independent of the
-script API on port 8765. It serves `GET /v1/status` and `GET /v1/events`,
-read-only channel history (`GET /v1/channels`, `GET /v1/channels/{name}/messages`)
-and read-only room surfaces (`GET /v1/rooms`, `GET /v1/rooms/{id}/clients`,
-`GET /v1/rooms/{id}/posts`). Each listener also answers `GET /` with the routes
-it serves. No dashboard is required: KAM continues its radio work without API
-clients. Modem-control, room-client removal and dry-run endpoints remain planned;
-parameters and responses are documented in [`docs/APIdetails.md`](docs/APIdetails.md).
+KAM serves one loopback REST API on `127.0.0.1:8766`. It hosts the monitoring
+surfaces — `GET /v1/status` and `GET /v1/events`, read-only channel history
+(`GET /v1/channels`, `GET /v1/channels/{name}/messages`) and read-only room
+surfaces (`GET /v1/rooms`, `GET /v1/rooms/{id}/clients`,
+`GET /v1/rooms/{id}/posts`) — and, on the same listener, script management
+([Automation](#automation-starlark-scripts)). The listener answers `GET /` with
+the routes it serves. No dashboard is required: KAM continues its radio work
+without API clients. Modem-control, room-client removal and dry-run endpoints
+remain planned; parameters and responses are documented in
+[`docs/APIdetails.md`](docs/APIdetails.md).
 
 ```yaml
 monitor:
@@ -116,8 +118,10 @@ monitor:
   event_ring: 8192
 ```
 
-These are the defaults when the block is omitted. `enabled: false` removes the
-listener and event recorder. Invalid monitoring settings or a busy port are
+These are the defaults when the block is omitted. `enabled: false` closes the
+listener and turns the event recorder off; automation scripts keep running, but
+they can no longer be managed or observed until the listener is back. Invalid
+monitoring settings or a busy port are
 logged without stopping radio ingestion. Changes to this block require a restart.
 The API has no authentication and serves loopback hosts only; KAMmon owns its
 web authentication. JSON events contain metadata, never message bodies or keys.
@@ -150,15 +154,17 @@ def on_group_text(message):
 - Events are queued (128) and run one at a time, so a slow script never blocks packet routing; a full queue drops events and logs them.
 - Each script has a `timeout_ms` (default 500). A script that exceeds it becomes `FROZEN`; one that fails to compile on load becomes `BROKEN`. Neither runs until you recover or fix it. Other script errors are only logged.
 
-### Local Management API
+### Managing scripts over the local REST API
 
-`127.0.0.1:8765`, loopback only, no authentication. Requests need a loopback `Host` header and, for `POST`/`PUT`, `Content-Type: application/json`. Updates carry the revision you last read (`expected_revision`; `0`/omitted when creating) and fail with `409` if it is stale. Both loopback APIs answer `GET /` with the routes they serve; endpoint details live in [`docs/APIdetails.md`](docs/APIdetails.md).
+Script management lives on the same listener as the monitoring surfaces:
+`monitor.listen` (default `127.0.0.1:8766`), loopback only, no authentication.
+Requests need a loopback `Host` header and, for `POST`/`PUT`, `Content-Type: application/json`. Updates carry the revision you last read (`expected_revision`; `0`/omitted when creating) and fail with `409` if it is stale. The listener answers `GET /` with the routes it serves; endpoint details live in [`docs/APIdetails.md`](docs/APIdetails.md).
 
 ```sh
-curl -s localhost:8765/scripts
-curl -s -X POST localhost:8765/scripts -H 'Content-Type: application/json' \
-  -d '{"script":{"id":"ping","name":"ping","enabled":true,"source":"def on_group_text(message):\n    reply(message[\"channel\"], \"pong\")\n"}}'
-curl -s -X POST localhost:8765/scripts/ping/disable -H 'Content-Type: application/json' -d '{"expected_revision":1}'
+curl -s localhost:8766/scripts
+curl -s -X POST localhost:8766/scripts -H 'Content-Type: application/json' \
+  -d '{"script":{"id":"ping","name":"ping","enabled":true,"source":"def on_group_text(message):\n    reply(message[\"channel\"], \"pong\")\n}}'
+curl -s -X POST localhost:8766/scripts/ping/disable -H 'Content-Type: application/json' -d '{"expected_revision":1}'
 ```
 
 | Method and path | Purpose |
@@ -177,7 +183,7 @@ The mention responder (`heard alice in 2 hops, SNR 7.25 dB, RSSI -64 dBm, drift 
 
 ```sh
 jq -n --rawfile source docs/examples/echo.star '{script: {id: "echo", name: "echo", enabled: true, source: $source}}' \
-  | curl -s -X POST localhost:8765/scripts -H 'Content-Type: application/json' -d @-
+  | curl -s -X POST localhost:8766/scripts -H 'Content-Type: application/json' -d @-
 ```
 
 A database that already ran the former one-time migration keeps its `builtin.echo` script; it is an ordinary script you can edit or delete.
@@ -242,7 +248,7 @@ Things to know:
 - Passwords live in plain text in `kam.yml`, the same as explicit channel keys. The only secret outside `kam.yml` is each room's identity key, a file KAM generates in `rooms/` next to the database. Back it up with the database: if it is lost, the room gets a new address. `.gitignore` excludes it.
 - A post is stored before it is acknowledged, so an acknowledged post survives a restart or power loss. Posts are limited to 150 bytes, a client receives one push at a time, and each push costs roughly half a second of airtime at SF7 / 62.5 kHz, so a 32-post catch-up takes about 17 seconds per client.
 - KAM trusts the host clock. Run NTP or an RTC: if the clock steps back across a restart, clients ignore adverts and posts that are not newer than the last ones they stored, and nothing on KAM's side shows it.
-- Not yet implemented: status, telemetry and access-list requests (no reply), the over-the-air CLI, role changes and forced adverts through the Local Management API, and `mesh` changes without a restart.
+- Not yet implemented: status, telemetry and access-list requests (no reply), the over-the-air CLI, role changes and forced adverts over the local REST API, and `mesh` changes without a restart.
 
 ## Architecture TL;DR
 

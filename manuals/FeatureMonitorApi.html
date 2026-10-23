@@ -57,7 +57,7 @@
                 <p>An <strong>API</strong>, or application programming interface, lets one program ask another program for information or request a change. Phases 1-2 of KAM's backend API provide status, recent radio and room events, configured channels with message history, and read-only room summaries, clients and posts. Any local dashboard or command-line script can use the same API.</p>
                 <p>For example, KAMmon could ask, "Which packets arrived since my last request?" KAM would return a list. KAMmon would draw the chart and decide which of its signed-in web users may see the details.</p>
                 <p><strong>KAM does the radio work. KAMmon provides the web interface.</strong> KAM remains an open system: it starts, receives, stores messages and runs scripts without KAMmon. It does not register KAMmon as a client, check whether KAMmon is alive, or wait for it to consume events.</p>
-                <div class="info-box info-box-blue"><p><strong>Available now:</strong> port 8766, the bounded event ring, status and event reads, channel list/history, and room list/client/post reads. Modem controls and room-client removal are still planned. The existing script-management API remains on port 8765. Both listeners answer <code>GET /</code> with the routes they serve right now.</p></div>
+                <div class="info-box info-box-blue"><p><strong>Available now:</strong> one loopback listener on port 8766 serving the bounded event ring, status and event reads, channel list/history, room list/client/post reads, and script management (the old script API on port 8765 is retired; see <a href="../docs/FeatureUnifiedApi.md">FeatureUnifiedApi.md</a>). Modem controls and room-client removal are still planned. The listener answers <code>GET /</code> with the routes it serves right now.</p></div>
             </section>
 
             <section id="concepts">
@@ -87,7 +87,7 @@
                     <thead><tr><th>Area</th><th>Status</th><th>What is available</th></tr></thead>
                     <tbody>
                         <tr><td>Radio, channel storage and room service</td><td>Implemented</td><td>Existing KAM functionality, independent of KAMmon.</td></tr>
-                        <tr><td>Script management on 8765</td><td>Implemented</td><td>List, validate, create, update, enable, disable, recover and delete scripts.</td></tr>
+                        <tr><td>Script management on the same listener (8766)</td><td>Implemented</td><td>List, validate, create, update, enable, disable, recover and delete scripts.</td></tr>
                         <tr><td>Monitor listener on 8766</td><td>Phases 1-2 implemented</td><td>Status, RX/TX/room events, channel history and room reads; automated race tests pass. Real-radio verification is pending.</td></tr>
                         <tr><td>Channel and room history endpoints</td><td>Implemented</td><td>Configured channels and messages, room summaries, clients and retained posts.</td></tr>
                         <tr><td>REST modem control</td><td>Planned</td><td>Read diagnostics, preview changes, apply and save with recovery.</td></tr>
@@ -114,7 +114,7 @@
                 <table>
                     <thead><tr><th>Address</th><th>Purpose</th><th>Status</th></tr></thead>
                     <tbody>
-                        <tr><td><code>127.0.0.1:8765</code></td><td>Existing script API; planned dry-run additions also live here.</td><td>Script management implemented</td></tr>
+                        <tr><td><code>monitor.listen</code> (default <code>127.0.0.1:8766</code>)</td><td>The unified local REST API; script management shares the listener instead of the retired port 8765.</td><td>Implemented</td></tr>
                         <tr><td><code>127.0.0.1:8766</code></td><td>Status, events, channels, rooms; later room-client removal and modem control.</td><td>Phases 1-2 implemented</td></tr>
                     </tbody>
                 </table>
@@ -315,7 +315,7 @@ curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</cod
 
             <section id="scripts">
                 <h2>Script Testing</h2>
-                <p><strong>Starlark</strong> is the restricted scripting language KAM uses for automation. Existing script management remains on port 8765 with its current revision checks. The planned additions are in-memory last-run information and <code>POST /scripts/dry-run</code>.</p>
+                <p><strong>Starlark</strong> is the restricted scripting language KAM uses for automation. Script management shares the unified listener on port 8766 with the monitoring surfaces, keeping its current revision checks. The planned additions are in-memory last-run information and <code>POST /scripts/dry-run</code>.</p>
                 <p>A dry run compiles and runs supplied source against a <strong>fixture</strong>, a made-up input message. Calls to <code>reply(channel, text)</code> are captured as output instead of being transmitted. The test does not save the script, change its enabled state or freeze the live version.</p>
                 <table>
                     <thead><tr><th>Test limit</th><th>Meaning</th></tr></thead>
@@ -336,7 +336,7 @@ curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</cod
                 <ul>
                     <li><a href="../docs/APP_STRUCTURE.md">Application structure</a>: existing owners, storage and runtime flows.</li>
                     <li><a href="../docs/SYSTEM_DESIGN.md">System design</a>: existing goroutines, locking and shutdown.</li>
-                    <li><a href="../internal/automation/api.go">Existing script API source</a>: port 8765 and current route behavior.</li>
+                    <li><a href="../internal/api/scripts.go">Script routes on the unified listener</a>: the transport layer that serves them (replacing the old port-8765 handler).</li>
                     <li><a href="FeatureKissModem.html">KISS modem manual</a>: radio commands, echoes, diagnostics and link limitations.</li>
                     <li><a href="FeatureRoomServer.html">Room-server manual</a>: current password and radio-client role semantics.</li>
                 </ul>

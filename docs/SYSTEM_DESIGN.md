@@ -119,7 +119,7 @@ send.Sender  --> kiss.TxScheduler (legacy TxChan adapter, queued as group text)
 | Package | Role |
 |---|---|
 | `main` | Flag parse, slog setup, load `kam.yml`, build `Node`, block on SIGINT/SIGTERM. Also the short-lived `channel upsert` and `room show` commands. |
-| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*kiss.TxScheduler`, `*send.Sender`, the optional `*automation.Runtime` with its Local Management API server, and the optional `*room.Service` with its repository. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg, creates the scheduler, then (best effort) starts the rooms and the automation runtime. `Run` blocks until ctx cancelled, then shuts down in the order of §6. |
+| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*kiss.TxScheduler`, `*send.Sender`, the optional `*automation.Runtime` and the optional `*room.Service` with its repository. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg, creates the scheduler, then (best effort) starts the rooms and the automation runtime. `startMonitor` builds the unified local API handler from capability adapters and owns its HTTP server. `Run` blocks until ctx cancelled, then shuts down in the order of §6. |
 | `internal/config` | `LoadKamConfig` (YAML + normalize/validate), `BootstrapChannels` (load `#public` + enabled channels from the config into parser topic registry), `UpsertRuntimeChannelAndApply` (write a runtime channel back into the YAML file + apply live), `ResolveDBPath`. |
 | `internal/models` | Pure config + record structs. Validation lives here, including `MeshConfig`, `RoomConfig` and `KamConfig.ResolveRooms` (an invalid room is disabled, never fatal). |
 | `internal/mesh` | MeshCore wire primitives with no transport dependency: `Packet` parse/encode, `EncryptThenMAC`/`MACThenDecrypt`, `Identity` (Ed25519 + X25519 via `math/big` and `crypto/ecdh`), signed advert payloads, region keys and transport codes, ACK hashes. |
@@ -127,9 +127,10 @@ send.Sender  --> kiss.TxScheduler (legacy TxChan adapter, queued as group text)
 | `internal/kiss/parsers` | Per-payload-type parsers: `ParseAdvert` (Ed25519 verify), `ParseGroupText` (decrypt via channel secret), public-channel secret registry. |
 | `internal/kiss/send` | `Builder` constructs outbound group-text frames; `Sender` queues them on the transmit scheduler. |
 | `internal/room` | `Service`: logins and roles, posts, push sync, keep-alive, adverts, login rate limiting, identity files. One worker goroutine owns all room state. |
-| `internal/monitor` | Loopback status/events and read-only channel/room resources. Room state is copied through a worker request; the bounded event ring also receives room activity events. |
+| `internal/api` | The local REST API's transport only: routes, JSON decode with unknown-field rejection, wire shapes, error class → status mapping, loopback Host guard, 8-slot concurrency limit, 5 s deadline, panic recovery, and the `GET /` index. Imports nothing from this repository except `internal/models`; capabilities reach it through consumer-defined seams (`Scripts`, `EventsSource`, `ChannelReader`, `RoomReader`, the status function), implemented by adapters in `internal/node`. A guard test enforces the import rule. |
 | `internal/db` | SQLite handle + WAL. `Persistence` implements `kiss.Persistence`. `AdvertQueue` + `GroupTextQueue` = batched background writers. `AutomationRepository` stores Starlark scripts (`automation_scripts`) on its own single connection. `RoomRepository` stores `rooms`, `room_posts` and `room_clients` on its own single connection with `synchronous=FULL`. Channel config lives in YAML. |
-| `internal/automation` | `Runtime` loads, compiles, and runs operator-managed Starlark scripts for each group text on one bounded-queue worker; `reply(channel, text)` is the only host function. `NewAPI` is the loopback-only Local Management API. ECHO is the example script `docs/examples/echo.star`. See [FeatureStarlark.md](FeatureStarlark.md). |
+| `internal/events` | The bounded metadata-only event ring, copied into pages under a short lock; the radio and room paths record through `models.MonitorSink`. Nothing here touches HTTP, SQLite or the modem. |
+| `internal/automation` | `Runtime` loads, compiles, and runs operator-managed Starlark scripts for each group text on one bounded-queue worker; `reply(channel, text)` is the only host function. It applies `timeout_ms` defaults and exports its domain sentinels (`ErrScriptNotFound`, `ErrScriptConflict`, `ErrScriptNameTaken`) for the transport's adapters. ECHO is the example script `docs/examples/echo.star`. See [FeatureStarlark.md](FeatureStarlark.md). |
 
 > **Extensibility seam.** `Manager.SubscribeGroupText` is the integration point
 > for any new consumer: analytics aggregation, room-server fan-out, emergency
@@ -170,10 +171,11 @@ main goroutine
   |        db.OpenAutomationRepository
   |        automation.NewRuntime -> manager.SubscribeGroupText(runtime.Handle)
   |                              -> [automation worker goroutine]   (internal/automation)
-  |        automation.ServeLocalAPI -> [HTTP server goroutine on 127.0.0.1:8765]
+  |   |- node.startMonitor -> [local API server goroutine on 127.0.0.1:8766]  (internal/api)
   |
   `- n.Run(ctx):  <-ctx.Done()  (SIGINT/SIGTERM)
-       |- unsubscribe (group text, packets) + API Shutdown   (stop intake)
+       |- local API Shutdown (one server: monitoring and scripts)   (stop intake)
+       |- unsubscribe (group text, packets)
        |- runtime.Stop()    (cancel active script, drop queued events, join worker)
        |- rooms.Stop()      (join worker, flush client sessions); close room repository
        |- scheduler.Stop()  (discard queued packets, join goroutine)
@@ -197,10 +199,9 @@ main goroutine
 | 5 | advert `writerLoop` | `db.AdvertQueue` | `NewAdvertQueue`→`Stop` | recv `ch`, batch insert into SQLite |
 | 6 | group-text `writerLoop` | `db.GroupTextQueue` | `NewGroupTextQueue`→`Stop` | recv `ch`, batch insert into SQLite |
 | 7 | automation `worker` | `automation.Runtime` | `NewRuntime`→`Stop` | recv bounded `queue`, runs scripts sequentially, `reply` sends via `send.Sender` |
-| 7a | Local Management API server | `automation.ServeLocalAPI` | `ServeLocalAPI`→`Shutdown` | HTTP on `127.0.0.1:8765`; one short-lived goroutine per request |
+| 7a | Local API server | `node.startMonitor` / `api.Listen` | node startup→HTTP shutdown | loopback HTTP on `monitor.listen` (default 8766), with at most 8 admitted requests; bounded event pages, script management, SQLite channel/post reads, and worker-owned room snapshots |
 | 7b | tx scheduler | `kiss.TxScheduler` | `Start`→`Stop` | recv legacy `TxChan` frames, a timer, and `TxDone`/`TxAbandoned` modem events; sends one frame at a time to `Manager.txChan` |
 | 7c | room worker | `room.Service` | `Start`→`Stop` | recv a bounded packet queue (64) and a 50 ms tick; owns every room's state; writes `RoomRepository`, submits to the scheduler |
-| 7d | Monitor API server | `node.Node` / `monitor.Listen` | node startup→HTTP shutdown | loopback HTTP on port 8766, with at most 8 admitted requests; bounded event pages, SQLite channel/post reads, and worker-owned room snapshots |
 | 8 | (planned) analytics/metrics aggregator | future package | subscribe via `SubscribeGroupText` | same tap pattern as the automation runtime |
 | * | radio request | caller (e.g. `main`/`New`) | per `Get`/`Set` call | register waiter on `ResponseRegistry`, push `txChan`, block on resp |
 
@@ -480,11 +481,11 @@ Client                                 KAM room (ADV_TYPE_ROOM, default scope)
 
 `Node.Run` blocks on `<-ctx.Done()` (SIGINT/SIGTERM), then:
 
-1. Unsubscribe the group-text and packet handlers (stop intake), shut down the
-   Local Management API, then `automation.Runtime.Stop()` (cancel the active
-   script, drop queued events, join the worker, wait for in-flight API
-   mutations) and close the automation repository, all **before** the TX path
-   goes away.
+1. Shut down the local API (one HTTP server; it serves monitoring and script
+   management), then unsubscribe the group-text and packet handlers (stop
+   intake), then `automation.Runtime.Stop()` (cancel the active script, drop
+   queued events, join the worker, wait for in-flight mutations) and close the
+   automation repository, all **before** the TX path goes away.
 2. `room.Service.Stop()` joins the worker after a final flush of client
    sessions; then close the room repository.
 3. `TxScheduler.Stop()` discards queued packets and joins its goroutine.
@@ -573,7 +574,7 @@ As a room server, KAM now:
 - Keeps persisting every decrypted group-text channel in `group_texts` (a
   separate feature; channels are not mirrored into rooms).
 
-Still open: Local Management API endpoints for clients, roles, posts and
+Still open: local REST API endpoints for clients, roles, posts and
 forced adverts; a `ServerStats`-compatible status reply (which would let
 clients and other KAM nodes read this node's metrics); history and live-tail
 surfaces for operators; and re-broadcasting emergency/weather advisories via
@@ -603,7 +604,7 @@ architecture is shaped to allow**, not commitments:
    rollups. Aggregator goroutine taps `SubscribeGroupText` + queue
    `Metrics()`.
 2. **Room administration and history surfaces** — the room server is
-   implemented; Local Management API endpoints for clients, roles, posts and
+   implemented; local REST API endpoints for clients, roles, posts and
    forced adverts (plan phase 4) and a `group_texts` history/live-tail surface
    are not.
 3. **New payload-type parsers** — `internal/kiss/parsers/<type>.go` per type.

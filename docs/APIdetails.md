@@ -5,58 +5,58 @@ implemented endpoints, with their parameters and responses. Endpoints that are
 still planned live in [FeatureMonitorApi.md](FeatureMonitorApi.md) §7 and §10;
 they are not described here.
 
-KAM serves two small REST APIs, both loopback-only and without authentication:
+KAM serves one small REST API, loopback-only and without authentication, at
+`monitor.listen` (default `127.0.0.1:8766`). It hosts the monitoring surfaces
+(status, events, channels, rooms) and, on the same listener, Starlark script
+management. The separate script listener on port `8765` is retired; scripts live
+on the address above since the two APIs merged.
 
-| API | Address | What it manages |
-|---|---|---|
-| Script API (Local Management API) | `127.0.0.1:8765` | Starlark automation scripts |
-| Monitor API | `127.0.0.1:8766` | Status, events, channels, rooms |
-
-Quick check that they are up:
+Quick check that it is up:
 
 ```sh
-curl -s http://127.0.0.1:8765/scripts
 curl -s http://127.0.0.1:8766/v1/status
+curl -s http://127.0.0.1:8766/scripts
 ```
 
-The monitor listener can be turned off with `monitor.enabled: false` in
-`kam.yml`. The script API runs whenever automation started successfully; if the
-automation database cannot be opened, automation and its API stay off, and KAM
-logs the reason.
+`monitor.enabled: false` in `kam.yml` closes the listener and turns the event
+recorder off: nothing answers on the port, and scripts keep running but can no
+longer be managed or observed. If the automation database cannot be opened,
+automation stays off: the monitoring surfaces work, every script route answers
+`503 {"error":"automation is disabled"}`, and KAM logs the reason.
 
-## Rules both APIs share
+## Rules
 
 - **Loopback only.** The `Host` header must be `localhost` or a loopback IP.
   Anything else gets `403`. This is a DNS-rebinding guard, not a login.
 - **Errors are JSON.** Every error is `{"error": "message"}` with a suitable
   status code (`400`, `403`, `404`, `405`, `409`, `415`, `422`, `500`, `503`).
 - **Wrong method** on a known path returns `405` with an `Allow` header.
+- **JSON bodies.** `POST` and `PUT` need `Content-Type: application/json`
+  (otherwise `415`); request bodies with unknown JSON fields are rejected with
+  `400`.
+- **Optimistic locking.** Script changes carry an `expected_revision` and fail
+  with `409` when it is stale.
+- **Bounded listener.** At most 8 requests run at once (more get `503
+  {"error":"busy"}`), each request has a 5-second deadline (`503` with
+  `{"error":"request timed out"}` when exceeded).
 - **Times** are RFC 3339 UTC, usually with milliseconds. Script timestamps
   (`created_at`, `updated_at`) are Unix epoch seconds.
 - **No secrets.** No response contains a channel key or a room password.
 
-Monitor API specifics: at most 8 requests run at once (more get `503
-{"error":"busy"}`), each request has a 5-second deadline (`503` with
-`{"error":"request timed out"}` when exceeded).
-
-Script API specifics: `POST` and `PUT` need `Content-Type: application/json`
-(otherwise `415`); request bodies with unknown JSON fields are rejected with
-`400`; changes carry an `expected_revision` and fail with `409` when it is
-stale (optimistic locking).
-
 ## Discovery — GET /
 
-Both listeners answer `GET /` with the routes they serve, so a client can look
-up what is available without reading this document first:
+The listener answers `GET /` with the routes it serves, so a client can look up
+what is available without reading this document first:
 
 ```sh
 curl -s http://127.0.0.1:8766/
 ```
 
-Each entry shows `method`, `path` and `purpose`. The monitor index also carries
-`api_version` and `script_api`, a pointer to the other listener; the script
-index carries only its own routes. The example below is abridged; the live list
-always matches the endpoints documented here.
+Each entry shows `method`, `path` and `purpose`; the response also carries
+`api_version` and `docs`. Script routes are listed even when automation is off
+(their routes then answer `503`); channel routes appear when the database is
+open. The example below is abridged; the live list always matches the endpoints
+documented here.
 
 ```json
 {
@@ -66,12 +66,14 @@ always matches the endpoints documented here.
     {"method": "GET", "path": "/v1/status", "purpose": "one snapshot of the running node"},
     {"method": "GET", "path": "/v1/events", "purpose": "event ring; poll with after, epoch, limit"}
   ],
-  "script_api": "http://127.0.0.1:8765/",
   "docs": "docs/APIdetails.md"
 }
 ```
 
-## Script API — 127.0.0.1:8765
+## Scripts (Starlark automation)
+
+Script routes share the listener with the monitoring surfaces below and use the
+same rules. With the defaults they are at `127.0.0.1:8766`.
 
 ### The script object
 
@@ -149,13 +151,13 @@ fails.
 Example session:
 
 ```sh
-curl -s localhost:8765/scripts
-curl -s -X POST localhost:8765/scripts -H 'Content-Type: application/json' \
+curl -s localhost:8766/scripts
+curl -s -X POST localhost:8766/scripts -H 'Content-Type: application/json' \
   -d '{"script":{"id":"ping","name":"ping","enabled":true,"source":"def on_group_text(message):\n    reply(message[\"channel\"], \"pong\")\n"}}'
-curl -s -X POST localhost:8765/scripts/ping/disable -H 'Content-Type: application/json' -d '{"expected_revision":1}'
+curl -s -X POST localhost:8766/scripts/ping/disable -H 'Content-Type: application/json' -d '{"expected_revision":1}'
 ```
 
-## Monitor API — 127.0.0.1:8766
+## Monitoring — /v1
 
 All monitor routes live under `/v1`.
 
