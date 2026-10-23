@@ -51,7 +51,7 @@ Plain words for terms used below:
 - New endpoints. Modem control, room-client removal, script dry runs and run info stay where they are planned ([FeatureMonitorApi.md §7 and §10](FeatureMonitorApi.md)). This feature moves wiring, not features.
 - Authentication, TLS, CORS, WebSockets, or any change to the loopback-only posture (FeatureMonitorApi D12, kept).
 - A new configuration schema. `monitor.enabled`, `monitor.listen` and `monitor.event_ring` keep working exactly as today (§4.5, D2).
-- Any change to existing response shapes. Script JSON and monitor JSON stay byte-identical; the only wire change is dropping the `script_api` pointer from the index (§4.5, D12).
+- Any change to existing response shapes. Script JSON and monitor JSON stay byte-identical apart from the unifications §4.5 states once (rows 5, 6 and 8); no resource gains or loses a field.
 - Changes to automation behaviour itself: compilation, revisions, FROZEN/BROKEN handling, timeouts and Starlark scoping stay as implemented ([FeatureStarlark.md](FeatureStarlark.md)).
 - Anything reachable from Starlark scripts.
 - KAMmon-side changes. KAMmon is a separate project; the `script_api` index field it may read is handled in §9 R2.
@@ -95,7 +95,7 @@ The rule "the handler has a very strict responsibility and implements no KAM cap
 | Loopback Host guard, JSON Content-Type check for POST/PUT | Revision compare-and-set and name-uniqueness rules |
 | Body decode with unknown-field rejection, paging limit clamps | `timeout_ms` defaulting (moved here from the handler; D7) |
 | Transport policy: ≤ 8 concurrent requests, 5 s deadline, panic recovery | SQLite persistence and writer queues |
-| Error → status-code translation (`404`/`409`/`422`/`503` from capability sentinels) | Domain error definitions (`ErrScriptNotFound`, `ErrScriptConflict`, …; D8) |
+| Error → status-code translation (`404`/`409`/`422` from the seam's `ScriptError` classes, written by node's adapter from `automation.ErrScriptNotFound`, `ErrScriptConflict` (see D8)) | Domain error definitions (`ErrScriptNotFound`, `ErrScriptConflict`, …; D8) |
 | Wire shapes (JSON structs and tags) for every response | What the resource *is*: scripts, channels, rooms, events, counters |
 | The two endpoint contracts that are genuinely HTTP's: a `POST /scripts` create carries revision `0`, and `validate` changes nothing | Everything the response *means* |
 
@@ -105,13 +105,15 @@ The line, applied to today's code: the handler defaulting `timeout_ms` to 500 ([
 
 | Seam | Shape | Implementation | Wired in |
 |---|---|---|---|
-| Scripts | `api.Scripts` interface: `List`, `Get`, `Save`, `Delete`, `SetEnabled`, `Recover`, `Validate`, `MonitorStats` | Adapter in `internal/node` over `automation.Runtime` (maps `db.AutomationScript` ↔ `api.Script`; D6) | `node.New` |
+| Scripts | `api.Scripts` interface: `List`, `Get`, `Save`, `Delete`, `SetEnabled`, `Recover`, `Validate` | Adapter in `internal/node` over `automation.Runtime` (maps `db.AutomationScript` ↔ `api.Script`; D6) | `node.startMonitor` |
 | Status | `func() api.Status` (plain function, as today) | Existing status closure in `node.startMonitor` ([NODE]) | `node.startMonitor` |
 | Events | `api.EventsSource`: `Page` returns the wire shape (`EventsResponse`), `Stats` the ring snapshot | The `internal/events` ring behind a small field-copy adapter in `internal/node` (D5) | `node.startMonitor` |
 | Channels | `api.ChannelReader` (exists as `monitor.ChannelReader`, moved unchanged) | Existing `monitorChannels` adapter in [NODE] | `node.startMonitor` |
 | Rooms | `api.RoomReader` (exists as `monitor.RoomReader`, moved unchanged) | Existing `monitorRooms` adapter in [NODE] | `node.startMonitor` |
 
-The ring's seam exists for the dependency rule, not for polymorphism (D5): it has no alternative implementation worth one, the monitor tests exercise the real ring through the same adapter shape node uses, and [FeatureMonitorApi.md API-EV-10](FeatureMonitorApi.md) concerns its locking, not its interface. The plan first handed the concrete `*events.Ring` to the handler, but that parameter forces an `internal/events` import into `internal/api` — the guard test (UA-T-1/D10) failed on its first run and the seam won by the exact mechanism this feature built to enforce its own rule. Scripts are the opposite kind of seam: the automation runtime is the first of several possible script engines, and its current concrete coupling is exactly the drift §5.2 describes.
+The ring's seam exists for the dependency rule, not for polymorphism (D5): it has no alternative implementation worth one, the monitor tests exercise the real ring through the same adapter shape node uses, and [FeatureMonitorApi.md API-EV-10](FeatureMonitorApi.md) concerns its locking, not its interface. The plan first handed the concrete `*events.Ring` to the handler, but that parameter forces an `internal/events` import into `internal/api` — the guard test (UA-T-1/D10) failed on its first run and the seam won by the exact mechanism this feature built to enforce its own rule. The same logic settled how script errors cross the seam (D8's refinement): the handler can never apply `errors.Is` against `automation.ErrScriptNotFound` without importing `automation`, so the `Scripts` errors are classified at the seam — node's adapter wraps the capability's sentinels into `*api.ScriptError` (class + the capability's own message), and the handler maps class → status. `MonitorStats` stays on the runtime rather than the seam: the status snapshot is composition-root code, which may name the capability it composes.
+
+Scripts were the original motivator for seams: the automation runtime is the first of several possible script engines, and its current concrete coupling is exactly the drift §5.2 describes.
 
 Today's `API-M` reaches into ring internals (`len(ring.events)` for the capacity in `/v1/status`). After extraction that becomes `ring.Stats()` — same value, no cross-package field access.
 
@@ -149,6 +151,7 @@ One `http.Server` on `monitor.listen` (default `127.0.0.1:8766`), built where `m
 | 5 | The loopback guard, JSON Content-Type check and unknown-field rejection become rules of the whole listener; the `403`/`415` message texts unify on one wording each. | D11 |
 | 6 | `GET /` returns one combined endpoint list; the `script_api` pointer field is dropped. | D12 |
 | 7 | Shutdown ordering simplifies to one HTTP shutdown; [SYSTEM_DESIGN.md §6](SYSTEM_DESIGN.md) wording changes accordingly. | follows from D1 |
+| 8 | One response writer for the whole listener: script endpoint bodies drop the trailing newline the old writer appended, gain `Cache-Control: no-store`, and are capped at 8 MB like every other response. | D11 (one middleware stack, one writer) |
 
 ## 5. Assessment: do the design principles promote this separation of concerns?
 
@@ -199,17 +202,17 @@ The guard test checks imports, not semantics; a capability could still leak deci
 | UA-T-1 | `internal/api` imports only the standard library and `internal/models`; no capability package imports `internal/api`. | MUST |
 | UA-T-2 | The import rule is enforced by a guard test that runs in `go test ./...`. | MUST |
 | UA-T-3 | Loopback Host guard, JSON Content-Type on POST/PUT, unknown-field rejection, 8-slot limit, 5 s deadline and panic recovery wrap the whole surface. | MUST |
-| UA-T-4 | Error mapping consumes capability sentinels (`automation.*`, events, readers) — never `db.*` sentinels directly. | MUST |
+| UA-T-4 | Error mapping consumes the seam's own error classes — for scripts, `ScriptError` classes written by node's adapter from capability sentinels; transport never names `db.*` or `automation.*` sentinels directly. | MUST |
 | UA-T-5 | `GET /` serves the single combined index (`api`, `api_version`, `endpoints`, `docs`); no `script_api` field. Endpoints of a disabled capability stay listed and answer `503`. | MUST |
 | UA-T-6 | No response contains a channel key or room password. | MUST |
 | **Capabilities** | | |
 | UA-C-1 | Scripts are served through the `api.Scripts` seam; the handler holds no `*automation.Runtime`, no `db` types. | MUST |
 | UA-C-2 | `timeout_ms` defaulting (and equivalent `validate` defaulting) is applied by `automation`, not by the handler. | MUST |
-| UA-C-3 | `automation` exports its domain sentinels (not-found, conflict, invalid) and the handler maps them to `404`/`409`/`422`/`503`. | MUST |
+| UA-C-3 | `automation` exports its domain sentinels (not-found, conflict, name-taken; every unclassified failure is invalid) and the handler maps the seam's `ScriptError` classes to `404`/`409`/`422`. | MUST |
 | UA-C-4 | The ring lives in `internal/events`, imports only `models`, keeps the short-lock copy/page behaviour and its tests, and exposes `Page`/`Stats`; `kiss` and `room` record through `models.MonitorSink` unchanged. | MUST |
 | UA-C-5 | The status seam stays a plain function; channel/room reader seams move unchanged. | MUST |
 | **Behaviour** | | |
-| UA-B-1 | Script JSON responses are byte-identical to today's (`PAI` script object); monitor responses are byte-identical; index changes are limited to §4.5 row 6. | MUST |
+| UA-B-1 | Script JSON responses are byte-identical to today's (`PAI` script object) modulo the one-writer consequences of §4.5 row 8; monitor responses are byte-identical; index changes are limited to §4.5 row 6. | MUST |
 | UA-B-2 | When automation is off, script routes answer `503 {"error":"automation is disabled"}`. | MUST |
 | UA-B-3 | Empty lists are arrays, never `null`, on every route (FeatureMonitorApi D13). | MUST |
 | **Documentation (ships in the same change, GL-7)** | | |
@@ -255,7 +258,7 @@ Recorded 2026-10-23.
 | D5 | Where does the ring live? | Stay in the merged package; `internal/events` with `models.MonitorEvent`; read-only interface in `api` | **`internal/events`; the handler sees `api.EventsSource`, node wraps the ring.** The original hand-off — concrete `*events.Ring` passed to `api` — failed this plan's own guard test on its first run: the parameter required an `internal/events` import into `internal/api` (UA-T-1). The seam won by the mechanism D10 built to enforce the rule; `events.Page` sheds its JSON tags because wire shapes live in `api` |
 | D6 | How does the handler get scripts? | `api` imports `db` directly; consumer interface + node adapter; `automation` returns `api` own DTOs | **Consumer interface `api.Scripts` + adapter in `node`.** First two options violate UA-T-1 or invert ownership; the adapter cost (~30 lines, same pattern as channels/rooms) is the price of the boundary |
 | D7 | Who applies `timeout_ms` defaults? | Handler (today); capability | **Capability.** It is resource policy, not HTTP shape; `db.DefaultAutomationTimeout` already names the value one level below the handler today |
-| D8 | Which sentinels does the handler map? | `db.Err*` directly (today); automation-owned domain sentinels | **Automation owned.** The handler should not know which storage engine backs a capability; aliasing in `automation` keeps `db` out of `api` without inventing new semantics |
+| D8 | Which sentinels does the handler map? | `db.Err*` directly (today); automation-owned domain sentinels | **Automation owned, classified at the seam.** The handler should not know which storage engine backs a capability — and it cannot name `automation`'s sentinels either, because UA-T-1 forbids the import (the same guard-test logic that settled D5). So `automation` aliases its sentinels (`ErrScriptNotFound`, `ErrScriptConflict`, `ErrScriptNameTaken`), node's adapter wraps them into `*api.ScriptError` (class plus the capability's own message text, so the wire keeps today's bodies), and the handler maps class → status |
 | D9 | Script routes when automation is off? | Omit routes; serve `503` | **Serve `503 {"error":"automation is disabled"}`.** Matches rooms' existing disabled pattern, keeps port discovery stable, and the index stays truthful |
 | D10 (alias for UA-T-2) | Enforce the dependency rule how? | Convention only; guard test; external linter dependency | **Guard test.** Convention-only is what failed (§5.2.1); a linter dependency fails the philosophy bar for what a 40-line stdlib test does |
 | D11 | One middleware stack or per-route? | Stack the monitors globally; keep per-API stacks | **Global.** Two middleware stacks were the mechanism of drift. Consequences stated once in §4.5 rows 4-5; script operations are SQLite-plus-compile, far inside the 5 s deadline |

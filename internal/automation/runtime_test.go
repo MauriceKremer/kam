@@ -2,11 +2,8 @@ package automation
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -192,187 +189,6 @@ func TestRuntimeStopCancelsInvocationAndDropsQueuedEvents(t *testing.T) {
 	}
 }
 
-func TestAPIRequiresRevisionForMutation(t *testing.T) {
-	repository := openTestRepository(t)
-	runtime, err := NewRuntime(context.Background(), repository, &testSender{calls: make(chan [2]string, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.Stop()
-	handler := NewAPI(runtime)
-	body := `{"script":{"id":"test","name":"test","source":"def on_group_text(message):\n    pass\n","enabled":true,"timeout_ms":500}}`
-	response := serveAPI(handler, http.MethodPost, "/scripts", body)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("create status: got %d, body %s", response.Code, response.Body.String())
-	}
-	var script db.AutomationScript
-	if err := json.Unmarshal(response.Body.Bytes(), &script); err != nil {
-		t.Fatal(err)
-	}
-	if script.Revision != 1 {
-		t.Fatalf("initial revision: got %d, want 1", script.Revision)
-	}
-	update := `{"expected_revision":1,"script":{"name":"test","source":"not valid Starlark !!!","enabled":true,"timeout_ms":500}}`
-	response = serveAPI(handler, http.MethodPut, "/scripts/test", update)
-	if response.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("invalid update status: got %d, want %d", response.Code, http.StatusUnprocessableEntity)
-	}
-	unchanged, err := repository.Get(context.Background(), "test")
-	if err != nil || unchanged.Revision != 1 || unchanged.Source != script.Source {
-		t.Fatalf("invalid update changed persisted script: %+v, error %v", unchanged, err)
-	}
-	response = serveAPI(handler, http.MethodPost, "/scripts/test/enable", `{"expected_revision":9}`)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("stale revision status: got %d, want %d; body %s", response.Code, http.StatusConflict, response.Body.String())
-	}
-}
-
-func TestAPIRecoveryClearsPersistedError(t *testing.T) {
-	repository := openTestRepository(t)
-	script, err := repository.Save(context.Background(), db.AutomationScript{
-		ID: "recoverable", Name: "recoverable", Source: "def on_group_text(message):\n    pass\n", Enabled: true, TimeoutMS: 500, RuntimeStatus: "READY",
-	}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.SetStatus(context.Background(), script.ID, "FROZEN", "timed out"); err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := NewRuntime(context.Background(), repository, &testSender{calls: make(chan [2]string, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.Stop()
-	response := serveAPI(NewAPI(runtime), http.MethodPost, "/scripts/recoverable/recover", `{"expected_revision":1}`)
-	if response.Code != http.StatusOK {
-		t.Fatalf("recover status: got %d, body %s", response.Code, response.Body.String())
-	}
-	recovered, err := repository.Get(context.Background(), script.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if recovered.RuntimeStatus != "READY" || recovered.LastError != "" || recovered.Revision != 2 {
-		t.Fatalf("unexpected recovered state: %+v", recovered)
-	}
-}
-
-func TestAPIEnableAndDisableKeepFrozenStatus(t *testing.T) {
-	repository := openTestRepository(t)
-	script, err := repository.Save(context.Background(), db.AutomationScript{
-		ID: "frozen", Name: "frozen", Source: "def on_group_text(message):\n    pass\n", Enabled: true, TimeoutMS: 500, RuntimeStatus: "READY",
-	}, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.SetStatus(context.Background(), script.ID, "FROZEN", "timed out"); err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := NewRuntime(context.Background(), repository, &testSender{calls: make(chan [2]string, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.Stop()
-	handler := NewAPI(runtime)
-	for revision, action := range []string{"disable", "enable"} {
-		body := `{"expected_revision":` + strconv.Itoa(revision+1) + `}`
-		if response := serveAPI(handler, http.MethodPost, "/scripts/frozen/"+action, body); response.Code != http.StatusOK {
-			t.Fatalf("%s status: got %d, body %s", action, response.Code, response.Body.String())
-		}
-		current, err := repository.Get(context.Background(), script.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if current.RuntimeStatus != "FROZEN" || current.LastError != "timed out" {
-			t.Fatalf("%s must not recover a frozen script: %+v", action, current)
-		}
-	}
-}
-
-func TestAPICreateDefaultsTimeoutAndListsEmptyArray(t *testing.T) {
-	repository := openTestRepository(t)
-	runtime, err := NewRuntime(context.Background(), repository, &testSender{calls: make(chan [2]string, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.Stop()
-	handler := NewAPI(runtime)
-	if response := serveAPI(handler, http.MethodGet, "/scripts", ""); strings.TrimSpace(response.Body.String()) != "[]" {
-		t.Fatalf("empty list body: got %q, want []", response.Body.String())
-	}
-	body := `{"script":{"id":"defaults","name":"defaults","source":"def on_group_text(message):\n    pass\n"}}`
-	response := serveAPI(handler, http.MethodPost, "/scripts", body)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("create status: got %d, body %s", response.Code, response.Body.String())
-	}
-	created, err := repository.Get(context.Background(), "defaults")
-	if err != nil || created.TimeoutMS != 500 {
-		t.Fatalf("default timeout: got %+v, error %v", created, err)
-	}
-}
-
-func TestAPIReportsNameConflictAndMissingScripts(t *testing.T) {
-	repository := openTestRepository(t)
-	runtime, err := NewRuntime(context.Background(), repository, &testSender{calls: make(chan [2]string, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.Stop()
-	handler := NewAPI(runtime)
-	create := func(id, name string) int {
-		body := `{"script":{"id":"` + id + `","name":"` + name + `","source":"def on_group_text(message):\n    pass\n"}}`
-		return serveAPI(handler, http.MethodPost, "/scripts", body).Code
-	}
-	if code := create("one", "shared"); code != http.StatusCreated {
-		t.Fatalf("first create: got %d", code)
-	}
-	if code := create("two", "shared"); code != http.StatusConflict {
-		t.Fatalf("duplicate name: got %d, want %d", code, http.StatusConflict)
-	}
-	if code := create("one", "other"); code != http.StatusConflict {
-		t.Fatalf("duplicate id: got %d, want %d", code, http.StatusConflict)
-	}
-	if code := serveAPI(handler, http.MethodDelete, "/scripts/ghost?revision=1", "").Code; code != http.StatusNotFound {
-		t.Fatalf("delete missing: got %d, want %d", code, http.StatusNotFound)
-	}
-	if code := serveAPI(handler, http.MethodDelete, "/scripts/one?revision=7", "").Code; code != http.StatusConflict {
-		t.Fatalf("delete stale revision: got %d, want %d", code, http.StatusConflict)
-	}
-	if code := serveAPI(handler, http.MethodPut, "/scripts/ghost", `{"expected_revision":1,"script":{"name":"ghost","source":"def on_group_text(message):\n    pass\n","timeout_ms":500}}`).Code; code != http.StatusNotFound {
-		t.Fatalf("update missing: got %d, want %d", code, http.StatusNotFound)
-	}
-}
-
-func TestAPIRejectsBrowserDrivenRequests(t *testing.T) {
-	repository := openTestRepository(t)
-	runtime, err := NewRuntime(context.Background(), repository, &testSender{calls: make(chan [2]string, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.Stop()
-	handler := NewAPI(runtime)
-	body := `{"script":{"id":"csrf","name":"csrf","source":"def on_group_text(message):\n    pass\n"}}`
-
-	rebound := httptest.NewRequest(http.MethodGet, "/scripts", nil)
-	rebound.Host = "attacker.example:8765"
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, rebound)
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("foreign Host: got %d, want %d", response.Code, http.StatusForbidden)
-	}
-
-	form := httptest.NewRequest(http.MethodPost, "/scripts", strings.NewReader(body))
-	form.Host = "127.0.0.1:8765"
-	form.Header.Set("Content-Type", "text/plain")
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, form)
-	if response.Code != http.StatusUnsupportedMediaType {
-		t.Fatalf("text/plain body: got %d, want %d", response.Code, http.StatusUnsupportedMediaType)
-	}
-	if _, err := repository.Get(context.Background(), "csrf"); err == nil {
-		t.Fatal("rejected request created a script")
-	}
-}
-
 type funcSender func(context.Context, string, string) error
 
 func (f funcSender) Send(ctx context.Context, channel, body string) error {
@@ -458,7 +274,7 @@ func TestValidateRejectsInvalidAndForbiddenSources(t *testing.T) {
 		{"unknown module", "def on_group_text(message):\n    os.system(\"id\")\n", 500, false},
 		{"load statement", "load(\"other.star\", \"helper\")\ndef on_group_text(message):\n    pass\n", 500, false},
 		{"init exceeds timeout", "VALUE = len([i for i in range(1000000000)])\ndef on_group_text(message):\n    pass\n", 20, false},
-		{"non-positive timeout", "def on_group_text(message):\n    pass\n", 0, false},
+		{"non-positive timeout", "def on_group_text(message):\n    pass\n", -1, false},
 	}
 	for _, test := range cases {
 		err := runtime.Validate(context.Background(), "validate", test.source, test.timeout)
@@ -615,10 +431,6 @@ func TestFailedPersistenceKeepsPreviousProgramActive(t *testing.T) {
 	if got := waitForReplies(t, sender, 1); got[0] != "old" {
 		t.Fatalf("unpersisted source became active: %v", got)
 	}
-	response := serveAPI(NewAPI(runtime), http.MethodPost, "/scripts", `{"script":{"id":"fresh","name":"fresh","source":"def on_group_text(message):\n    pass\n"}}`)
-	if response.Code < 400 {
-		t.Fatalf("persistence failure reported as success: %d", response.Code)
-	}
 }
 
 func TestBrokenScriptRecoversOnlyWithValidSource(t *testing.T) {
@@ -629,24 +441,19 @@ func TestBrokenScriptRecoversOnlyWithValidSource(t *testing.T) {
 	}
 	sender := &recordingSender{}
 	runtime := newTestRuntime(t, repository, sender)
-	handler := NewAPI(runtime)
 
-	if response := serveAPI(handler, http.MethodPost, "/scripts/fix/recover", `{"expected_revision":1}`); response.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("recover with invalid source: got %d, want %d", response.Code, http.StatusUnprocessableEntity)
+	if _, err := runtime.Recover(context.Background(), script.ID, 0, script.Revision); err == nil {
+		t.Fatal("recover accepted an uncompilable source")
 	}
 	if still, _ := repository.Get(context.Background(), "fix"); still.RuntimeStatus != "BROKEN" || still.LastError != "syntax error" || still.Revision != script.Revision {
 		t.Fatalf("failed recovery changed the script: %+v", still)
 	}
-
-	update, err := json.Marshal(map[string]any{"expected_revision": script.Revision, "script": map[string]any{"name": "fix", "source": replySource("fixed"), "enabled": true, "timeout_ms": 500}})
+	saved, err := runtime.Save(context.Background(), db.AutomationScript{ID: "fix", Name: "fix", Source: replySource("fixed"), Enabled: true, TimeoutMS: 500}, script.Revision)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response := serveAPI(handler, http.MethodPut, "/scripts/fix", string(update)); response.Code != http.StatusOK {
-		t.Fatalf("fixing source: got %d, body %s", response.Code, response.Body.String())
-	}
-	if fixed, _ := repository.Get(context.Background(), "fix"); fixed.RuntimeStatus != "READY" || fixed.LastError != "" {
-		t.Fatalf("source update must return the script to READY: %+v", fixed)
+	if saved.RuntimeStatus != "READY" || saved.LastError != "" {
+		t.Fatalf("source update must return the script to READY: %+v", saved)
 	}
 	runtime.Handle(parsers.GroupTextMessage{ChannelName: "public", Body: "1"})
 	if got := waitForReplies(t, sender, 1); got[0] != "fixed" {
@@ -758,119 +565,129 @@ func TestHandlePassesHopStationsToScripts(t *testing.T) {
 	}
 }
 
-func TestAPIUpdatesUseOptimisticConcurrency(t *testing.T) {
+func TestRuntimeSaveRejectsInvalidSourceWithoutPersisting(t *testing.T) {
+	repository := openTestRepository(t)
+	runtime := newTestRuntime(t, repository, &recordingSender{})
+	original, err := runtime.Save(context.Background(), db.AutomationScript{ID: "test", Name: "test", Source: "def on_group_text(message):\n    pass\n", Enabled: true, TimeoutMS: 500}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Save(context.Background(), db.AutomationScript{ID: "test", Name: "test", Source: "not valid Starlark !!!", Enabled: true, TimeoutMS: 500}, original.Revision); err == nil {
+		t.Fatal("invalid source accepted")
+	}
+	unchanged, err := repository.Get(context.Background(), "test")
+	if err != nil || unchanged.Revision != original.Revision || unchanged.Source != original.Source {
+		t.Fatalf("rejected write changed the script: %+v, error %v", unchanged, err)
+	}
+}
+
+func TestRuntimeRecoverReturnsFrozenScriptToReady(t *testing.T) {
+	repository := openTestRepository(t)
+	script, err := repository.Save(context.Background(), db.AutomationScript{
+		ID: "recoverable", Name: "recoverable", Source: "def on_group_text(message):\n    pass\n", Enabled: true, TimeoutMS: 500, RuntimeStatus: "READY",
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetStatus(context.Background(), script.ID, "FROZEN", "timed out"); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newTestRuntime(t, repository, &recordingSender{})
+	recovered, err := runtime.Recover(context.Background(), script.ID, 0, script.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.RuntimeStatus != "READY" || recovered.LastError != "" || recovered.Revision != 2 {
+		t.Fatalf("unexpected recovered state: %+v", recovered)
+	}
+}
+
+func TestRuntimeSetEnabledKeepsFrozenStatus(t *testing.T) {
+	repository := openTestRepository(t)
+	script, err := repository.Save(context.Background(), db.AutomationScript{
+		ID: "frozen", Name: "frozen", Source: "def on_group_text(message):\n    pass\n", Enabled: true, TimeoutMS: 500, RuntimeStatus: "READY",
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetStatus(context.Background(), script.ID, "FROZEN", "timed out"); err != nil {
+		t.Fatal(err)
+	}
+	runtime := newTestRuntime(t, repository, &recordingSender{})
+	for revision, want := range map[int64]bool{script.Revision: false, script.Revision + 1: true} {
+		saved, err := runtime.SetEnabled(context.Background(), script.ID, want, revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.Enabled != want {
+			t.Fatalf("enabled state: got %v, want %v", saved.Enabled, want)
+		}
+	}
+	current, err := repository.Get(context.Background(), script.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.RuntimeStatus != "FROZEN" || current.LastError != "timed out" || !current.Enabled {
+		t.Fatalf("enable/disable must not recover a frozen script: %+v", current)
+	}
+}
+
+func TestRuntimeAppliesDefaultTimeout(t *testing.T) {
+	repository := openTestRepository(t)
+	runtime := newTestRuntime(t, repository, &recordingSender{})
+	saved, err := runtime.Save(context.Background(), db.AutomationScript{ID: "defaults", Name: "defaults", Source: "def on_group_text(message):\n    pass\n", Enabled: true}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.TimeoutMS != int64(db.DefaultAutomationTimeout/time.Millisecond) {
+		t.Fatalf("create without timeout_ms: got %d, want the capability default", saved.TimeoutMS)
+	}
+	if err := runtime.Validate(context.Background(), "validate", "def on_group_text(message):\n    pass\n", 0); err != nil {
+		t.Fatalf("validation without a timeout must apply the default: %v", err)
+	}
+}
+
+func TestRuntimeMutationErrorsCarryCapabilitySentinels(t *testing.T) {
+	repository := openTestRepository(t)
+	runtime := newTestRuntime(t, repository, &recordingSender{})
+	script := func(id, name string) db.AutomationScript {
+		return db.AutomationScript{ID: id, Name: name, Source: "def on_group_text(message):\n    pass\n", Enabled: true, TimeoutMS: 500}
+	}
+	if _, err := runtime.Save(context.Background(), script("one", "shared"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Save(context.Background(), script("two", "shared"), 0); !errors.Is(err, ErrScriptNameTaken) {
+		t.Fatalf("duplicate name: got %v", err)
+	}
+	if _, err := runtime.Save(context.Background(), script("one", "other"), 0); !errors.Is(err, ErrScriptConflict) {
+		t.Fatalf("create over existing id: got %v", err)
+	}
+	if err := runtime.Delete(context.Background(), "ghost", 1); !errors.Is(err, ErrScriptNotFound) {
+		t.Fatalf("delete missing: got %v", err)
+	}
+	if err := runtime.Delete(context.Background(), "one", 7); !errors.Is(err, ErrScriptConflict) {
+		t.Fatalf("delete stale revision: got %v", err)
+	}
+	if _, err := runtime.Save(context.Background(), script("ghost", "ghost"), 1); !errors.Is(err, ErrScriptNotFound) {
+		t.Fatalf("update of missing script: got %v", err)
+	}
+}
+
+func TestRuntimeUpdatesUseOptimisticConcurrency(t *testing.T) {
 	repository := openTestRepository(t)
 	script := saveScript(t, repository, "cas", replySource("v1"))
-	handler := NewAPI(newTestRuntime(t, repository, &recordingSender{}))
-	update := func(revision int64, text string) int {
-		body, _ := json.Marshal(map[string]any{"expected_revision": revision, "script": map[string]any{"name": "cas", "source": replySource(text), "enabled": true, "timeout_ms": 500}})
-		return serveAPI(handler, http.MethodPut, "/scripts/cas", string(body)).Code
+	runtime := newTestRuntime(t, repository, &recordingSender{})
+	saved, err := runtime.Save(context.Background(), db.AutomationScript{ID: "cas", Name: "cas", Source: replySource("v2"), Enabled: true, TimeoutMS: 500}, script.Revision)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if code := update(script.Revision, "v2"); code != http.StatusOK {
-		t.Fatalf("first update: got %d", code)
+	if saved.Revision != script.Revision+1 {
+		t.Fatalf("revision: got %d, want %d", saved.Revision, script.Revision+1)
 	}
-	if code := update(script.Revision, "v3"); code != http.StatusConflict {
-		t.Fatalf("update with stale revision: got %d, want %d", code, http.StatusConflict)
+	if _, err := runtime.Save(context.Background(), db.AutomationScript{ID: "cas", Name: "cas", Source: replySource("v3"), Enabled: true, TimeoutMS: 500}, script.Revision); !errors.Is(err, ErrScriptConflict) {
+		t.Fatalf("stale revision: got %v", err)
 	}
-	if current, _ := repository.Get(context.Background(), "cas"); current.Source != replySource("v2") || current.Revision != script.Revision+1 {
+	if current, _ := repository.Get(context.Background(), "cas"); current.Source != replySource("v2") || current.Revision != saved.Revision {
 		t.Fatalf("stale update changed the script: %+v", current)
 	}
-}
-
-func TestAPIServesOverRealTransportOnlyToLocalClients(t *testing.T) {
-	runtime := newTestRuntime(t, openTestRepository(t), &recordingSender{})
-	server := httptest.NewServer(NewAPI(runtime))
-	defer server.Close()
-	body := `{"script":{"id":"wire","name":"wire","source":"def on_group_text(message):\n    pass\n"}}`
-	response, err := server.Client().Post(server.URL+"/scripts", "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusCreated {
-		t.Fatalf("create over HTTP: got %d", response.StatusCode)
-	}
-	request, err := http.NewRequest(http.MethodGet, server.URL+"/scripts", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Host = "attacker.example"
-	response, err = server.Client().Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("rebound Host over HTTP: got %d, want %d", response.StatusCode, http.StatusForbidden)
-	}
-}
-
-func TestLocalAPIRefusesNonLoopbackBinding(t *testing.T) {
-	listener, err := listenLoopback("127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	listener.Close()
-	for _, address := range []string{"0.0.0.0:0", "[::]:0"} {
-		if listener, err := listenLoopback(address); err == nil {
-			listener.Close()
-			t.Errorf("%s: wildcard binding accepted", address)
-		}
-	}
-	if !isLoopbackHost(LocalAPIAddress) {
-		t.Errorf("default address %s is not loopback", LocalAPIAddress)
-	}
-	for host, want := range map[string]bool{
-		"127.0.0.1:8765": true, "localhost:8765": true, "LOCALHOST": true, "[::1]:8765": true, "127.0.0.1": true,
-		"attacker.example:8765": false, "192.168.1.5:8765": false, "0.0.0.0:8765": false, "127.0.0.1.attacker.example": false, "": false,
-	} {
-		if got := isLoopbackHost(host); got != want {
-			t.Errorf("isLoopbackHost(%q): got %v, want %v", host, got, want)
-		}
-	}
-}
-
-// serveAPI issues a request as a local client would: loopback Host and a JSON body.
-func TestAPIIndexListsRoutes(t *testing.T) {
-	runtime := newTestRuntime(t, openTestRepository(t), &recordingSender{})
-	response := serveAPI(NewAPI(runtime), http.MethodGet, "/", "")
-	if response.Code != http.StatusOK {
-		t.Fatalf("index status: got %d, body %s", response.Code, response.Body.String())
-	}
-	var index struct {
-		API       string        `json:"api"`
-		Endpoints []apiEndpoint `json:"endpoints"`
-		Docs      string        `json:"docs"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &index); err != nil {
-		t.Fatal(err)
-	}
-	if index.API != "kam" || index.Docs == "" || len(index.Endpoints) != 9 {
-		t.Fatalf("index: %+v", index)
-	}
-	seen := map[string]bool{}
-	for _, item := range index.Endpoints {
-		if item.Purpose == "" {
-			t.Fatalf("endpoint without purpose: %+v", item)
-		}
-		seen[item.Method+" "+item.Path] = true
-	}
-	for _, want := range []string{
-		"GET /scripts", "POST /scripts", "GET /scripts/{id}", "PUT /scripts/{id}",
-		"DELETE /scripts/{id}?revision=N", "POST /scripts/validate",
-		"POST /scripts/{id}/enable", "POST /scripts/{id}/disable", "POST /scripts/{id}/recover",
-	} {
-		if !seen[want] {
-			t.Fatalf("index missing %s: %+v", want, seen)
-		}
-	}
-}
-
-func serveAPI(handler http.Handler, method, target, body string) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(method, target, strings.NewReader(body))
-	request.Host = "127.0.0.1:8765"
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
 }

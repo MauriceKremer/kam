@@ -1,19 +1,21 @@
 // Package api is KAM's local REST layer: routes, JSON decoding and shape
-// validation, transport policy (loopback Host guard, at most eight concurrent
-// requests, a five-second deadline, panic recovery), the wire shapes of every
-// response, error-to-status translation, and the self-describing GET / index.
+// validation, transport policy (loopback Host guard, JSON bodies, at most
+// eight concurrent requests, a five-second deadline, panic recovery), the
+// wire shapes of every response, error-to-status translation, and the
+// self-describing GET / index.
 //
 // The package is transport only: it implements no KAM capability and imports
 // nothing from this repository except internal/models (shared data types).
-// Capabilities are handed in through the seams below — an events source, a
-// status function, and the channel/room readers — and are composed in
-// internal/node. See docs/FeatureUnifiedApi.md.
+// Capabilities are handed in through the seams below — a scripts source, an
+// events source, a status function, and the channel/room readers — and are
+// composed in internal/node. See docs/FeatureUnifiedApi.md.
 package api
 
 import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -195,15 +197,16 @@ type Status struct {
 }
 
 func NewHandler(ring EventsSource, status func() Status) http.Handler {
-	return NewHandlerWithResources(ring, status, nil, nil)
+	return NewHandlerWithResources(ring, status, nil, nil, nil)
 }
 
 func NewHandlerWithChannels(ring EventsSource, status func() Status, channels ChannelReader) http.Handler {
-	return NewHandlerWithResources(ring, status, channels, nil)
+	return NewHandlerWithResources(ring, status, nil, channels, nil)
 }
 
-func NewHandlerWithResources(ring EventsSource, status func() Status, channels ChannelReader, rooms RoomReader) http.Handler {
+func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomReader) http.Handler {
 	mux := http.NewServeMux()
+	registerScriptRoutes(mux, scripts)
 	mux.HandleFunc("GET /v1/events", func(w http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query()
 		after, err := strconv.ParseUint(query.Get("after"), 10, 64)
@@ -388,15 +391,21 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, channels C
 			apiEndpoint{Method: "GET", Path: "/v1/rooms", Purpose: "rooms with counters; 503 when rooms are disabled"},
 			apiEndpoint{Method: "GET", Path: "/v1/rooms/{id}/clients", Purpose: "remembered clients of one room"},
 			apiEndpoint{Method: "GET", Path: "/v1/rooms/{id}/posts", Purpose: "retained posts, newest first"},
+			apiEndpoint{Method: "GET", Path: "/scripts", Purpose: "list all scripts"},
+			apiEndpoint{Method: "POST", Path: "/scripts", Purpose: "create a script (expected_revision 0)"},
+			apiEndpoint{Method: "GET", Path: "/scripts/{id}", Purpose: "read one script"},
+			apiEndpoint{Method: "PUT", Path: "/scripts/{id}", Purpose: "update a script (expected_revision)"},
+			apiEndpoint{Method: "DELETE", Path: "/scripts/{id}?revision=N", Purpose: "delete a script"},
+			apiEndpoint{Method: "POST", Path: "/scripts/validate", Purpose: "compile source without saving"},
+			apiEndpoint{Method: "POST", Path: "/scripts/{id}/enable", Purpose: "enable the desired state (expected_revision)"},
+			apiEndpoint{Method: "POST", Path: "/scripts/{id}/disable", Purpose: "disable the desired state (expected_revision)"},
+			apiEndpoint{Method: "POST", Path: "/scripts/{id}/recover", Purpose: "recompile a FROZEN or BROKEN script"},
 		)
 		writeJSON(w, 200, map[string]any{
 			"api":         "kam",
 			"api_version": 1,
 			"endpoints":   endpoints,
-			// The Local Management API address is fixed (automation.LocalAPIAddress);
-			// a literal here avoids a dependency from the API package onto automation.
-			"script_api": "http://127.0.0.1:8765/",
-			"docs":       "docs/APIdetails.md",
+			"docs":        "docs/APIdetails.md",
 		})
 	}
 	mux.HandleFunc("GET /{$}", indexHandler)
@@ -405,18 +414,19 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, channels C
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		defer func() {
 			if recover() != nil {
-				slog.Error("monitor handler panicked")
+				slog.Error("local API handler panicked")
 				writeJSON(w, 500, map[string]string{"error": "internal error"})
 			}
 		}()
-		host := request.Host
-		if address, _, err := net.SplitHostPort(host); err == nil {
-			host = address
-		}
-		address, err := netip.ParseAddr(strings.Trim(host, "[]"))
-		if !strings.EqualFold(host, "localhost") && (err != nil || !address.IsLoopback()) {
-			writeJSON(w, 403, map[string]string{"error": "monitor API serves loopback hosts only"})
+		if !loopbackHost(request.Host) {
+			writeJSON(w, 403, map[string]string{"error": "local API serves loopback hosts only"})
 			return
+		}
+		if request.Method == http.MethodPost || request.Method == http.MethodPut {
+			if mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
+				writeJSON(w, 415, map[string]string{"error": "Content-Type must be application/json"})
+				return
+			}
 		}
 		select {
 		case slots <- struct{}{}:
@@ -427,6 +437,22 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, channels C
 		}
 		timed.ServeHTTP(w, request)
 	})
+}
+
+// loopbackHost reports whether the request's Host header names the local
+// machine; it stops web pages from driving the API via DNS rebinding or
+// cross-site forms.
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	return err == nil && address.IsLoopback()
 }
 
 func roomExists(ctx context.Context, reader RoomReader, id string) (bool, error) {
@@ -467,7 +493,7 @@ func Listen(address string, handler http.Handler) (*http.Server, error) {
 	server := &http.Server{Addr: listener.Addr().String(), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			slog.Error("monitor listener stopped", "error", err)
+			slog.Error("local API listener stopped", "error", err)
 		}
 	}()
 	return server, nil

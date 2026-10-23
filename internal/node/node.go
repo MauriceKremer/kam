@@ -42,9 +42,7 @@ type Node struct {
 	rooms                *room.Service
 	roomRepository       *db.RoomRepository
 	unsubscribePackets   func()
-	apiServer            *http.Server
 	monitorServer        *http.Server
-	apiCancel            context.CancelFunc
 	unsubscribe          func()
 	configPath           string
 	radioSettings        models.RadioConfig
@@ -126,8 +124,6 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 
 	var automationRuntime *automation.Runtime
 	var automationRepository *db.AutomationRepository
-	var apiServer *http.Server
-	var apiCancel context.CancelFunc
 	var unsubscribe func()
 	if repository, err := db.OpenAutomationRepository(dbPath); err != nil {
 		slog.Error("[Node] automation disabled: open automation repository failed", "error", err)
@@ -138,15 +134,6 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 		automationRuntime = runtime
 		automationRepository = repository
 		unsubscribe = manager.SubscribeGroupText(runtime.Handle)
-		apiCtx, cancel := context.WithCancel(context.Background())
-		if server, err := automation.ServeLocalAPI(apiCtx, runtime); err != nil {
-			slog.Error("[Node] Local Management API unavailable", "address", automation.LocalAPIAddress, "error", err)
-			cancel()
-		} else {
-			apiServer = server
-			apiCancel = cancel
-			slog.Info("[Node] Local Management API listening", "address", automation.LocalAPIAddress)
-		}
 		slog.Info("[Node] Starlark automation runtime enabled")
 	}
 
@@ -160,8 +147,6 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 		rooms:                roomService,
 		roomRepository:       roomRepository,
 		unsubscribePackets:   unsubscribePackets,
-		apiServer:            apiServer,
-		apiCancel:            apiCancel,
 		unsubscribe:          unsubscribe,
 		configPath:           configPath,
 		radioSettings:        cfg.Radio,
@@ -375,17 +360,6 @@ func (n *Node) Run(ctx context.Context) error {
 	}
 	if n.unsubscribePackets != nil {
 		n.unsubscribePackets()
-	}
-	if n.apiServer != nil {
-		shutdownCtx, cancelAPI := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := n.apiServer.Shutdown(shutdownCtx); err != nil {
-			slog.Error("[Node] Local Management API shutdown failed", "error", err)
-			_ = n.apiServer.Close()
-		}
-		cancelAPI()
-	}
-	if n.apiCancel != nil {
-		n.apiCancel()
 	}
 	if n.automation != nil {
 		n.automation.Stop()

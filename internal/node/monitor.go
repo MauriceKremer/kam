@@ -153,7 +153,7 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 		return
 	}
 	if err := settings.Validate(); err != nil {
-		slog.Error("monitor disabled", "error", err)
+		slog.Error("local API disabled", "error", err)
 		return
 	}
 	ring := events.NewRing(settings.EventRing)
@@ -196,6 +196,10 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 		}
 		return value
 	}
+	var scriptSource api.Scripts
+	if n.automation != nil {
+		scriptSource = apiScripts{runtime: n.automation}
+	}
 	var channelReader api.ChannelReader
 	if persistence != nil {
 		channelReader = apiChannels{persistence: persistence, configured: cfg.Channels}
@@ -204,11 +208,11 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 	if n.rooms != nil && n.roomRepository != nil && persistence != nil {
 		roomReader = apiRooms{service: n.rooms, repository: n.roomRepository, persistence: persistence}
 	}
-	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, channelReader, roomReader))
+	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomReader))
 	if err != nil {
-		slog.Error("monitor listener unavailable", "address", settings.Listen, "error", err)
+		slog.Error("local API listener unavailable", "address", settings.Listen, "error", err)
 		return
 	}
 	n.monitorServer = server
-	slog.Info("monitor API listening", "address", settings.Listen)
+	slog.Info("local API listening", "address", settings.Listen)
 }

@@ -22,6 +22,18 @@ const defaultReplyTimeout = 500 * time.Millisecond
 
 var errScriptTimeout = errors.New("script execution timed out")
 
+// defaultTimeoutMS is the timeout_ms a script defines or validates without
+// its own; the capability applies it, not the handler (D7).
+const defaultTimeoutMS = int64(db.DefaultAutomationTimeout / time.Millisecond)
+
+// Script domain sentinels, aliased from the storage layer so callers classify
+// failures by what they mean and never name the storage engine (D8).
+var (
+	ErrScriptNotFound  = db.ErrAutomationNotFound
+	ErrScriptConflict  = db.ErrAutomationConflict
+	ErrScriptNameTaken = db.ErrAutomationNameTaken
+)
+
 type Sender interface {
 	Send(context.Context, string, string) error
 }
@@ -271,11 +283,18 @@ func (r *Runtime) Stop() {
 	r.mutationMu.Unlock()
 }
 
+func (r *Runtime) List(ctx context.Context) ([]db.AutomationScript, error) {
+	return r.repository.List(ctx)
+}
+
 func (r *Runtime) Get(ctx context.Context, id string) (db.AutomationScript, error) {
 	return r.repository.Get(ctx, id)
 }
 
 func (r *Runtime) Validate(ctx context.Context, id, source string, timeoutMS int64) error {
+	if timeoutMS == 0 {
+		timeoutMS = defaultTimeoutMS
+	}
 	compileCtx, cancel := context.WithCancel(ctx)
 	stopRuntimeCancel := context.AfterFunc(r.ctx, cancel)
 	defer func() {
@@ -287,6 +306,9 @@ func (r *Runtime) Validate(ctx context.Context, id, source string, timeoutMS int
 }
 
 func (r *Runtime) Save(ctx context.Context, definition db.AutomationScript, expectedRevision int64) (db.AutomationScript, error) {
+	if definition.TimeoutMS == 0 {
+		definition.TimeoutMS = defaultTimeoutMS
+	}
 	definition.RuntimeStatus = "READY"
 	definition.LastError = ""
 	compileCtx, cancel := context.WithCancel(ctx)

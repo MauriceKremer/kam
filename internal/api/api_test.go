@@ -97,7 +97,7 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
 		}
-		if body.API != "kam" || body.APIVersion != 1 || body.ScriptAPI == "" || body.Docs == "" {
+		if body.API != "kam" || body.APIVersion != 1 || body.ScriptAPI != "" || body.Docs == "" {
 			t.Fatalf("index header: %+v", body)
 		}
 		return body.Endpoints
@@ -115,7 +115,11 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 	}
 
 	base := paths(readIndex(NewHandler(newRingSource(4), func() Status { return Status{} })))
-	for _, want := range []string{"GET /v1/status", "GET /v1/events", "GET /v1/rooms", "GET /v1/rooms/{id}/clients", "GET /v1/rooms/{id}/posts"} {
+	for _, want := range []string{
+		"GET /v1/status", "GET /v1/events", "GET /v1/rooms", "GET /v1/rooms/{id}/clients", "GET /v1/rooms/{id}/posts",
+		"GET /scripts", "POST /scripts", "GET /scripts/{id}", "PUT /scripts/{id}", "DELETE /scripts/{id}?revision=N",
+		"POST /scripts/validate", "POST /scripts/{id}/enable", "POST /scripts/{id}/disable", "POST /scripts/{id}/recover",
+	} {
 		if !base[want] {
 			t.Fatalf("index missing %s: %+v", want, base)
 		}
@@ -124,7 +128,7 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 		t.Fatalf("index lists channels without a channel reader: %+v", base)
 	}
 
-	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, &testChannelReader{}, &testRoomReader{})))
+	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomReader{})))
 	for _, want := range []string{"GET /v1/channels", "GET /v1/channels/{name}/messages"} {
 		if !full[want] {
 			t.Fatalf("index missing %s: %+v", want, full)
@@ -208,7 +212,7 @@ func TestRoomReadEndpoints(t *testing.T) {
 		clients: []RoomClient{},
 		posts:   []RoomPost{{ID: 7, Body: "hello"}},
 	}
-	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, reader)
+	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader)
 	request := func(path string, code int) string {
 		t.Helper()
 		response := httptest.NewRecorder()
