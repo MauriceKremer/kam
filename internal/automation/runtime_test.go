@@ -614,13 +614,17 @@ func TestRuntimeSetEnabledKeepsFrozenStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := newTestRuntime(t, repository, &recordingSender{})
-	for revision, want := range map[int64]bool{script.Revision: false, script.Revision + 1: true} {
-		saved, err := runtime.SetEnabled(context.Background(), script.ID, want, revision)
+	// Map iteration order is random; the disable (bumping the revision) must run before the enable that expects it.
+	for _, step := range []struct {
+		revision int64
+		enabled  bool
+	}{{script.Revision, false}, {script.Revision + 1, true}} {
+		saved, err := runtime.SetEnabled(context.Background(), script.ID, step.enabled, step.revision)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if saved.Enabled != want {
-			t.Fatalf("enabled state: got %v, want %v", saved.Enabled, want)
+		if saved.Enabled != step.enabled {
+			t.Fatalf("enabled state: got %v, want %v", saved.Enabled, step.enabled)
 		}
 	}
 	current, err := repository.Get(context.Background(), script.ID)
