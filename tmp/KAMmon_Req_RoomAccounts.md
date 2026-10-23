@@ -3,7 +3,7 @@
 **Historical draft:** Superseded by [KAMmon RoomAccounts requirements](../../kammon/docs/requirements/RoomAccounts.md). Existing MeshCore room roles remain read-only; the pinned-role proposal below is withdrawn.
 
 **Status:** Requirements only. Nothing is built.
-**Scope:** Maintaining who is an admin, a contributor or a viewer in each room. This is a local-administrator page. Design: [KAMmon_Design.md](KAMmon_Design.md). KAM side: [docs/FeatureMonitorApi.md](../docs/FeatureMonitorApi.md) §7.3 and §7.4.
+**Scope:** Maintaining who is an admin, a contributor or a viewer in each room. This is a local-administrator page. Design: [KAMmon_Design.md](KAMmon_Design.md). KAM side: [docs/FeatureKamApi.md](../docs/FeatureKamApi.md) §7.3 and §7.4.
 
 ## 1. Summary
 

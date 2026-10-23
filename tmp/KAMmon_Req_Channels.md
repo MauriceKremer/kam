@@ -1,7 +1,7 @@
 # KAMmon Requirements: Channels Page
 
 **Status:** Requirements only. Nothing is built.
-**Scope:** Monitoring the channels KAM is configured to decode: how active each one is, and what was said on it. Design: [KAMmon_Design.md](KAMmon_Design.md) §4.2 (master-detail). KAM side: [docs/FeatureMonitorApi.md](../docs/FeatureMonitorApi.md) §7.2.
+**Scope:** Monitoring the channels KAM is configured to decode: how active each one is, and what was said on it. Design: [KAMmon_Design.md](KAMmon_Design.md) §4.2 (master-detail). KAM side: [docs/FeatureKamApi.md](../docs/FeatureKamApi.md) §7.2.
 
 ## 1. Summary
 

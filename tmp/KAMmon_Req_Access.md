@@ -100,7 +100,7 @@ Anything marked "No" is not rendered and its routes answer `403`.
 
 ## 5. What KAMmon needs from KAM
 
-Nothing for authentication. KAM must keep its listener loopback-only and unauthenticated (`API-F-1`, `API-F-12` in [docs/FeatureMonitorApi.md](../docs/FeatureMonitorApi.md)). KAM returns full data for every request; KAMmon decides what to show (`MON-AX-14`).
+Nothing for authentication. KAM must keep its listener loopback-only and unauthenticated (`API-F-1`, `API-F-12` in [docs/FeatureKamApi.md](../docs/FeatureKamApi.md)). KAM returns full data for every request; KAMmon decides what to show (`MON-AX-14`).
 
 ## 6. Configuration
 

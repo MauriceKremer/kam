@@ -3,7 +3,7 @@
 **Historical draft:** Superseded by [KAMmon Automations requirements](../../kammon/docs/requirements/Automations.md). Dry runs are now bounded independently of live-script timeout settings.
 
 **Status:** Requirements only. Nothing is built.
-**Scope:** Creating, testing, saving and managing the Starlark scripts that KAM runs when it hears a channel message. Design: [KAMmon_Design.md](KAMmon_Design.md) §4.2 (master-detail). KAM side: [docs/FeatureMonitorApi.md](../docs/FeatureMonitorApi.md) §7.6. Language and runtime: [docs/FeatureStarlark.md](../docs/FeatureStarlark.md).
+**Scope:** Creating, testing, saving and managing the Starlark scripts that KAM runs when it hears a channel message. Design: [KAMmon_Design.md](KAMmon_Design.md) §4.2 (master-detail). KAM side: [docs/FeatureKamApi.md](../docs/FeatureKamApi.md) §7.6. Language and runtime: [docs/FeatureStarlark.md](../docs/FeatureStarlark.md).
 
 ## 1. Summary
 

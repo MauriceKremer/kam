@@ -3,7 +3,7 @@
 **Historical draft:** Superseded by [KAMmon DataStore requirements](../../kammon/docs/requirements/DataStore.md). Use `next_after`, not the ring head `last_seq`, to continue event pagination.
 
 **Status:** Requirements only. Nothing is built.
-**Scope:** How KAMmon keeps the data it shows, so that its pages never depend on KAM's API speed or on SQLite. Design context: [KAMmon_Design.md](KAMmon_Design.md). KAM side: [docs/FeatureMonitorApi.md](../docs/FeatureMonitorApi.md) (`API-EV-*`, `API-ST-1`).
+**Scope:** How KAMmon keeps the data it shows, so that its pages never depend on KAM's API speed or on SQLite. Design context: [KAMmon_Design.md](KAMmon_Design.md). KAM side: [docs/FeatureKamApi.md](../docs/FeatureKamApi.md) (`API-EV-*`, `API-ST-1`).
 
 ## 1. Summary
 

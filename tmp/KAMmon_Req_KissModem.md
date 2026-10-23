@@ -3,7 +3,7 @@
 **Historical draft:** Superseded by [KAMmon KissModem requirements](../../kammon/docs/requirements/KissModem.md). Signal reporting is now status-only and always enabled; failed modem changes attempt restoration.
 
 **Status:** Requirements only. Nothing is built.
-**Scope:** Seeing the state of the KISS modem, running read-only diagnostic commands, and changing the radio settings. Design: [KAMmon_Design.md](KAMmon_Design.md) §4.2 (form plus snapshot). KAM side: [docs/FeatureMonitorApi.md](../docs/FeatureMonitorApi.md) §7.5. Protocol and firmware behaviour: [docs/FeatureKissModem.md](../docs/FeatureKissModem.md) and [manuals/FeatureKissModem.html](../manuals/FeatureKissModem.html).
+**Scope:** Seeing the state of the KISS modem, running read-only diagnostic commands, and changing the radio settings. Design: [KAMmon_Design.md](KAMmon_Design.md) §4.2 (form plus snapshot). KAM side: [docs/FeatureKamApi.md](../docs/FeatureKamApi.md) §7.5. Protocol and firmware behaviour: [docs/FeatureKissModem.md](../docs/FeatureKissModem.md) and [manuals/FeatureKissModem.html](../manuals/FeatureKissModem.html).
 
 ## 1. Summary
 

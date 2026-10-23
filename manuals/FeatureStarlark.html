@@ -50,7 +50,7 @@
             <a href="FeatureStarlark.html" aria-current="page">Starlark Automations</a>
             <a href="FeatureKissModem.html" class="block text-sm text-slate-600 hover:text-blue-600 transition">KISS Modem</a>
             <a href="FeatureRoomServer.html" class="block text-sm text-slate-600 hover:text-blue-600 transition">Room Server</a>
-            <a href="FeatureMonitorApi.html">Backend API</a>
+            <a href="FeatureKamApi.html">KAM API</a>
         </nav>
         </details>
         </details>
@@ -246,7 +246,7 @@ def on_group_text(message):
             <!-- Management -->
             <section id="management">
                 <h2>Management via the Local Management API</h2>
-                <p>Scripts are managed over HTTP at <code class="text-blue-600">127.0.0.1:8766</code> (the same loopback listener as the monitoring API; the default is configurable with <code>monitor.listen</code> in <code>kam.yml</code>). The API is reachable only from the KAM machine and has <strong>no authentication</strong>: anyone who can log in to that machine can change scripts.</p>
+                <p>Scripts are managed over HTTP at <code class="text-blue-600">127.0.0.1:8766</code> (the same loopback listener as the read-only data surfaces; the default is configurable with <code>monitor.listen</code> in <code>kam.yml</code>). The API is reachable only from the KAM machine and has <strong>no authentication</strong>: anyone who can log in to that machine can change scripts.</p>
 
                 <h3>Rules for every request</h3>
                 <ul>
@@ -321,7 +321,7 @@ curl -s -X POST localhost:8766/scripts/ping/recover -H 'Content-Type: applicatio
                         <tr><td><code>403</code> / <code>415</code></td><td>Non-loopback <code>Host</code> header / missing <code>Content-Type: application/json</code>.</td></tr>
                         <tr><td><code>409</code></td><td>Stale revision, id already exists, or name already used by another script. Re-read the script and retry.</td></tr>
                         <tr><td><code>422</code></td><td>The source did not compile, lacks <code>on_group_text</code>, calls an undefined name, or <code>timeout_ms</code> is missing or not positive.</td></tr>
-                        <tr><td>Cannot connect to the API</td><td>The listener is off (<code>monitor.enabled: false</code> takes it down together with the monitoring API), the port is taken by another program (the log says <code>local API listener unavailable</code>), or automation was disabled because its database setup failed — monitoring still works then, and the script routes answer "automation is disabled".</td></tr>
+                        <tr><td>Cannot connect to the API</td><td>The listener is off (<code>monitor.enabled: false</code> takes the whole API down), the port is taken by another program (the log says <code>local API listener unavailable</code>), or automation was disabled because its database setup failed — the read-only data surfaces still work then, and the script routes answer "automation is disabled".</td></tr>
                     </tbody>
                 </table>
             </section>

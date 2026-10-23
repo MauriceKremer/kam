@@ -13,7 +13,7 @@ KAM serves two REST APIs today:
 | Local Management (script) API | [internal/automation/api.go](../internal/automation/api.go) | `127.0.0.1:8765` (fixed constant) | `/scripts` CRUD, `validate`, `enable`/`disable`/`recover` |
 | Monitor API | [internal/monitor/api.go](../internal/monitor/api.go) | `127.0.0.1:8766` (`monitor.listen`) | `/v1/status`, `/v1/events`, `/v1/channels*`, `/v1/rooms*` |
 
-They are two `http.Server`s with two goroutine rows in [SYSTEM_DESIGN.md §2](SYSTEM_DESIGN.md) (7a and 7d), two shutdown paths in [Node.Run](../internal/node/node.go), two `GET /` indexes, two loopback guards with different `403` texts, and two `writeJSON` helpers. The split was decided in [FeatureMonitorApi.md](FeatureMonitorApi.md) D4; the cost of keeping it is now visible in that code.
+They are two `http.Server`s with two goroutine rows in [SYSTEM_DESIGN.md §2](SYSTEM_DESIGN.md) (7a and 7d), two shutdown paths in [Node.Run](../internal/node/node.go), two `GET /` indexes, two loopback guards with different `403` texts, and two `writeJSON` helpers. The split was decided in [FeatureKamApi.md](FeatureKamApi.md) D4; the cost of keeping it is now visible in that code.
 
 **Governing rule of this feature** (from the design discussion of 2026-10-23): the API handler handles requests and hands the processing to internal capabilities. The handler has a very strict responsibility and implements no KAM capability itself. It decides nothing about KAM's behaviour; it parses, validates shape, applies transport policy, and translates between HTTP and capability calls.
 
@@ -39,7 +39,7 @@ Plain words for terms used below:
 
 - GL-1. One loopback listener serves the whole REST surface; one port, one config block, one shutdown path, one goroutine row.
 - GL-2. `internal/api` implements no KAM capability and imports nothing KAM-specific except `internal/models` (shared data types). The rule is checkable by a guard test (§4.1, UA-T-2).
-- GL-3. Every operation the handler performs goes through a seam; every write reaches the part of KAM that already owns that data, carrying [FeatureMonitorApi.md GL-3](FeatureMonitorApi.md) forward unchanged.
+- GL-3. Every operation the handler performs goes through a seam; every write reaches the part of KAM that already owns that data, carrying [FeatureKamApi.md GL-3](FeatureKamApi.md) forward unchanged.
 - GL-4. A capability that is off shows the same pattern everywhere: script routes answer `503 {"error":"automation is disabled"}` exactly as room routes answer `503 {"error":"rooms are disabled"}` today.
 - GL-5. The event ring keeps its short-lock copying and no-HTTP-under-the-lock guarantee; the radio and room paths keep recording through `models.MonitorSink` unchanged.
 - GL-6. No response ever contains a channel key or room password (both APIs' existing rule, kept).
@@ -48,8 +48,8 @@ Plain words for terms used below:
 
 **Non-goals**
 
-- New endpoints. Modem control, room-client removal, script dry runs and run info stay where they are planned ([FeatureMonitorApi.md §7 and §10](FeatureMonitorApi.md)). This feature moves wiring, not features.
-- Authentication, TLS, CORS, WebSockets, or any change to the loopback-only posture (FeatureMonitorApi D12, kept).
+- New endpoints. Modem control, room-client removal, script dry runs and run info stay where they are planned ([FeatureKamApi.md §7 and §10](FeatureKamApi.md)). This feature moves wiring, not features.
+- Authentication, TLS, CORS, WebSockets, or any change to the loopback-only posture (FeatureKamApi D12, kept).
 - A new configuration schema. `monitor.enabled`, `monitor.listen` and `monitor.event_ring` keep working exactly as today (§4.5, D2).
 - Any change to existing response shapes. Script JSON and monitor JSON stay byte-identical apart from the unifications §4.5 states once (rows 5, 6 and 8); no resource gains or loses a field.
 - Changes to automation behaviour itself: compilation, revisions, FROZEN/BROKEN handling, timeouts and Starlark scoping stay as implemented ([FeatureStarlark.md](FeatureStarlark.md)).
@@ -73,7 +73,7 @@ Sources are KAM's own code and docs; this feature has no external protocol surfa
 | `SD` | [docs/SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) | Goroutine inventory rows 7a/7d (§2), shutdown ordering (§6) |
 | `PAI` | [docs/APIdetails.md](APIdetails.md) | The API reference that becomes the single-API reference |
 | `RDM` | [README.md](../README.md) | Operator-facing API sections with 8765/8766 examples |
-| `FMA` | [docs/FeatureMonitorApi.md](FeatureMonitorApi.md) | D4 (two listeners), D12 (default on), D11/D13 (envelopes), planned endpoints |
+| `FMA` | [docs/FeatureKamApi.md](FeatureKamApi.md) | D4 (two listeners), D12 (default on), D11/D13 (envelopes), planned endpoints |
 | `FST` | [docs/FeatureStarlark.md](FeatureStarlark.md) | The script API's described address and rules |
 | `FKM` | [docs/FeatureKissModem.md](FeatureKissModem.md) | §7.1 D8: the "shared mux" note this feature resolves |
 
@@ -111,7 +111,7 @@ The line, applied to today's code: the handler defaulting `timeout_ms` to 500 ([
 | Channels | `api.ChannelReader` (exists as `monitor.ChannelReader`, moved unchanged) | Existing `monitorChannels` adapter in [NODE] | `node.startMonitor` |
 | Rooms | `api.RoomReader` (exists as `monitor.RoomReader`, moved unchanged) | Existing `monitorRooms` adapter in [NODE] | `node.startMonitor` |
 
-The ring's seam exists for the dependency rule, not for polymorphism (D5): it has no alternative implementation worth one, the monitor tests exercise the real ring through the same adapter shape node uses, and [FeatureMonitorApi.md API-EV-10](FeatureMonitorApi.md) concerns its locking, not its interface. The plan first handed the concrete `*events.Ring` to the handler, but that parameter forces an `internal/events` import into `internal/api` — the guard test (UA-T-1/D10) failed on its first run and the seam won by the exact mechanism this feature built to enforce its own rule. The same logic settled how script errors cross the seam (D8's refinement): the handler can never apply `errors.Is` against `automation.ErrScriptNotFound` without importing `automation`, so the `Scripts` errors are classified at the seam — node's adapter wraps the capability's sentinels into `*api.ScriptError` (class + the capability's own message), and the handler maps class → status. `MonitorStats` stays on the runtime rather than the seam: the status snapshot is composition-root code, which may name the capability it composes.
+The ring's seam exists for the dependency rule, not for polymorphism (D5): it has no alternative implementation worth one, the monitor tests exercise the real ring through the same adapter shape node uses, and [FeatureKamApi.md API-EV-10](FeatureKamApi.md) concerns its locking, not its interface. The plan first handed the concrete `*events.Ring` to the handler, but that parameter forces an `internal/events` import into `internal/api` — the guard test (UA-T-1/D10) failed on its first run and the seam won by the exact mechanism this feature built to enforce its own rule. The same logic settled how script errors cross the seam (D8's refinement): the handler can never apply `errors.Is` against `automation.ErrScriptNotFound` without importing `automation`, so the `Scripts` errors are classified at the seam — node's adapter wraps the capability's sentinels into `*api.ScriptError` (class + the capability's own message), and the handler maps class → status. `MonitorStats` stays on the runtime rather than the seam: the status snapshot is composition-root code, which may name the capability it composes.
 
 Scripts were the original motivator for seams: the automation runtime is the first of several possible script engines, and its current concrete coupling is exactly the drift §5.2 describes.
 
@@ -160,7 +160,7 @@ This section answers the question this plan was written against: are the separat
 ### 5.1 What already promotes the separation
 
 - [APP_STRUCTURE.md](APP_STRUCTURE.md) states, for the monitor: "A small `models.MonitorSink` interface separates transport from HTTP handling" and "No monitor handler opens the modem or accesses worker-owned room maps directly" ([APS] Lifecycle and Data Ownership).
-- [FeatureMonitorApi.md](FeatureMonitorApi.md) made the owner rules goals: GL-3 ("Every write goes through the part of KAM that already owns that data") and GL-7 ("The API describes KAM's own things … No field exists only to suit one client").
+- [FeatureKamApi.md](FeatureKamApi.md) made the owner rules goals: GL-3 ("Every write goes through the part of KAM that already owns that data") and GL-7 ("The API describes KAM's own things … No field exists only to suit one client").
 - The consumer-side interface pattern is proven in-repo: `ChannelReader`/`RoomReader` defined by the handler package, implemented by adapters in `node`, tested with fakes ([API-M-T]).
 - [AGENTS.md](AGENTS.md) forces documentation and code to move together; `models` exists precisely as the shared, dependency-free data-type layer.
 - [FeatureKissModem.md §7.1 D8](FeatureKissModem.md) already knew what was missing and said so: "A later `GET /radio/status` on the Local Management API needs a shared mux so it does not depend on the automation runtime."
@@ -172,7 +172,7 @@ Honest findings from reading the code, not opinions:
 1. **The script API drifted, and nothing caught it.** `NewAPI(runtime *Runtime)` takes the concrete runtime, imports `db` for its sentinels and row type, and applies capability policy in the handler (timeout defaulting). No test, rule or review gate failed when this landed; the boundary was crossed by accretion.
 2. **The documentation teaches the wrong home.** [APP_STRUCTURE.md](APP_STRUCTURE.md) still lists "serves the loopback Local Management API" as an `internal/automation` responsibility ([APS]). A rule that says "the handler is transport" cannot be promoted by the same docs that assign an API to a runtime package. Corrected in UA-D-3.
 3. **Enforcement was goodwill.** The separation holds in `monitor` because it was designed with interfaces from day one, not because anything prevents the next handler from taking a concrete dependency. Absent a mechanism, the next feature drifts the same way automation did.
-4. **Two-of-everything hid the cost.** Two indexes, two guards, two `writeJSON` helpers, two goroutine rows and two shutdown paths made the split feel cheap piecemeal; no single piece was broken enough to force convergence. The tax now visible: clients need two base URLs (recorded verbatim in FeatureMonitorApi's D4 note).
+4. **Two-of-everything hid the cost.** Two indexes, two guards, two `writeJSON` helpers, two goroutine rows and two shutdown paths made the split feel cheap piecemeal; no single piece was broken enough to force convergence. The tax now visible: clients need two base URLs (recorded verbatim in FeatureKamApi's D4 note).
 5. **One handler isn't even its package's only responsibility.** `internal/monitor` mixes transport with a stateful capability (the ring). The principle "the handler implements no capability" contradicts the package's actual content — which is why §4.4 extracts the ring rather than renaming the package.
 
 **Verdict:** the principles promote the separation *where they are written and enforced* (`monitor`), and fail to promote it where they are neither (`automation`). Written intent alone does not survive accretion; checkability is the missing ingredient, not more philosophy.
@@ -214,14 +214,14 @@ The guard test checks imports, not semantics; a capability could still leak deci
 | **Behaviour** | | |
 | UA-B-1 | Script JSON responses are byte-identical to today's (`PAI` script object) modulo the one-writer consequences of §4.5 row 8; monitor responses are byte-identical; index changes are limited to §4.5 row 6. | MUST |
 | UA-B-2 | When automation is off, script routes answer `503 {"error":"automation is disabled"}`. | MUST |
-| UA-B-3 | Empty lists are arrays, never `null`, on every route (FeatureMonitorApi D13). | MUST |
+| UA-B-3 | Empty lists are arrays, never `null`, on every route (FeatureKamApi D13). | MUST |
 | **Documentation (ships in the same change, GL-7)** | | |
 | UA-D-1 | [APIdetails.md](APIdetails.md) describes one listener: intro, quick-check curls, script and monitor sections merged under the new address, index example without `script_api`. | MUST |
 | UA-D-2 | [README.md](../README.md) merges the "Backend Monitoring API" and "Local Management API" sections; every 8765 example updated. | MUST |
 | UA-D-3 | [APP_STRUCTURE.md](APP_STRUCTURE.md): package graph and responsibility rows replaced (`internal/api` transport-only, `internal/events` ring, automation without HTTP); the `MonitorSink`/ownership sentences updated to name the unified listener. | MUST |
 | UA-D-4 | [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md): goroutine rows 7a and 7d become one row; shutdown ordering (§6) shows one HTTP shutdown; module map rows follow. | MUST |
 | UA-D-5 | [AGENTS.md](../AGENTS.md): the endpoints-slices rule names the single `endpoints` slice in `internal/api`; the §4.1 dependency rule is added to the project docs. | MUST |
-| UA-D-6 | Corrections recorded: [FeatureMonitorApi.md](FeatureMonitorApi.md) D4 superseded, [FeatureStarlark.md](FeatureStarlark.md) address updated, [FeatureKissModem.md](FeatureKissModem.md) D8 shared-mux note marked resolved (§7). | MUST |
+| UA-D-6 | Corrections recorded: [FeatureKamApi.md](FeatureKamApi.md) D4 superseded, [FeatureStarlark.md](FeatureStarlark.md) address updated, [FeatureKissModem.md](FeatureKissModem.md) D8 shared-mux note marked resolved (§7). | MUST |
 | UA-D-7 | Docs match the live service: the index response, the reference doc and the README use the same route list. | SHOULD |
 
 ## 7. Corrections to existing text
@@ -240,8 +240,8 @@ All rows are updated in the same change as the code (UA-D-*); the table states w
 | [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) §2 goroutine inventory, rows 7a and 7d, and the ASCII startup flow line for `automation.ServeLocalAPI` | Two HTTP server rows/lines | One "local API server" row owned by `node`; automation has no server |
 | [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) §6 shutdown ordering | Monitor HTTP shutdown before automation API shutdown | Single HTTP shutdown in the existing order |
 | [AGENTS.md](../AGENTS.md) Project docs | "the `GET /` index lists (the `endpoints` slices in `internal/monitor/api.go` and `internal/automation/api.go`)" | "the `GET /` index (`endpoints` in `internal/api`)"; plus the §4.1 dependency rule in the philosophy/docs section |
-| [FeatureMonitorApi.md](FeatureMonitorApi.md) D4 and its D4-vs-RS-OPS-2 note | "A separate monitoring listener … script routes stay on 8765"; "KAMmon therefore holds two base URLs" | Superseded by this feature's D1: one base URL; noted in the corrections of that document rather than rewritten |
-| [FeatureMonitorApi.md](FeatureMonitorApi.md) §1 Phase 2 Delivery | "KAM has a Local Management API on `127.0.0.1:8765` … on port 8766" | Same supersession reference |
+| [FeatureKamApi.md](FeatureKamApi.md) D4 and its D4-vs-RS-OPS-2 note | "A separate monitoring listener … script routes stay on 8765"; "KAMmon therefore holds two base URLs" | Superseded by this feature's D1: one base URL; noted in the corrections of that document rather than rewritten |
+| [FeatureKamApi.md](FeatureKamApi.md) §1 Phase 2 Delivery | "KAM has a Local Management API on `127.0.0.1:8765` … on port 8766" | Same supersession reference |
 | [FeatureStarlark.md](FeatureStarlark.md) Summary, Implemented Behavior | "The Local Management API listens on `127.0.0.1:8765`" | New address; the described rules (loopback Host, JSON Content-Type, revisions, defaults) are unchanged in meaning |
 | [FeatureKissModem.md](FeatureKissModem.md) §7.1 D8 | "A later `GET /radio/status` on the Local Management API needs a shared mux so it does not depend on the automation runtime; that refactor is not part of this feature" | The shared mux now exists by design; modem endpoints land directly on the unified listener when their phase ships |
 

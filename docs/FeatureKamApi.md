@@ -1,14 +1,14 @@
-# Feature: Monitor API for KAMmon
+# Feature: KAM API
 
 **Status:** Phases 1-2 implemented (2026-10-12): loopback status/events, bounded RX/TX/room event ring, read-only channel and room resources, persisted signal metadata and client last-heard times. Phases 3-5 remain planned. Real-radio capture and hardware timing verification remain pending.
-**Scope:** The REST interface KAM offers on the local device so KAMmon, a separate web monitor running on the same computer, can read live radio, channel, room and script data, manage room clients, and change the KISS modem radio settings.
+**Scope:** The REST interface KAM offers on the local device — the **KAM API** — for any local program. KAMmon, a separate web monitor running on the same computer, is the initial consumer: it reads live radio, channel, room and script data, manages room clients, and changes the KISS modem radio settings.
 **Written from:** KAMmon's point of view. The feature needs are in `tmp/KAMmon_Req_*.md`; the UI is shown in `tmp/kammon-prototype.html`. KAMmon is a separate Go project and never opens KAM's SQLite file.
 
 ## 1. Summary
 
 ### Phase 1 Delivery
 
-Only `GET /v1/status` and `GET /v1/events` are available on the monitoring listener.
+Only `GET /v1/status` and `GET /v1/events` are available on the listener.
 RX observations include duplicate and unhandled packets with nullable RxMeta;
 TX observations capture submission settings/time and completion or abandonment.
 Existing room address hashes provide probable attribution; collisions remain null.
@@ -18,7 +18,7 @@ Status reports existing runtime counters and cached startup identity. Optional
 identity and disabled automation measurements may be null. Room-post/script-event
 streams and the remaining resource endpoints are not part of this delivery.
 
-Tests are in `internal/monitor/api_test.go`, `internal/kiss/monitor_test.go`,
+Tests are in `internal/api/api_test.go`, `internal/kiss/monitor_test.go`,
 `internal/models/monitor_test.go` and `internal/node/monitor_test.go`. No new
 dependency, client registry, event database or event-processing worker is added.
 
@@ -32,7 +32,7 @@ counters; last-heard timestamps are persisted through the existing batched
 client writes. Room activity events feed the same bounded event ring. The API
 remains read-only for these resources; client removal stays in phase 4.
 
-KAM has a Local Management API on `127.0.0.1:8765` that manages Starlark scripts. Phases 1-2 add status, recent RX/TX/room events and read-only channel/room resources on port 8766. Later phases provide modem control and client removal. Existing adverts and group texts remain in SQLite, and room client activity follows the existing room-service rules; the monitoring ring is not a persistent packet archive.
+KAM has a Local Management API on `127.0.0.1:8765` that manages Starlark scripts. Phases 1-2 add status, recent RX/TX/room events and read-only channel/room resources on port 8766. Later phases provide modem control and client removal. Existing adverts and group texts remain in SQLite, and room client activity follows the existing room-service rules; the event ring is not a persistent packet archive.
 
 > **Superseded by [FeatureUnifiedApi.md](FeatureUnifiedApi.md) D1:** one listener on `monitor.listen` (default 8766) serves monitoring and script management; port 8765 is closed.
 
@@ -60,7 +60,7 @@ Plain words for the terms used below:
 - GL-2. KAMmon recovers by itself after a restart of either program.
 - GL-3. Every write goes through the part of KAM that already owns that data (room worker, radio client, config writer, script runtime).
 - GL-4. The API never returns a secret: channel keys, room passwords and room identity seeds stay in KAM.
-- GL-5. Monitoring adds only short, bounded recording work to packet ingestion; no HTTP or storage operation runs under the event-ring lock.
+- GL-5. Event recording adds only short, bounded work to packet ingestion; no HTTP or storage operation runs under the event-ring lock.
 - GL-6. KAM behaves exactly as it does today when no client is connected, when a client is slow, and when a client disappears without saying goodbye.
 - GL-7. The API describes KAM's own things (channels, rooms, the modem, scripts), not KAMmon's pages. No field exists only to suit one client.
 
@@ -118,6 +118,7 @@ Recorded 2026-10-11 from the planning questions.
 | D16 | Signal reporting | **Always enabled**, as today. Read-only status; no new YAML field or editable switch. |
 | D17 | Recording cost | **Short lock, bounded copy.** Encode JSON and write responses after releasing it; test contention rather than promise zero waiting. |
 | D18 | Dry runs | **Synchronous and bounded:** 500 ms default, 3000 ms maximum, one at a time, at most 16 replies and 4096 UTF-8 bytes in captured channel names and text. |
+| D19 | Naming | **KAM API.** The API is not limited to KAMmon: any local program may use it, so it is named after KAM, not after its first client. Earlier text and file names said "Monitor API for KAMmon"; renamed 2026-10-23. |
 
 **Consequences of the decisions that go beyond the recommendation or change existing text**
 
@@ -165,11 +166,11 @@ These rules keep KAM independent of any client.
 
 | Rule | Meaning in practice |
 |---|---|
-| **No client, no change** | With the monitor off, or on but unused, KAM behaves as before. Existing tests pass unchanged. |
+| **No client, no change** | With the API off, or on but unused, KAM behaves as before. Existing tests pass unchanged. |
 | **KAM stays in charge** | KAM validates every request itself. A client's own checks only give friendlier messages. A client can never put KAM into a state its own config file could not. |
 | **Stateless requests** | Each request stands alone. KAM keeps nothing per client; a poller that disappears leaves nothing behind. The cursor (`after`) lives in the client. |
 | **Bounded cost** | A request has a deadline and a response size limit, and only a few run at once. A client that reads slowly or never reads cannot hold a lock, a queue slot or a goroutine for long. |
-| **Failure stays inside the monitor** | A panic, a full ring or a listener error is logged and contained. It never reaches the route loop, the writer, the room worker or the script worker. |
+| **Failure stays inside the API** | A panic, a full ring or a listener error is logged and contained. It never reaches the route loop, the writer, the room worker or the script worker. |
 | **Generic and documented** | Names follow KAM's own concepts. The API is described in the README next to the script API and works with `curl`. |
 | **Web authentication is the client's job** | KAM has no REST users or tokens. KAMmon authenticates web users. Existing MeshCore room password checks and radio client roles remain KAM's responsibility. |
 
@@ -238,7 +239,7 @@ Implemented endpoints from this section are documented with parameters and
 responses in [APIdetails.md](APIdetails.md), and each listener serves a
 self-describing index at `GET /`. Update APIdetails.md and the index lists when
 an endpoint ships; this section keeps the whole plan, including parts still
-planned (§7.5, the §7.6 additions).
+planned (the §7.6 additions).
 
 ### 7.1 Status
 
@@ -390,7 +391,7 @@ Query responses always include `command`, `at`, `duration_ms`, `supported`, and 
 6. On any failure after touching the modem, including cancellation, try restoring the previous radio, TX power, signal reporting and CSMA settings. Leave `kam.yml` unchanged. Report the failed step and recovery outcome. A confirmed radio/power echo plus sent CSMA settings permits TX to resume; CSMA is still not independently verified.
 7. If recovery fails, retain the previous saved configuration as the desired state, mark current radio state uncertain, keep TX paused and continue RX. Log the error and expose it through `GET /v1/modem`. Do not let the reset probe silently clear this state. A later successful explicit apply, or a KAM restart that successfully reapplies saved startup settings, clears the pause.
 
-Normal monitor requests have a 5 s deadline. The radio apply is the bounded exception: at most 10 s for waiting/applying/saving and a separate maximum 5 s for recovery, independent of a disconnected HTTP caller. No job registry or client session is introduced. Clients allow at least 15 s for apply; after a disconnect they read the snapshot instead of automatically retrying. The snapshot's `last_change` records the most recent operation only, in memory.
+Normal API requests have a 5 s deadline. The radio apply is the bounded exception: at most 10 s for waiting/applying/saving and a separate maximum 5 s for recovery, independent of a disconnected HTTP caller. No job registry or client session is introduced. Clients allow at least 15 s for apply; after a disconnect they read the snapshot instead of automatically retrying. The snapshot's `last_change` records the most recent operation only, in memory.
 
 Preview returns `{"preview":true,"steps":[...]}` with the ordered command names and details, and performs validation but no send, pause or save. The actual apply revalidates; preview is not a reservation.
 
@@ -559,7 +560,7 @@ IDs are stable. "From" lists the KAMmon feature document that needs the item (`t
 |---|---|---|---|
 | 1 (implemented; hardware verification pending) | `internal/monitor` package, listener, `/v1/status`, event ring, `rx` and `tx` events, `epoch`/`next_after` | Overview, Traffic, DataStore | Automated transport/HTTP/cursor/lifecycle tests pass; real-radio acceptance remains pending |
 | 2 (implemented) | Channels endpoints; room list, clients, posts, `room` events, per-room counters, persisted `last_heard_at` | Channels, Rooms | Focused repository, handler, worker-snapshot and race tests pass |
-| 3 | Modem snapshot, query and `PUT /v1/modem/radio` with save | KissModem | A change survives a KAM restart and a simulated modem reset |
+| 3 (implemented; hardware verification pending) | Modem snapshot, query and `PUT /v1/modem/radio` with save | KissModem | A change survives a KAM restart and a simulated modem reset; automated handler and recovery tests pass |
 | 4 | Client removal endpoint; protocol roles remain read-only | RoomAccounts | Removal cannot resurrect a client via batch persistence; existing room-login tests remain unchanged |
 | 5 | Script `run` info and dry run | Automations | A dry run never transmits and cannot freeze a live script |
 
@@ -567,7 +568,7 @@ IDs are stable. "From" lists the KAMmon feature document that needs the item (`t
 
 - With `monitor.enabled: false` no second listener is opened and the existing test suite passes unchanged.
 - A client that connects and never reads, and one that sends a slow request, never retain the event-ring lock; benchmark route latency during concurrent page-copy requests.
-- The monitor listener failing to bind leaves ingestion, rooms and scripts running.
+- The API listener failing to bind leaves ingestion, rooms and scripts running.
 - Table tests for the cursor: first poll, pagination without skipping, empty ring, caught up, gap, wrong epoch, ring wrap, invalid and future cursor.
 - A router test that proves duplicates and unhandled payload types produce `rx` events.
 - Handler tests with a fake room worker and fake radio client: busy, echo mismatch, save failure, successful restoration, failed restoration with TX pause, disconnect, concurrent config edit, invalid field and link down.

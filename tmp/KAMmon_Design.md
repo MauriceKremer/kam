@@ -3,7 +3,7 @@
 **Historical draft:** KAMmon now has its own project. The current design is [KAMmon docs/DESIGN.md](../../kammon/docs/DESIGN.md). Decisions clarified there supersede this draft, notably event `next_after`, always-on signal reporting and withdrawal of pinned room roles.
 
 **Status:** Design pattern taken from the clickable prototype [kammon-prototype.html](kammon-prototype.html). The prototype uses sample data only and is thrown away after the build.
-**Scope:** How KAMmon looks, how it is built, and how it behaves. What each page must do is in the `KAMmon_Req_*.md` files in this folder. What KAM must offer is in [docs/FeatureMonitorApi.md](../docs/FeatureMonitorApi.md).
+**Scope:** How KAMmon looks, how it is built, and how it behaves. What each page must do is in the `KAMmon_Req_*.md` files in this folder. What KAM must offer is in [docs/FeatureKamApi.md](../docs/FeatureKamApi.md).
 **Name:** The request called this file `KAMmom_Design`; the product name is KAMmon, so the file uses that.
 
 ## 1. Purpose
@@ -33,7 +33,7 @@ flowchart LR
     Browser["Browser<br/>pages and htmx refresh"] -->|"HTTPS or HTTP, login"| Web["KAMmon web layer<br/>templates, sessions, role check"]
     Web --> Store[("In-memory store<br/>event history, buckets, snapshots")]
     Poller["Poller<br/>every 1-2 s"] --> Store
-    Poller -->|"GET /v1/events, /v1/status, ..."| KAM["KAM monitor API<br/>127.0.0.1:8766"]
+    Poller -->|"GET /v1/events, /v1/status, ..."| KAM["KAM API<br/>127.0.0.1:8766"]
     Web -->|"admin actions only"| KAM
     Web -->|"script actions"| Scripts["KAM script API<br/>127.0.0.1:8765"]
     KAM --- Radio["KISS modem and radio"]
@@ -324,4 +324,4 @@ viewer_text_channels: ["#public"]
 | [KAMmon_Req_KissModem.md](KAMmon_Req_KissModem.md) | KISS modem page |
 | [KAMmon_Req_Access.md](KAMmon_Req_Access.md) | Login, roles, visibility |
 | [KAMmon_Req_DataStore.md](KAMmon_Req_DataStore.md) | In-memory store and poller |
-| [docs/FeatureMonitorApi.md](../docs/FeatureMonitorApi.md) | KAM side: the REST API KAMmon needs |
+| [docs/FeatureKamApi.md](../docs/FeatureKamApi.md) | KAM side: the REST API KAMmon needs |

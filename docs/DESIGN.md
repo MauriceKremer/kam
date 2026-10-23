@@ -696,7 +696,7 @@ allow**, not commitments:
 1. **Operator metrics API / dashboard** — export queue metrics and traffic
    rollups; aggregator taps the consumer stream plus queue counters.
 2. **Room administration and history surfaces** — the room server is
-   implemented, and the monitor API already serves read-only history: channel
+   implemented, and the KAM API already serves read-only history: channel
    message history and room summaries, clients and retained posts. Management
    endpoints (remove clients, edit roles, moderate posts), a status reply and
    live tails for operators are not.
