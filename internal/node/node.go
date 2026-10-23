@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"kam.bytecoder.nl/internal/automation"
@@ -45,10 +46,47 @@ type Node struct {
 	monitorServer        *http.Server
 	unsubscribe          func()
 	configPath           string
-	radioSettings        models.RadioConfig
+	modem                *modemController
+	radioState           *radioRuntime
+}
 
-	// RadioConfig contains the modem's cached echo of the host-set values.
-	RadioConfig *kiss.RadioConfig
+// radioRuntime is the node's radio truth: the configured settings (as saved
+// in kam.yml, port and baud included) and the modem's last confirmed echo. A
+// radio change publishes both; the reset probe, the monitor and the
+// scheduler's airtime estimate read from it.
+type radioRuntime struct {
+	mu       sync.Mutex
+	settings models.RadioConfig
+	echo     *kiss.RadioConfig
+}
+
+func (rt *radioRuntime) settingsValue() models.RadioConfig {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.settings
+}
+
+// echoValue returns a copy of the last confirmed echo, or nil.
+func (rt *radioRuntime) echoValue() *kiss.RadioConfig {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.echo == nil {
+		return nil
+	}
+	value := *rt.echo
+	return &value
+}
+
+// publish records a confirmed echo and the settings that belong to it; a nil
+// echo keeps the previous one.
+func (rt *radioRuntime) publish(echo *kiss.RadioConfig, settings models.RadioConfig) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if echo != nil {
+		value := *echo
+		rt.echo = &value
+	}
+	rt.settings = settings
 }
 
 // New bootstraps the channel registry from kam.yml, opens persistence,
@@ -83,13 +121,14 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), radioStartupTimeout)
 	defer cancel()
-	verified, err := configureRadio(ctx, radio, cfg)
+	probes, err := configureRadio(ctx, radio, cfg)
 	if err != nil {
 		// manager.Stop flushes pending writes and closes the persistence store
 		// and serial port, so no separate cleanup is needed.
 		manager.Stop()
 		return nil, fmt.Errorf("apply radio config: %w", err)
 	}
+	radioState := &radioRuntime{settings: cfg.Radio, echo: probes.verified}
 
 	meshCfg, roomConfigs, problems := cfg.ResolveRooms()
 	for _, problem := range problems {
@@ -101,7 +140,10 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 	scheduler := kiss.NewTxScheduler(manager, kiss.TxSchedulerConfig{
 		DutyCyclePercent: meshCfg.DutyCyclePercent,
 		Airtime: func(packetBytes int) time.Duration {
-			return kiss.LoRaAirtime(verified.SpreadingFactor, verified.Bandwidth, verified.CodingRate, packetBytes)
+			if echo := radioState.echoValue(); echo != nil {
+				return kiss.LoRaAirtime(echo.SpreadingFactor, echo.Bandwidth, echo.CodingRate, packetBytes)
+			}
+			return 0
 		},
 	})
 	scheduler.Start()
@@ -149,16 +191,28 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 		unsubscribePackets:   unsubscribePackets,
 		unsubscribe:          unsubscribe,
 		configPath:           configPath,
-		radioSettings:        cfg.Radio,
-		RadioConfig:          verified,
+		radioState:           radioState,
 	}
-	node.startMonitor(cfg, persistence, len(roomConfigs))
+	node.startMonitor(cfg, persistence, len(roomConfigs), probes.signalReport)
 	return node, nil
 }
 
-func configureRadio(ctx context.Context, radio *kiss.RadioClient, cfg *models.KamConfig) (*kiss.RadioConfig, error) {
+// radioProbes is what a settings apply observes: the confirmed echo and the
+// readings the startup and probe paths log.
+type radioProbes struct {
+	verified        *kiss.RadioConfig
+	rssi            int8
+	noiseFloor      int16
+	noiseCalibrated bool
+	// signalReport is nil when the modem's answer was unknown, else whether
+	// signal reporting ended up enabled.
+	signalReport *bool
+}
+
+func configureRadio(ctx context.Context, radio *kiss.RadioClient, cfg *models.KamConfig) (radioProbes, error) {
+	probes := radioProbes{}
 	if err := radio.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("no KISS modem on %q: %w", cfg.Radio.Port, err)
+		return probes, fmt.Errorf("no KISS modem on %q: %w", cfg.Radio.Port, err)
 	}
 	version, err := radio.GetVersion(ctx)
 	if err != nil {
@@ -168,15 +222,15 @@ func configureRadio(ctx context.Context, radio *kiss.RadioClient, cfg *models.Ka
 	if err != nil {
 		slog.Warn("radio device name unavailable", "error", err)
 	}
-	verified, rssi, noiseFloor, calibrated, err := applyRadioSettings(ctx, radio, cfg)
+	probes, err = applyRadioSettings(ctx, radio, cfg)
 	if err != nil {
-		return nil, err
+		return probes, err
 	}
 	slog.Info("radio startup probe complete", "device", deviceName, "firmware_version", version.Version,
-		"frequency_hz", verified.Frequency, "bandwidth_hz", verified.Bandwidth,
-		"spreading_factor", verified.SpreadingFactor, "coding_rate", verified.CodingRate,
-		"current_rssi_dbm", rssi, "noise_floor_dbm", noiseFloor, "noise_floor_calibrated", calibrated)
-	return verified, nil
+		"frequency_hz", probes.verified.Frequency, "bandwidth_hz", probes.verified.Bandwidth,
+		"spreading_factor", probes.verified.SpreadingFactor, "coding_rate", probes.verified.CodingRate,
+		"current_rssi_dbm", probes.rssi, "noise_floor_dbm", probes.noiseFloor, "noise_floor_calibrated", probes.noiseCalibrated)
+	return probes, nil
 }
 
 // openRooms opens the room repository, loads (or creates) each room's
@@ -209,23 +263,28 @@ func openRooms(dbPath string, meshCfg models.MeshConfig, rooms []models.RoomConf
 	return service, repository, nil
 }
 
-func applyRadioSettings(ctx context.Context, radio *kiss.RadioClient, cfg *models.KamConfig) (*kiss.RadioConfig, int8, int16, bool, error) {
+func applyRadioSettings(ctx context.Context, radio *kiss.RadioClient, cfg *models.KamConfig) (radioProbes, error) {
+	probes := radioProbes{}
 	wanted := kiss.RadioConfig{
 		Frequency: cfg.Radio.FrequencyHz, Bandwidth: cfg.Radio.BandwidthHz,
 		SpreadingFactor: cfg.Radio.SpreadingFactor, CodingRate: cfg.Radio.CodingRate,
 	}
 	if err := radio.SetRadio(ctx, wanted); err != nil {
-		return nil, 0, 0, false, fmt.Errorf("set radio config: %w", err)
+		return probes, fmt.Errorf("set radio config: %w", err)
 	}
 	if cfg.Radio.TxPowerDBm != nil {
 		if err := radio.SetTxPower(ctx, *cfg.Radio.TxPowerDBm); err != nil {
 			slog.Warn("radio TX power was not configured", "error", err)
 		}
 	}
-	if enabled, err := radio.SetSignalReport(ctx, true); err != nil {
+	enabled, err := radio.SetSignalReport(ctx, true)
+	if err != nil {
 		slog.Warn("radio signal reporting could not be enabled", "error", err)
 	} else if !enabled {
 		slog.Warn("radio did not enable signal reporting")
+	}
+	if err == nil {
+		probes.signalReport = &enabled
 	}
 	if cfg.Radio.CSMA != nil {
 		csma := cfg.Radio.CSMA
@@ -241,25 +300,26 @@ func applyRadioSettings(ctx context.Context, radio *kiss.RadioClient, cfg *model
 	}
 	verified, err := radio.GetRadio(ctx)
 	if err != nil {
-		return nil, 0, 0, false, fmt.Errorf("read radio config echo: %w", err)
+		return probes, fmt.Errorf("read radio config echo: %w", err)
 	}
 	if verified != wanted {
-		return nil, 0, 0, false, fmt.Errorf("radio config echo mismatch: got %+v, want %+v", verified, wanted)
+		return probes, fmt.Errorf("radio config echo mismatch: got %+v, want %+v", verified, wanted)
 	}
-	rssi, err := radio.GetCurrentRSSI(ctx)
+	probes.verified = &verified
+	probes.rssi, err = radio.GetCurrentRSSI(ctx)
 	if err != nil {
 		slog.Warn("radio RSSI probe unavailable", "error", err)
 	}
-	noiseFloor, calibrated, err := radio.NoiseFloor(ctx)
+	probes.noiseFloor, probes.noiseCalibrated, err = radio.NoiseFloor(ctx)
 	if err != nil {
 		slog.Warn("radio noise-floor probe unavailable", "error", err)
-	} else if !calibrated {
+	} else if !probes.noiseCalibrated {
 		slog.Warn("radio noise floor is not calibrated yet")
 	}
 	if _, err := radio.AirtimeMillis(ctx, kiss.KISSMaxDataSize); err != nil {
 		slog.Warn("radio airtime probe unavailable; using TX gate fallback", "error", err)
 	}
-	return &verified, rssi, noiseFloor, calibrated, nil
+	return probes, nil
 }
 
 func (n *Node) probeRadio(ctx context.Context) {
@@ -271,6 +331,11 @@ func (n *Node) probeRadio(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// A radio change owns the modem, and an uncertain state (restore
+			// failed) must not be silently rewritten (§7.5.1 step 7).
+			if n.modem != nil && n.modem.blocked() {
+				continue
+			}
 			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			if err := n.radio.Ping(probeCtx); err != nil {
 				cancel()
@@ -290,16 +355,20 @@ func (n *Node) probeRadio(ctx context.Context) {
 				continue
 			}
 			consecutiveTimeouts = 0
-			if isZeroRadioConfig(actual) || actual != *n.RadioConfig {
-				slog.Warn("radio cache changed; reapplying startup settings", "actual", actual)
-				applyCtx, cancel := context.WithTimeout(ctx, radioStartupTimeout)
-				_, _, _, _, err := applyRadioSettings(applyCtx, n.radio, &models.KamConfig{Radio: n.radioSettings})
-				cancel()
-				if err != nil {
-					n.manager.Fail(fmt.Errorf("reapply radio settings after modem reset: %w", err))
-					return
-				}
+			echo := n.radioState.echoValue()
+			unchanged := echo != nil && actual == *echo && !isZeroRadioConfig(actual)
+			if unchanged {
+				continue
 			}
+			slog.Warn("radio cache changed; reapplying startup settings", "actual", actual)
+			applyCtx, cancel := context.WithTimeout(ctx, radioStartupTimeout)
+			probes, err := applyRadioSettings(applyCtx, n.radio, &models.KamConfig{Radio: n.radioState.settingsValue()})
+			cancel()
+			if err != nil {
+				n.manager.Fail(fmt.Errorf("reapply radio settings after modem reset: %w", err))
+				return
+			}
+			n.radioState.publish(probes.verified, n.radioState.settingsValue())
 		}
 	}
 }
@@ -354,6 +423,9 @@ func (n *Node) Run(ctx context.Context) error {
 			_ = n.monitorServer.Close()
 		}
 		cancel()
+		if n.modem != nil {
+			n.modem.Stop()
+		}
 	}
 	if n.unsubscribe != nil {
 		n.unsubscribe()
@@ -393,6 +465,15 @@ func (n *Node) Sender() *send.Sender { return n.sender }
 
 // Radio returns the radio client for direct hardware interaction.
 func (n *Node) Radio() *kiss.RadioClient { return n.radio }
+
+// RadioEcho returns the modem's cached echo of the host-set radio values, or
+// nil when an echo was never confirmed (before the startup apply succeeds).
+func (n *Node) RadioEcho() *kiss.RadioConfig {
+	if n.radioState == nil {
+		return nil
+	}
+	return n.radioState.echoValue()
+}
 
 // ConfigPath returns the YAML config file this node uses as the single source
 // of truth for system configuration.

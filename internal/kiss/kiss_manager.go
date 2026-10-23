@@ -11,6 +11,7 @@ import (
 
 	"kam.bytecoder.nl/internal/kiss/parsers"
 	"kam.bytecoder.nl/internal/mesh"
+	"kam.bytecoder.nl/internal/models"
 )
 
 // defaultRxMetaTimeout is how long the router waits for an RxMeta frame after a
@@ -80,6 +81,7 @@ type txGateEvent struct {
 
 type Manager struct {
 	observer    atomic.Pointer[monitorObserver]
+	radioModel  atomic.Pointer[models.RadioConfig]
 	stream      serial.Port
 	writeHook   func([]byte) error
 	txChan      chan []byte
@@ -415,6 +417,10 @@ func (m *Manager) csmaConfig() CSMAConfig {
 	defer m.csmaMu.RUnlock()
 	return m.csma
 }
+
+// CurrentCSMA returns the host's view of the modem's KISS CSMA parameters: the
+// values last set through this connection, never a hardware readback.
+func (m *Manager) CurrentCSMA() CSMAConfig { return m.csmaConfig() }
 
 func (m *Manager) setAirtime(milliseconds uint32) {
 	m.airtimeMu.Lock()

@@ -2,13 +2,13 @@
 
 This is the reference for the REST endpoints KAM serves **today**. It lists only
 implemented endpoints, with their parameters and responses. Endpoints that are
-still planned live in [FeatureMonitorApi.md](FeatureMonitorApi.md) §7 and §10;
+still planned live in [FeatureKamApi.md](FeatureKamApi.md) §7 and §10;
 they are not described here.
 
 KAM serves one small REST API, loopback-only and without authentication, at
-`monitor.listen` (default `127.0.0.1:8766`). It hosts the monitoring surfaces
-(status, events, channels, rooms) and, on the same listener, Starlark script
-management. The separate script listener on port `8765` is retired; scripts live
+`monitor.listen` (default `127.0.0.1:8766`). It hosts the read-only data
+surfaces (status, events, channels, rooms) and, on the same listener, Starlark
+script management. The separate script listener on port `8765` is retired; scripts live
 on the address above since the two APIs merged.
 
 Quick check that it is up:
@@ -21,7 +21,7 @@ curl -s http://127.0.0.1:8766/scripts
 `monitor.enabled: false` in `kam.yml` closes the listener and turns the event
 recorder off: nothing answers on the port, and scripts keep running but can no
 longer be managed or observed. If the automation database cannot be opened,
-automation stays off: the monitoring surfaces work, every script route answers
+automation stays off: the read-only surfaces work, every script route answers
 `503 {"error":"automation is disabled"}`, and KAM logs the reason.
 
 ## Rules
@@ -38,7 +38,9 @@ automation stays off: the monitoring surfaces work, every script route answers
   with `409` when it is stale.
 - **Bounded listener.** At most 8 requests run at once (more get `503
   {"error":"busy"}`), each request has a 5-second deadline (`503` with
-  `{"error":"request timed out"}` when exceeded).
+  `{"error":"request timed out"}` when exceeded). The one exception is
+  `PUT /v1/modem/radio`, which may legitimately take about 15 s and gets a
+  longer deadline.
 - **Times** are RFC 3339 UTC, usually with milliseconds. Script timestamps
   (`created_at`, `updated_at`) are Unix epoch seconds.
 - **No secrets.** No response contains a channel key or a room password.
@@ -72,7 +74,7 @@ documented here.
 
 ## Scripts (Starlark automation)
 
-Script routes share the listener with the monitoring surfaces below and use the
+Script routes share the listener with the read-only data surfaces below and use the
 same rules. With the defaults they are at `127.0.0.1:8766`.
 
 ### The script object
@@ -157,9 +159,9 @@ curl -s -X POST localhost:8766/scripts -H 'Content-Type: application/json' \
 curl -s -X POST localhost:8766/scripts/ping/disable -H 'Content-Type: application/json' -d '{"expected_revision":1}'
 ```
 
-## Monitoring — /v1
+## Status, events, channels and rooms — /v1
 
-All monitor routes live under `/v1`.
+All routes in this section live under `/v1`.
 
 ### GET /v1/status
 
@@ -313,9 +315,138 @@ timestamp, `created_at`, `author_key`, `body`).
 curl -s 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=5'
 ```
 
+## Modem monitoring and radio changes — /v1/modem
+
+These routes read KAM's cached modem state and apply radio changes. Readings
+come from a refresh loop that runs at most every 10 s; a request never talks to
+the modem itself, except `POST /v1/modem/query` and `PUT /v1/modem/radio`,
+which each send their own commands.
+
+### GET /v1/modem
+
+The cached snapshot. `at` is when KAM last refreshed it successfully (KAM's
+start time before the first refresh). Fields KAM could not read are `null`, and
+board limitations are listed in `unsupported`, not in `errors` — `errors` holds
+the latest transient failure per command (for example a timeout); a successful
+refresh clears both. A wholly failed refresh keeps the last successful values
+and does not advance `at`.
+
+| Field | Meaning |
+|---|---|
+| `at` | Time of the last successful refresh. |
+| `link` | `up` or `down` (the modem link is lost). |
+| `device_name`, `firmware_version` | Cached at startup; `null` when unknown. |
+| `radio` | The modem's echo of the host-set values; `source` is `modem_echo`. |
+| `signal_report` | Whether the last successful setting left signal reporting on. |
+| `csma` | The configured KISS CSMA values (from `kam.yml`; when absent, the host's runtime view). |
+| `readings` | `rssi_dbm`, `noise_floor_dbm`, `noise_floor_calibrated`, `channel_busy`, `mcu_temp_c`, `battery_mv`, `stats` (`rx`, `tx`, `errors`). Noise floor `0` means not calibrated yet: `null` with `noise_floor_calibrated: false`. `null` as a whole before the first refresh. |
+| `unsupported` | Commands this board does not answer. |
+| `errors` | Command → latest transient error text. |
+| `tx_paused` | `true` after a failed change left the radio state uncertain; KAM applies the change on a later successful apply or restart. |
+| `last_change` | The latest radio change result, in memory only; `null` before the first one. |
+
+All routes return `503 {"error":"modem is disabled"}` when KAM runs without a
+modem capability (there is nothing wired behind the listener).
+
+### POST /v1/modem/query
+
+Runs one read-only command now. The body is `{"command":"GetCurrentRssi"}`;
+the allow list is `Ping`, `GetRadio`, `GetTxPower`, `GetCurrentRssi`,
+`IsChannelBusy`, `GetAirtime`, `GetNoiseFloor`, `GetVersion`, `GetStats`,
+`GetBattery`, `GetMCUTemp`, `GetSensors`, `GetDeviceName`, `GetSignalReport`.
+`GetAirtime` takes `length` (integer 1-255), `GetSensors` takes `permissions`
+(integer 1-7); every other command accepts only `command`.
+
+Unknown commands or unknown fields are `400`; missing or invalid arguments are
+`422`; a change in progress is `409`; a lost modem link is `503`; a timeout is
+`504`; other transport failures are `502`.
+
+An unsupported board is **not** an error: the response is `200` with
+`supported: false`, `value: null` and a `reason` — `NoCallback`, `UnknownCmd`
+for a rejected command, or `NoData` for an empty `GetSensors` payload.
+
+```sh
+curl -s -X POST localhost:8766/v1/modem/query -H 'Content-Type: application/json' \
+  -d '{"command":"GetCurrentRssi"}'
+```
+
+```json
+{"command":"GetCurrentRssi","at":"2026-10-11T15:00:00.000Z","duration_ms":8,"supported":true,"value":-106}
+```
+
+The value is typed: RSSI and noise floor are dBm numbers, busy and signal
+report are booleans, the device name is a string, MCU temperature is degrees C,
+airtime is milliseconds, battery is millivolts, `Ping` is `"pong"`, `GetRadio`
+is the radio tuple, `GetVersion` is `{version,reserved}`, `GetStats` is
+`{rx,tx,errors}` and `GetSensors` is `{permissions,data_hex}`. All readback
+values are cached modem state, never a verification of the RF chip.
+
+### PUT /v1/modem/radio
+
+Validates, applies, checks the echo, then saves `radio:` to `kam.yml`:
+
+```json
+{
+  "frequency_hz": 868000000, "bandwidth_hz": 125000,
+  "spreading_factor": 8, "coding_rate": 5,
+  "tx_power_dbm": 14,
+  "csma": { "txdelay_ms": 500, "persistence": 63, "slot_time_ms": 100, "full_duplex": false }
+}
+```
+
+The four radio values are required; `tx_power_dbm` and `csma` are optional and
+leave that setting alone when omitted. `csma`, when supplied, must be the
+complete object. A bad value is `422` naming the field; `signal_report` in the
+body is an unknown field (`400`); the serial port and baud rate are not
+changeable here. The change pauses new TX dispatches (queued packets are kept),
+waits for any frame on the air, sets and echoes the values, and then rewrites
+the `radio:` section of `kam.yml` — dropping the file's comments, just like
+`kam channel upsert`. If the file changed while the change ran, KAM returns
+`409` and restores instead of overwriting the edit.
+
+**Timing.** A change may take about 15 s (10 s for the apply, 5 s for recovery);
+the listener gives this one route a longer deadline. Clients allow at least
+15 s and, after a disconnect, read `GET /v1/modem` instead of retrying.
+
+`?preview=true` returns `{"preview": true, "steps": [...]}` with the ordered
+command list and details — validated, but with nothing sent, paused or saved:
+
+A successful change returns `200` (the steps here are abridged; a real
+response names every command, including the power echo, signal reporting, each
+CSMA value and the final save):
+
+```json
+{
+  "applied": true, "saved": true, "verified": "modem_echo", "restored": false, "tx_paused": false,
+  "steps": [
+    { "command": "SetRadio", "detail": "868000000 Hz, 125000 Hz, SF8, CR5", "result": "ok" },
+    { "command": "GetRadio", "result": "echo_matches" },
+    { "command": "SetTxPower", "detail": "14 dBm", "result": "ok" },
+    { "command": "TXDELAY", "detail": "500 ms", "result": "sent_no_reply" },
+    { "command": "Ping", "result": "pong" }
+  ]
+}
+```
+
+`verified` is always `"modem_echo"` or `null`: the echo confirms receipt, never
+that the RF chip accepted a value. A failure returns the same shape with an
+`error` at the mapped status — save failure `500`, echo mismatch or modem
+rejection `502`, link lost `503`, timeout `504` — and restores the previous
+settings. When the restoration itself fails, `tx_paused` is `true`, the radio
+state is uncertain and RX continues:
+
+```json
+{"error":"Could not save kam.yml","applied":false,"saved":false,"restored":true,"tx_paused":false,"verified":"modem_echo","steps":[{"command":"save","result":"failed"},{"command":"restore","result":"echo_matches"}]}
+```
+
+(The steps of a real failure carry the full preceding command list.)
+
+A query during a change or a concurrent change gets `409`; disabled modem
+capability gets `503`.
+
 ## What is deliberately not here
 
-Modem endpoints, room client removal, script run info and dry runs, and
-per-script event streams are planned but not implemented yet; see
-[FeatureMonitorApi.md](FeatureMonitorApi.md) §7 and §10 until they ship.
+Room client removal, script run info and dry runs, and per-script event streams
+are planned but not implemented yet; see [FeatureKamApi.md](FeatureKamApi.md)
+§7 and §10 until they ship.
 When an endpoint ships, it moves into this document.

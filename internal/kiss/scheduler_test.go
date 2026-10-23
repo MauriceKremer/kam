@@ -1,6 +1,7 @@
 package kiss
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"sync"
@@ -480,4 +481,85 @@ func TestLoRaAirtime(t *testing.T) {
 			t.Fatal("invalid parameters must yield zero airtime")
 		}
 	}
+}
+
+// A paused scheduler holds queued packets back, then dispatches on Resume
+// (FeatureKamApi API-MD-5).
+func TestTxSchedulerPauseHoldsQueue(t *testing.T) {
+	sink := newFakeTxSink()
+	scheduler := NewTxScheduler(sink, TxSchedulerConfig{})
+	packet := testPacket(1)
+	if err := scheduler.Submit(TxRequest{Raw: packet, Priority: TxPriorityGroupText}); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Pause()
+	if wait := scheduler.pump(); wait != time.Hour {
+		t.Fatalf("paused pump wait = %v, want the idle hour", wait)
+	}
+	select {
+	case frame := <-sink.tx:
+		t.Fatalf("paused scheduler transmitted % X", frame)
+	default:
+	}
+	scheduler.Resume()
+	scheduler.pump()
+	select {
+	case frame := <-sink.tx:
+		if string(frame[1:]) != string(packet) {
+			t.Fatalf("resume sent % X, want % X", frame[1:], packet)
+		}
+	default:
+		t.Fatal("resume did not dispatch the queued packet")
+	}
+	scheduler.markComplete()
+}
+
+// Submit keeps working while paused: the queue is preserved, not discarded.
+func TestTxSchedulerPauseKeepsAccepting(t *testing.T) {
+	sink := newFakeTxSink()
+	scheduler := NewTxScheduler(sink, TxSchedulerConfig{})
+	scheduler.Pause()
+	for i := range 5 {
+		if err := scheduler.Submit(TxRequest{Raw: testPacket(byte(i)), Priority: TxPriorityGroupText}); err != nil {
+			t.Fatalf("paused scheduler rejected a submit: %v", err)
+		}
+	}
+	if stats := scheduler.Stats(); stats.Queued != 5 {
+		t.Fatalf("queued = %d, want 5", stats.Queued)
+	}
+	scheduler.Resume()
+	sent := drain(t, scheduler, sink)
+	if len(sent) != 5 {
+		t.Fatalf("sent %d packets after resume, want 5", len(sent))
+	}
+}
+
+// AwaitIdle waits for the in-flight frame and accepts one the pump has already
+// given up on (past the gate timeout).
+func TestTxSchedulerAwaitIdle(t *testing.T) {
+	sink := newFakeTxSink()
+	sink.gate = time.Second
+	scheduler := NewTxScheduler(sink, TxSchedulerConfig{})
+	if err := scheduler.Submit(TxRequest{Raw: testPacket(3), Priority: TxPriorityGroupText}); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.pump()
+
+	blocked, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := scheduler.AwaitIdle(blocked); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("AwaitIdle during a frame = %v, want deadline exceeded", err)
+	}
+	scheduler.markComplete()
+	if err := scheduler.AwaitIdle(context.Background()); err != nil {
+		t.Fatalf("AwaitIdle when idle = %v", err)
+	}
+
+	// A frame past its gate timeout counts as idle: the pump abandoned it.
+	scheduler.pump()
+	sink.gate = time.Millisecond
+	if err := scheduler.AwaitIdle(context.Background()); err != nil {
+		t.Fatalf("AwaitIdle with an abandoned frame = %v", err)
+	}
+	scheduler.markComplete()
 }

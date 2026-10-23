@@ -27,7 +27,7 @@ func TestMonitorDisabledOrBindFailureKeepsManagerAlive(t *testing.T) {
 		manager := &kiss.Manager{}
 		manager.TestInit()
 		node := &Node{manager: manager}
-		node.startMonitor(&models.KamConfig{Monitor: &settings}, nil, 0)
+		node.startMonitor(&models.KamConfig{Monitor: &settings}, nil, 0, nil)
 		if node.monitorServer != nil || manager.Err() != nil {
 			t.Fatal("monitor failure affected radio lifecycle")
 		}
@@ -48,8 +48,8 @@ func TestMonitorStatusWithoutAutomation(t *testing.T) {
 	defer manager.Stop()
 	settings := models.DefaultMonitorConfig()
 	settings.Listen = "127.0.0.1:0"
-	node := &Node{manager: manager, scheduler: scheduler, radio: kiss.NewRadioClient(manager), RadioConfig: &kiss.RadioConfig{Frequency: 868000000, Bandwidth: 125000, SpreadingFactor: 8, CodingRate: 5}}
-	node.startMonitor(&models.KamConfig{NodeName: "test", Monitor: &settings, Channels: []models.ChannelConfig{{Name: "#private", KeyHex: "secret-key"}}, Rooms: []models.RoomConfig{{AdminPassword: "secret-password"}}}, nil, 0)
+	node := &Node{manager: manager, scheduler: scheduler, radio: kiss.NewRadioClient(manager), radioState: &radioRuntime{echo: &kiss.RadioConfig{Frequency: 868000000, Bandwidth: 125000, SpreadingFactor: 8, CodingRate: 5}}}
+	node.startMonitor(&models.KamConfig{NodeName: "test", Monitor: &settings, Channels: []models.ChannelConfig{{Name: "#private", KeyHex: "secret-key"}}, Rooms: []models.RoomConfig{{AdminPassword: "secret-password"}}}, nil, 0, nil)
 	if node.monitorServer == nil {
 		t.Fatal("monitor did not start independently")
 	}

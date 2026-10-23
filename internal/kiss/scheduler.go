@@ -1,6 +1,7 @@
 package kiss
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -117,6 +118,7 @@ type TxScheduler struct {
 	seq           uint64
 	stopped       bool
 	started       bool
+	paused        bool
 	stats         TxSchedulerStats
 	unsubscribe   func()
 
@@ -194,6 +196,54 @@ func (s *TxScheduler) Stop() {
 		<-s.done
 		if unsubscribe != nil {
 			unsubscribe()
+		}
+	}
+}
+
+// Pause holds back new dispatches without discarding the queue; Submit keeps
+// working and queued packets go out once Resume lifts the pause. A radio
+// change (PUT /v1/modem/radio) pauses the scheduler so no frame shares the
+// modem with a setting command.
+func (s *TxScheduler) Pause() {
+	s.mu.Lock()
+	woken := !s.paused
+	s.paused = true
+	s.mu.Unlock()
+	if woken {
+		s.signal()
+	}
+}
+
+// Resume lifts a Pause and dispatches queued packets again.
+func (s *TxScheduler) Resume() {
+	s.mu.Lock()
+	woken := s.paused
+	s.paused = false
+	s.mu.Unlock()
+	if woken {
+		s.signal()
+	}
+}
+
+// AwaitIdle blocks until no frame is in flight, or the frame in flight is
+// older than the TX gate timeout (the pump has then already given up on it),
+// or ctx is done. It is for callers about to change modem settings.
+func (s *TxScheduler) AwaitIdle(ctx context.Context) error {
+	for {
+		s.mu.Lock()
+		idle := !s.inFlight
+		since := s.inFlightSince
+		s.mu.Unlock()
+		if idle {
+			return nil
+		}
+		if time.Since(since) >= s.sink.TxGateTimeout()+500*time.Millisecond {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
 		}
 	}
 }
@@ -365,6 +415,9 @@ func (s *TxScheduler) pump() time.Duration {
 		s.inFlight = false
 		s.stats.GateTimeouts++
 		slog.Warn("[TxScheduler] no TxDone for the last frame; continuing")
+	}
+	if s.paused {
+		return time.Hour
 	}
 
 	item, wait := s.nextLocked(now)

@@ -100,16 +100,19 @@ Other commands: `kam channel upsert ...` (add or change a channel in `kam.yml`) 
 
 ## Local REST API
 
-KAM serves one loopback REST API on `127.0.0.1:8766`. It hosts the monitoring
-surfaces — `GET /v1/status` and `GET /v1/events`, read-only channel history
-(`GET /v1/channels`, `GET /v1/channels/{name}/messages`) and read-only room
-surfaces (`GET /v1/rooms`, `GET /v1/rooms/{id}/clients`,
-`GET /v1/rooms/{id}/posts`) — and, on the same listener, script management
-([Automation](#automation-starlark-scripts)). The listener answers `GET /` with
-the routes it serves. No dashboard is required: KAM continues its radio work
-without API clients. Modem-control, room-client removal and dry-run endpoints
-remain planned; parameters and responses are documented in
-[`docs/APIdetails.md`](docs/APIdetails.md).
+KAM serves one loopback REST API — the **KAM API** — on `127.0.0.1:8766`. It
+hosts the read-only data surfaces — `GET /v1/status` and `GET /v1/events`,
+channel history (`GET /v1/channels`, `GET /v1/channels/{name}/messages`) and
+room data (`GET /v1/rooms`, `GET /v1/rooms/{id}/clients`,
+`GET /v1/rooms/{id}/posts`) — plus, on the same listener, script management
+([Automation](#automation-starlark-scripts)) and modem monitoring and radio
+control: `GET /v1/modem` (a cached snapshot refreshed every 10 s),
+`POST /v1/modem/query` (one read-only command) and `PUT /v1/modem/radio`
+(validate, apply, check the echo, save `radio:` to `kam.yml`; `?preview=true`
+lists the steps without sending). The listener answers `GET /` with the routes
+it serves. No dashboard is required: KAM continues its radio work without API
+clients. Room-client removal and dry-run endpoints remain planned; parameters
+and responses are documented in [`docs/APIdetails.md`](docs/APIdetails.md).
 
 ```yaml
 monitor:
@@ -121,13 +124,14 @@ monitor:
 These are the defaults when the block is omitted. `enabled: false` closes the
 listener and turns the event recorder off; automation scripts keep running, but
 they can no longer be managed or observed until the listener is back. Invalid
-monitoring settings or a busy port are
+`monitor` settings or a busy port are
 logged without stopping radio ingestion. Changes to this block require a restart.
 The API has no authentication and serves loopback hosts only; KAMmon owns its
 web authentication. JSON events contain metadata, never message bodies or keys.
 
 ```sh
 curl --fail-with-body http://127.0.0.1:8766/v1/status
+curl --fail-with-body http://127.0.0.1:8766/v1/modem
 curl --fail-with-body 'http://127.0.0.1:8766/v1/events?after=0&limit=1000'
 ```
 
@@ -135,9 +139,12 @@ Continue using the returned `epoch` and `next_after`, not `last_seq` (the newest
 event in KAM's ring). An empty `events` array means caught up. `reset: true`
 means KAM restarted or unread events were overwritten. Signal readings and failed
 TX airtime are `null` when unknown. Events are held in bounded memory only;
-restarting KAM loses the ring. Endpoint parameters and responses are documented
-in [`docs/APIdetails.md`](docs/APIdetails.md); see also [the backend API manual](manuals/FeatureMonitorApi.html)
-and [the contract](docs/FeatureMonitorApi.md).
+restarting KAM loses the ring. A radio change through `PUT /v1/modem/radio`
+may take about 15 s (and rewrites `kam.yml`, dropping comments just like
+`kam channel upsert`); its `?preview=true` form answers instantly. Endpoint
+parameters and responses are documented
+in [`docs/APIdetails.md`](docs/APIdetails.md); see also [the KAM API manual](manuals/FeatureKamApi.html)
+and [the contract](docs/FeatureKamApi.md).
 
 ## Automation (Starlark scripts)
 
@@ -156,7 +163,7 @@ def on_group_text(message):
 
 ### Managing scripts over the local REST API
 
-Script management lives on the same listener as the monitoring surfaces:
+Script management lives on the same listener as the read-only data surfaces:
 `monitor.listen` (default `127.0.0.1:8766`), loopback only, no authentication.
 Requests need a loopback `Host` header and, for `POST`/`PUT`, `Content-Type: application/json`. Updates carry the revision you last read (`expected_revision`; `0`/omitted when creating) and fail with `409` if it is stale. The listener answers `GET /` with the routes it serves; endpoint details live in [`docs/APIdetails.md`](docs/APIdetails.md).
 

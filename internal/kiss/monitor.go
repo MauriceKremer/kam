@@ -13,7 +13,6 @@ import (
 
 type monitorObserver struct {
 	sink     models.MonitorSink
-	radio    models.RadioConfig
 	mu       sync.Mutex
 	pending  *models.MonitorEvent
 	timer    *time.Timer
@@ -21,17 +20,28 @@ type monitorObserver struct {
 	rooms    map[byte]string
 }
 
+// SetMonitor installs the event recorder. The radio settings are kept as a
+// separate atom so a radio change (PUT /v1/modem/radio) can update them
+// without rebuilding the rest of the observer.
 func (m *Manager) SetMonitor(sink models.MonitorSink, radio models.RadioConfig, addresses ...map[byte]string) {
 	if sink == nil {
 		return
 	}
+	m.UpdateRadioSettings(radio)
 	rooms := make(map[byte]string)
 	if len(addresses) > 0 {
 		for hash, id := range addresses[0] {
 			rooms[hash] = id
 		}
 	}
-	m.observer.Store(&monitorObserver{sink: sink, radio: radio, txLabels: make(map[*byte]struct{ origin, room string }), rooms: rooms})
+	m.observer.Store(&monitorObserver{sink: sink, txLabels: make(map[*byte]struct{ origin, room string }), rooms: rooms})
+}
+
+// UpdateRadioSettings recomputes airtime estimates after the radio settings
+// were applied again, without touching the observer and its locks.
+func (m *Manager) UpdateRadioSettings(radio models.RadioConfig) {
+	model := radio
+	m.radioModel.Store(&model)
 }
 
 func (m *Manager) TryTransmit(frame []byte, origin, room string) bool {
@@ -144,9 +154,9 @@ func (m *Manager) packetObservation(packet mesh.Packet, length int, kind string)
 	if packet.PayloadType() > mesh.PayloadControl && packet.PayloadType() != mesh.PayloadRawCustom {
 		event.PayloadType = fmt.Sprintf("UNKNOWN_%d", packet.PayloadType())
 	}
-	observer := m.observer.Load()
-	if observer != nil && observer.radio.FrequencyHz != 0 {
-		duration := LoRaAirtime(observer.radio.SpreadingFactor, observer.radio.BandwidthHz, observer.radio.CodingRate, length)
+	radioModel := m.radioModel.Load()
+	if radioModel != nil && radioModel.FrequencyHz != 0 {
+		duration := LoRaAirtime(radioModel.SpreadingFactor, radioModel.BandwidthHz, radioModel.CodingRate, length)
 		if duration > 0 {
 			milliseconds := duration.Milliseconds()
 			event.AirtimeMS = &milliseconds

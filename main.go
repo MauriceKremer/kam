@@ -86,11 +86,14 @@ func main() {
 	}
 
 	slog.Info("Radio configuration set successfully")
-	slog.Info("--- Radio Config ---")
-	slog.Info("Frequency", "MHz", fmt.Sprintf("%.3f", float64(n.RadioConfig.Frequency)/1000000.0))
-	slog.Info("Bandwidth", "kHz", fmt.Sprintf("%.1f", float64(n.RadioConfig.Bandwidth)/1000.0))
-	slog.Info("Spreading Factor", "SF", n.RadioConfig.SpreadingFactor)
-	slog.Info("Coding Rate", "CR", n.RadioConfig.CodingRate)
+	echo := n.RadioEcho()
+	if echo != nil {
+		slog.Info("--- Radio Config ---")
+		slog.Info("Frequency", "MHz", fmt.Sprintf("%.3f", float64(echo.Frequency)/1000000.0))
+		slog.Info("Bandwidth", "kHz", fmt.Sprintf("%.1f", float64(echo.Bandwidth)/1000.0))
+		slog.Info("Spreading Factor", "SF", echo.SpreadingFactor)
+		slog.Info("Coding Rate", "CR", echo.CodingRate)
+	}
 
 	slog.Info("Press Ctrl+C to stop")
 

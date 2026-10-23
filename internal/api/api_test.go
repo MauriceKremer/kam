@@ -16,7 +16,7 @@ import (
 
 // ringEvents adapts the real ring to the EventsSource seam, the way
 // internal/node's adapter does; these tests deliberately exercise the real
-// ring (FeatureMonitorApi API-EV-10 concerns its locking, not an interface).
+// ring (FeatureKamApi API-EV-10 concerns its locking, not an interface).
 type ringEvents struct{ ring *events.Ring }
 
 func (s ringEvents) Page(after uint64, epoch string, limit int) (EventsResponse, error) {
@@ -128,7 +128,7 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 		t.Fatalf("index lists channels without a channel reader: %+v", base)
 	}
 
-	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomReader{})))
+	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomReader{}, nil)))
 	for _, want := range []string{"GET /v1/channels", "GET /v1/channels/{name}/messages"} {
 		if !full[want] {
 			t.Fatalf("index missing %s: %+v", want, full)
@@ -212,7 +212,7 @@ func TestRoomReadEndpoints(t *testing.T) {
 		clients: []RoomClient{},
 		posts:   []RoomPost{{ID: 7, Body: "hello"}},
 	}
-	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader)
+	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader, nil)
 	request := func(path string, code int) string {
 		t.Helper()
 		response := httptest.NewRecorder()

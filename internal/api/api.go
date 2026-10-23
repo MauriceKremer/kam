@@ -197,16 +197,17 @@ type Status struct {
 }
 
 func NewHandler(ring EventsSource, status func() Status) http.Handler {
-	return NewHandlerWithResources(ring, status, nil, nil, nil)
+	return NewHandlerWithResources(ring, status, nil, nil, nil, nil)
 }
 
 func NewHandlerWithChannels(ring EventsSource, status func() Status, channels ChannelReader) http.Handler {
-	return NewHandlerWithResources(ring, status, nil, channels, nil)
+	return NewHandlerWithResources(ring, status, nil, channels, nil, nil)
 }
 
-func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomReader) http.Handler {
+func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomReader, modem ModemSource) http.Handler {
 	mux := http.NewServeMux()
 	registerScriptRoutes(mux, scripts)
+	registerModemRoutes(mux, modem)
 	mux.HandleFunc("GET /v1/events", func(w http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query()
 		after, err := strconv.ParseUint(query.Get("after"), 10, 64)
@@ -400,6 +401,10 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 			apiEndpoint{Method: "POST", Path: "/scripts/{id}/enable", Purpose: "enable the desired state (expected_revision)"},
 			apiEndpoint{Method: "POST", Path: "/scripts/{id}/disable", Purpose: "disable the desired state (expected_revision)"},
 			apiEndpoint{Method: "POST", Path: "/scripts/{id}/recover", Purpose: "recompile a FROZEN or BROKEN script"},
+			apiEndpoint{Method: "GET", Path: "/v1/modem", Purpose: "cached modem snapshot, refreshed every 10s"},
+			apiEndpoint{Method: "POST", Path: "/v1/modem/query", Purpose: "run one read-only modem command"},
+			apiEndpoint{Method: "PUT", Path: "/v1/modem/radio?preview=true", Purpose: "list the steps of a radio change without sending them"},
+			apiEndpoint{Method: "PUT", Path: "/v1/modem/radio", Purpose: "apply radio settings and save them to kam.yml"},
 		)
 		writeJSON(w, 200, map[string]any{
 			"api":         "kam",
@@ -410,7 +415,11 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 	}
 	mux.HandleFunc("GET /{$}", indexHandler)
 	slots := make(chan struct{}, 8)
-	timed := http.TimeoutHandler(mux, 5*time.Second, `{"error":"request timed out"}`)
+	timed := http.TimeoutHandler(mux, requestTimeout, `{"error":"request timed out"}`)
+	// The radio apply is the one long exception (§7.5.1): up to ~10 s for the
+	// change and up to ~5 s for recovery. The connection's write deadline is
+	// extended per request so the buffered response still gets out.
+	timedRadio := http.TimeoutHandler(mux, modemApplyTimeout, `{"error":"request timed out"}`)
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		defer func() {
 			if recover() != nil {
@@ -433,6 +442,11 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 			defer func() { <-slots }()
 		default:
 			writeJSON(w, 503, map[string]string{"error": "busy"})
+			return
+		}
+		if isModemRadioApply(request.Method, request.URL.Path) {
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(modemApplyTimeout + 2*time.Second))
+			timedRadio.ServeHTTP(w, request)
 			return
 		}
 		timed.ServeHTTP(w, request)
@@ -467,6 +481,12 @@ func roomExists(ctx context.Context, reader RoomReader, id string) (bool, error)
 	}
 	return false, nil
 }
+
+// requestTimeout bounds ordinary requests. modemApplyTimeout is the one
+// bounded exception for PUT /v1/modem/radio (§7.5.1); a test may shorten it.
+const requestTimeout = 5 * time.Second
+
+var modemApplyTimeout = 16 * time.Second
 
 func writeJSON(w http.ResponseWriter, code int, value any) {
 	body, err := json.Marshal(value)

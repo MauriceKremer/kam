@@ -172,9 +172,11 @@ main goroutine
   |        automation.NewRuntime -> manager.SubscribeGroupText(runtime.Handle)
   |                              -> [automation worker goroutine]   (internal/automation)
   |   |- node.startMonitor -> [local API server goroutine on 127.0.0.1:8766]  (internal/api)
+  |   |- node.startMonitor -> [modem refresh loop, one batch of reading commands
+  |   |                      at most every 10 s]                        (internal/node/modem.go)
   |
   `- n.Run(ctx):  <-ctx.Done()  (SIGINT/SIGTERM)
-       |- local API Shutdown (one server: monitoring and scripts)   (stop intake)
+       |- local API Shutdown (one server: reads and scripts)   (stop intake)
        |- unsubscribe (group text, packets)
        |- runtime.Stop()    (cancel active script, drop queued events, join worker)
        |- rooms.Stop()      (join worker, flush client sessions); close room repository
@@ -200,8 +202,9 @@ main goroutine
 | 6 | group-text `writerLoop` | `db.GroupTextQueue` | `NewGroupTextQueue`→`Stop` | recv `ch`, batch insert into SQLite |
 | 7 | automation `worker` | `automation.Runtime` | `NewRuntime`→`Stop` | recv bounded `queue`, runs scripts sequentially, `reply` sends via `send.Sender` |
 | 7a | Local API server | `node.startMonitor` / `api.Listen` | node startup→HTTP shutdown | loopback HTTP on `monitor.listen` (default 8766), with at most 8 admitted requests; bounded event pages, script management, SQLite channel/post reads, and worker-owned room snapshots |
-| 7b | tx scheduler | `kiss.TxScheduler` | `Start`→`Stop` | recv legacy `TxChan` frames, a timer, and `TxDone`/`TxAbandoned` modem events; sends one frame at a time to `Manager.txChan` |
+| 7b | tx scheduler | `kiss.TxScheduler` | `Start`→`Stop` | recv legacy `TxChan` frames, a timer, and `TxDone`/`TxAbandoned` modem events; sends one frame at a time to `Manager.txChan`; a `Pause` during a radio change holds dispatches back without discarding the queue |
 | 7c | room worker | `room.Service` | `Start`→`Stop` | recv a bounded packet queue (64) and a 50 ms tick; owns every room's state; writes `RoomRepository`, submits to the scheduler |
+| 7d | modem refresh loop | `node.startMonitor` (the `modemController`) | monitor start→`modemController.Stop` | a ticker (10 s) plus an immediate-refresh signal; sends a bounded batch of reading commands through `RadioClient`, writes the cache the `/v1/modem` snapshot serves; skips while a radio change runs and yields to it mid-batch |
 | 8 | (planned) analytics/metrics aggregator | future package | subscribe via `SubscribeGroupText` | same tap pattern as the automation runtime |
 | * | radio request | caller (e.g. `main`/`New`) | per `Get`/`Set` call | register waiter on `ResponseRegistry`, push `txChan`, block on resp |
 
@@ -210,13 +213,13 @@ main goroutine
 > only non-persistence consumer of the group-text tap, and the room worker (7c)
 > is the only consumer of the packet tap.
 
-The monitor does not add an aggregator goroutine. RX records briefly wait for
+The API does not add an aggregator goroutine. RX records briefly wait for
 RxMeta using a bounded single pending record and timeout callback; TX records
 stay with the in-flight writer frame. Room events are emitted by the room worker.
 Room HTTP snapshots are copied on that worker rather than reading its maps from
 request goroutines. Recording and HTTP page copies share a short ring lock; JSON
 encoding, HTTP writes and existing persistence work never hold it. The node
-shuts the monitor listener down before the underlying owners.
+shuts the API listener down before the underlying owners.
 
 ---
 
@@ -352,8 +355,8 @@ queries SQLite), and the timers for adverts, session flush and retention.
    written in batches every 5 s and on stop; posts are not batched. Restoring a
    last-heard timestamp does not mark a client active for push delivery. Retention
    prunes by count and age every 10 minutes.
-- **Monitoring.** Room counters and client/post summaries are copied through a
-   request handled by the worker. The monitor reads retained posts and advert
+- **API reads.** Room counters and client/post summaries are copied through a
+   request handled by the worker. The API reads retained posts and advert
    labels from SQLite outside the room-state ownership boundary.
 - **Failure isolation.** A room that cannot start is logged and skipped; radio
   ingestion continues.
@@ -481,9 +484,9 @@ Client                                 KAM room (ADV_TYPE_ROOM, default scope)
 
 `Node.Run` blocks on `<-ctx.Done()` (SIGINT/SIGTERM), then:
 
-1. Shut down the local API (one HTTP server; it serves monitoring and script
-   management), then unsubscribe the group-text and packet handlers (stop
-   intake), then `automation.Runtime.Stop()` (cancel the active script, drop
+1. Shut down the local API (one HTTP server; it serves the read-only data
+   surfaces and script management), then unsubscribe the group-text and packet
+   handlers (stop intake), then `automation.Runtime.Stop()` (cancel the active script, drop
    queued events, join the worker, wait for in-flight mutations) and close the
    automation repository, all **before** the TX path goes away.
 2. `room.Service.Stop()` joins the worker after a final flush of client

@@ -144,7 +144,7 @@ func roomRoleName(role uint8) string {
 	}
 }
 
-func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, roomCount int) {
+func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, roomCount int, initialSignalReport *bool) {
 	if n.rooms == nil {
 		roomCount = 0
 	}
@@ -169,11 +169,20 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 	status := func() api.Status {
 		value := api.Status{StartedAt: started, NodeName: cfg.NodeName, Persistence: map[string]api.QueueStatus{}, Rooms: api.RoomStatus{Enabled: n.rooms != nil, Count: roomCount}}
 		value.Modem.Link = "up"
-		value.Modem.DeviceName, value.Modem.FirmwareVersion = n.radio.CachedIdentity()
+		if n.radio != nil {
+			value.Modem.DeviceName, value.Modem.FirmwareVersion = n.radio.CachedIdentity()
+		}
 		if n.manager.Err() != nil {
 			value.Modem.Link = "down"
 		}
-		value.Radio = api.RadioStatus{FrequencyHz: n.RadioConfig.Frequency, BandwidthHz: n.RadioConfig.Bandwidth, SpreadingFactor: n.RadioConfig.SpreadingFactor, CodingRate: n.RadioConfig.CodingRate, TxPowerDBM: cfg.Radio.TxPowerDBm, Source: "modem_echo"}
+		value.Radio = api.RadioStatus{Source: "modem_echo"}
+		var settings models.RadioConfig
+		if n.radioState != nil {
+			settings = n.radioState.settingsValue()
+			if echo := n.radioState.echoValue(); echo != nil {
+				value.Radio = api.RadioStatus{FrequencyHz: echo.Frequency, BandwidthHz: echo.Bandwidth, SpreadingFactor: echo.SpreadingFactor, CodingRate: echo.CodingRate, TxPowerDBM: settings.TxPowerDBm, Source: "modem_echo"}
+			}
+		}
 		meshCfg := models.DefaultMeshConfig()
 		if cfg.Mesh != nil {
 			meshCfg = *cfg.Mesh
@@ -208,9 +217,20 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 	if n.rooms != nil && n.roomRepository != nil && persistence != nil {
 		roomReader = apiRooms{service: n.rooms, repository: n.roomRepository, persistence: persistence}
 	}
-	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomReader))
+	var modemSource api.ModemSource
+	if n.scheduler != nil && n.radio != nil && n.radioState != nil {
+		controller := newModemController(n.radio, n.scheduler, n.manager, n.radioState, n.configPath, initialSignalReport)
+		controller.Start()
+		modemSource = controller
+		n.modem = controller
+	}
+	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomReader, modemSource))
 	if err != nil {
 		slog.Error("local API listener unavailable", "address", settings.Listen, "error", err)
+		if n.modem != nil {
+			n.modem.Stop()
+			n.modem = nil
+		}
 		return
 	}
 	n.monitorServer = server
