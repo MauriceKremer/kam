@@ -316,6 +316,7 @@ func normalizeAndValidate(cfg *KamConfig) (*KamConfig, error) {
 		Channels: make([]ChannelConfig, 0, len(cfg.Channels)),
 		Mesh:     cfg.Mesh,
 		Rooms:    cfg.Rooms,
+		Monitor:  cfg.Monitor,
 	}
 	seen := make(map[string]struct{}, len(cfg.Channels))
 
