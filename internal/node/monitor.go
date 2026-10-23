@@ -8,64 +8,81 @@ import (
 	"sort"
 	"time"
 
+	"kam.bytecoder.nl/internal/api"
 	"kam.bytecoder.nl/internal/db"
 	"kam.bytecoder.nl/internal/events"
 	"kam.bytecoder.nl/internal/models"
-	"kam.bytecoder.nl/internal/monitor"
 	"kam.bytecoder.nl/internal/room"
 )
 
-type monitorChannels struct {
+// apiEvents adapts the ring to the transport API's EventsSource seam, mapping
+// the ring's Pages into the API's wire shape.
+type apiEvents struct{ ring *events.Ring }
+
+func (s apiEvents) Page(after uint64, epoch string, limit int) (api.EventsResponse, error) {
+	page, err := s.ring.Page(after, epoch, limit)
+	if err != nil {
+		return api.EventsResponse{}, err
+	}
+	return api.EventsResponse{Epoch: page.Epoch, FirstSeq: page.FirstSeq, LastSeq: page.LastSeq, NextAfter: page.NextAfter, Reset: page.Reset, Events: page.Events}, nil
+}
+
+func (s apiEvents) Stats() api.RingStats {
+	stats := s.ring.Stats()
+	return api.RingStats{Epoch: stats.Epoch, Capacity: stats.Capacity, FirstSeq: stats.FirstSeq, LastSeq: stats.LastSeq}
+}
+
+type apiChannels struct {
 	persistence *db.Persistence
 	configured  []models.ChannelConfig
 }
 
-func (r monitorChannels) Channels(ctx context.Context) ([]monitor.Channel, error) {
+func (r apiChannels) Channels(ctx context.Context) ([]api.Channel, error) {
 	stored, err := r.persistence.ListMonitorChannels(ctx, r.configured)
 	if err != nil {
 		return nil, err
 	}
-	channels := make([]monitor.Channel, 0, len(stored))
+	channels := make([]api.Channel, 0, len(stored))
 	for _, item := range stored {
-		channels = append(channels, monitor.Channel{Name: item.Name, KeyStrategy: item.KeyStrategy, Enabled: item.Enabled, StoredMessages: item.StoredMessages, LastMessageAt: item.LastMessageAt})
+		channels = append(channels, api.Channel{Name: item.Name, KeyStrategy: item.KeyStrategy, Enabled: item.Enabled, StoredMessages: item.StoredMessages, LastMessageAt: item.LastMessageAt})
 	}
 	return channels, nil
 }
 
-func (r monitorChannels) Messages(ctx context.Context, name string, limit int, beforeID int64, query string) (monitor.ChannelPage, error) {
+func (r apiChannels) Messages(ctx context.Context, name string, limit int, beforeID int64, query string) (api.ChannelPage, error) {
 	stored, err := r.persistence.ListChannelMessages(ctx, name, limit, beforeID, query)
 	if err != nil {
-		return monitor.ChannelPage{}, err
+		return api.ChannelPage{}, err
 	}
-	page := monitor.ChannelPage{Messages: make([]monitor.ChannelMessage, 0, len(stored.Messages)), NextBeforeID: stored.NextBeforeID}
+	page := api.ChannelPage{Messages: make([]api.ChannelMessage, 0, len(stored.Messages)), NextBeforeID: stored.NextBeforeID}
 	for _, item := range stored.Messages {
-		page.Messages = append(page.Messages, monitor.ChannelMessage{ID: item.ID, ReceivedAt: item.ReceivedAt, Sender: item.Sender, Body: item.Body, HopCount: item.HopCount, SNRDB: item.SNRDB, RSSIDBm: item.RSSIDBm})
+		page.Messages = append(page.Messages, api.ChannelMessage{ID: item.ID, ReceivedAt: item.ReceivedAt, Sender: item.Sender, Body: item.Body, HopCount: item.HopCount, SNRDB: item.SNRDB, RSSIDBm: item.RSSIDBm})
 	}
 	return page, nil
 }
 
-type monitorRooms struct {
+type apiRooms struct {
 	service     *room.Service
 	repository  *db.RoomRepository
 	persistence *db.Persistence
 }
 
-func (r monitorRooms) Rooms(ctx context.Context) ([]monitor.Room, error) {
+func (r apiRooms) Rooms(ctx context.Context) ([]api.Room, error) {
 	snapshot, err := r.service.MonitorSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	items := make([]monitor.Room, 0, len(snapshot))
+	items := make([]api.Room, 0, len(snapshot))
 	for _, room := range snapshot {
 		stats, err := r.repository.MonitorStats(ctx, room.ID)
 		if err != nil {
 			return nil, err
 		}
-		items = append(items, monitor.Room{
+		items = append(items, api.Room{
 			ID: room.ID, Name: room.Name, Enabled: room.Enabled, PublicKey: room.PublicKey,
 			MaxClients: room.MaxClients, ClientsRemembered: len(room.Clients),
 			LastActivityAt: room.LastActivityAt, LastPostAt: stats.LastPostAt, RetainedPosts: stats.RetainedPosts,
-			Counters: monitor.RoomCounters{
+			Counters: api.RoomCounters{
 				LoginsOK: room.Counters.LoginsOK, LoginsFailed: room.Counters.LoginsFailed, LoginsRateLimited: room.Counters.LoginsRateLimited,
 				PostsAccepted: room.Counters.PostsAccepted, PostsRejected: room.Counters.PostsRejected, PushesSent: room.Counters.PushesSent,
 				PushesAcked: room.Counters.PushesAcked, PushTimeouts: room.Counters.PushTimeouts,
@@ -75,7 +92,7 @@ func (r monitorRooms) Rooms(ctx context.Context) ([]monitor.Room, error) {
 	return items, nil
 }
 
-func (r monitorRooms) Clients(ctx context.Context, id string) ([]monitor.RoomClient, error) {
+func (r apiRooms) Clients(ctx context.Context, id string) ([]api.RoomClient, error) {
 	snapshot, err := r.service.MonitorSnapshot(ctx)
 	if err != nil {
 		return nil, err
@@ -84,7 +101,7 @@ func (r monitorRooms) Clients(ctx context.Context, id string) ([]monitor.RoomCli
 		if room.ID != id {
 			continue
 		}
-		clients := make([]monitor.RoomClient, 0, len(room.Clients))
+		clients := make([]api.RoomClient, 0, len(room.Clients))
 		for _, client := range room.Clients {
 			publicKey, err := hex.DecodeString(client.PublicKey)
 			if err != nil {
@@ -94,7 +111,7 @@ func (r monitorRooms) Clients(ctx context.Context, id string) ([]monitor.RoomCli
 			if err != nil {
 				return nil, err
 			}
-			clients = append(clients, monitor.RoomClient{PublicKey: client.PublicKey, Role: roomRoleName(client.Role), LastActivityAt: client.LastActivityAt, PushState: client.PushState, Label: label})
+			clients = append(clients, api.RoomClient{PublicKey: client.PublicKey, Role: roomRoleName(client.Role), LastActivityAt: client.LastActivityAt, PushState: client.PushState, Label: label})
 		}
 		sort.Slice(clients, func(i, j int) bool { return clients[i].PublicKey < clients[j].PublicKey })
 		return clients, nil
@@ -102,14 +119,14 @@ func (r monitorRooms) Clients(ctx context.Context, id string) ([]monitor.RoomCli
 	return nil, fmt.Errorf("room %q not found", id)
 }
 
-func (r monitorRooms) Posts(ctx context.Context, id string, limit int) ([]monitor.RoomPost, error) {
+func (r apiRooms) Posts(ctx context.Context, id string, limit int) ([]api.RoomPost, error) {
 	posts, err := r.repository.MonitorPosts(ctx, id, limit)
 	if err != nil {
 		return nil, err
 	}
-	items := make([]monitor.RoomPost, 0, len(posts))
+	items := make([]api.RoomPost, 0, len(posts))
 	for _, post := range posts {
-		items = append(items, monitor.RoomPost{ID: post.Timestamp, CreatedAt: post.CreatedAt, AuthorKey: hex.EncodeToString(post.Author), Body: post.Text})
+		items = append(items, api.RoomPost{ID: post.Timestamp, CreatedAt: post.CreatedAt, AuthorKey: hex.EncodeToString(post.Author), Body: post.Text})
 	}
 	return items, nil
 }
@@ -149,26 +166,26 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 	}
 	n.manager.SetMonitor(ring, cfg.Radio, addresses)
 	started := time.Now().UTC().Truncate(time.Millisecond)
-	status := func() monitor.Status {
-		value := monitor.Status{StartedAt: started, NodeName: cfg.NodeName, Persistence: map[string]monitor.QueueStatus{}, Rooms: monitor.RoomStatus{Enabled: n.rooms != nil, Count: roomCount}}
+	status := func() api.Status {
+		value := api.Status{StartedAt: started, NodeName: cfg.NodeName, Persistence: map[string]api.QueueStatus{}, Rooms: api.RoomStatus{Enabled: n.rooms != nil, Count: roomCount}}
 		value.Modem.Link = "up"
 		value.Modem.DeviceName, value.Modem.FirmwareVersion = n.radio.CachedIdentity()
 		if n.manager.Err() != nil {
 			value.Modem.Link = "down"
 		}
-		value.Radio = monitor.RadioStatus{FrequencyHz: n.RadioConfig.Frequency, BandwidthHz: n.RadioConfig.Bandwidth, SpreadingFactor: n.RadioConfig.SpreadingFactor, CodingRate: n.RadioConfig.CodingRate, TxPowerDBM: cfg.Radio.TxPowerDBm, Source: "modem_echo"}
+		value.Radio = api.RadioStatus{FrequencyHz: n.RadioConfig.Frequency, BandwidthHz: n.RadioConfig.Bandwidth, SpreadingFactor: n.RadioConfig.SpreadingFactor, CodingRate: n.RadioConfig.CodingRate, TxPowerDBM: cfg.Radio.TxPowerDBm, Source: "modem_echo"}
 		meshCfg := models.DefaultMeshConfig()
 		if cfg.Mesh != nil {
 			meshCfg = *cfg.Mesh
 		}
 		scheduled := n.scheduler.Stats()
-		value.DutyCycle = monitor.DutyStatus{ConfiguredPercent: meshCfg.DutyCyclePercent, UsedMS: scheduled.AirtimeUsed.Milliseconds(), WindowS: 3600}
-		value.TX = monitor.TXStatus{Queued: scheduled.Queued, Submitted: scheduled.Submitted, Sent: scheduled.Sent, Completed: scheduled.Completed, Rejected: scheduled.Rejected, Evicted: scheduled.Evicted, Deferred: scheduled.Deferred, GateTimeouts: scheduled.GateTimeouts}
+		value.DutyCycle = api.DutyStatus{ConfiguredPercent: meshCfg.DutyCyclePercent, UsedMS: scheduled.AirtimeUsed.Milliseconds(), WindowS: 3600}
+		value.TX = api.TXStatus{Queued: scheduled.Queued, Submitted: scheduled.Submitted, Sent: scheduled.Sent, Completed: scheduled.Completed, Rejected: scheduled.Rejected, Evicted: scheduled.Evicted, Deferred: scheduled.Deferred, GateTimeouts: scheduled.GateTimeouts}
 		if persistence != nil {
 			adverts := persistence.AdvertQueue.Metrics()
 			texts := persistence.GroupTextQueue.Metrics()
-			value.Persistence["adverts"] = monitor.QueueStatus{Depth: adverts.Depth, Dropped: uint64(adverts.Dropped)}
-			value.Persistence["group_texts"] = monitor.QueueStatus{Depth: texts.Depth, Dropped: uint64(texts.Dropped)}
+			value.Persistence["adverts"] = api.QueueStatus{Depth: adverts.Depth, Dropped: uint64(adverts.Dropped)}
+			value.Persistence["group_texts"] = api.QueueStatus{Depth: texts.Depth, Dropped: uint64(texts.Dropped)}
 		}
 		value.Automation.Enabled = n.automation != nil
 		if n.automation != nil {
@@ -179,15 +196,15 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 		}
 		return value
 	}
-	var channelReader monitor.ChannelReader
+	var channelReader api.ChannelReader
 	if persistence != nil {
-		channelReader = monitorChannels{persistence: persistence, configured: cfg.Channels}
+		channelReader = apiChannels{persistence: persistence, configured: cfg.Channels}
 	}
-	var roomReader monitor.RoomReader
+	var roomReader api.RoomReader
 	if n.rooms != nil && n.roomRepository != nil && persistence != nil {
-		roomReader = monitorRooms{service: n.rooms, repository: n.roomRepository, persistence: persistence}
+		roomReader = apiRooms{service: n.rooms, repository: n.roomRepository, persistence: persistence}
 	}
-	server, err := monitor.Listen(settings.Listen, monitor.NewHandlerWithResources(ring, status, channelReader, roomReader))
+	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, channelReader, roomReader))
 	if err != nil {
 		slog.Error("monitor listener unavailable", "address", settings.Listen, "error", err)
 		return

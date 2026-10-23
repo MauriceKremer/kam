@@ -2,14 +2,11 @@ package kiss
 
 import (
 	"context"
-	"encoding/json"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"kam.bytecoder.nl/internal/events"
 	"kam.bytecoder.nl/internal/models"
-	"kam.bytecoder.nl/internal/monitor"
 )
 
 func monitoredManager(t *testing.T) (*Manager, *events.Ring) {
@@ -23,10 +20,8 @@ func monitoredManager(t *testing.T) (*Manager, *events.Ring) {
 
 func monitorPage(t *testing.T, ring *events.Ring) events.Page {
 	t.Helper()
-	response := httptest.NewRecorder()
-	monitor.NewHandler(ring, func() monitor.Status { return monitor.Status{} }).ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1/v1/events", nil))
-	var page events.Page
-	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+	page, err := ring.Page(0, "", 64)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return page

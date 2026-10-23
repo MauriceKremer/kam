@@ -1,6 +1,6 @@
 // Package events owns the bounded, metadata-only event ring. The radio and
-// room paths record into it through the models.MonitorSink interface; the
-// local API serves pages from it. Pages are copied under a short lock and
+// room paths record into it through the models.MonitorSink interface;
+// internal/node maps its pages into the transport API's response shape. Pages are copied under a short lock and
 // encoded after the lock is released, so a slow reader never blocks packet
 // recording. Nothing here touches HTTP, SQLite or the modem.
 package events
@@ -19,14 +19,16 @@ import (
 
 type Event = models.MonitorEvent
 
-// Page is one read of the ring; the local API marshals it as-is.
+// Page is one read of the ring. It carries no JSON tags: wire shapes belong
+// to the transport package, and internal/node maps this value into
+// api.EventsResponse.
 type Page struct {
-	Epoch     string  `json:"epoch"`
-	FirstSeq  uint64  `json:"first_seq"`
-	LastSeq   uint64  `json:"last_seq"`
-	NextAfter uint64  `json:"next_after"`
-	Reset     bool    `json:"reset"`
-	Events    []Event `json:"events"`
+	Epoch     string
+	FirstSeq  uint64
+	LastSeq   uint64
+	NextAfter uint64
+	Reset     bool
+	Events    []Event
 }
 
 // Stats is the ring snapshot the API's status endpoint reports.

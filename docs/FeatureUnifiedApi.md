@@ -107,11 +107,11 @@ The line, applied to today's code: the handler defaulting `timeout_ms` to 500 ([
 |---|---|---|---|
 | Scripts | `api.Scripts` interface: `List`, `Get`, `Save`, `Delete`, `SetEnabled`, `Recover`, `Validate`, `MonitorStats` | Adapter in `internal/node` over `automation.Runtime` (maps `db.AutomationScript` ↔ `api.Script`; D6) | `node.New` |
 | Status | `func() api.Status` (plain function, as today) | Existing status closure in `node.startMonitor` ([NODE]) | `node.startMonitor` |
-| Events | Concrete `*events.Ring` with `Page` and `Stats` methods (D5) | `internal/events` (the extracted ring) | `node.startMonitor` |
+| Events | `api.EventsSource`: `Page` returns the wire shape (`EventsResponse`), `Stats` the ring snapshot | The `internal/events` ring behind a small field-copy adapter in `internal/node` (D5) | `node.startMonitor` |
 | Channels | `api.ChannelReader` (exists as `monitor.ChannelReader`, moved unchanged) | Existing `monitorChannels` adapter in [NODE] | `node.startMonitor` |
 | Rooms | `api.RoomReader` (exists as `monitor.RoomReader`, moved unchanged) | Existing `monitorRooms` adapter in [NODE] | `node.startMonitor` |
 
-The ring is deliberately **not** behind an interface: it has no alternative implementation worth one, the monitor tests already exercise the real ring, and [FeatureMonitorApi.md API-EV-10](FeatureMonitorApi.md) concerns its locking, not its interface. Scripts are the opposite: the automation runtime is the first of several possible script engines, and its current concrete coupling is exactly the drift §5.2 describes.
+The ring's seam exists for the dependency rule, not for polymorphism (D5): it has no alternative implementation worth one, the monitor tests exercise the real ring through the same adapter shape node uses, and [FeatureMonitorApi.md API-EV-10](FeatureMonitorApi.md) concerns its locking, not its interface. The plan first handed the concrete `*events.Ring` to the handler, but that parameter forces an `internal/events` import into `internal/api` — the guard test (UA-T-1/D10) failed on its first run and the seam won by the exact mechanism this feature built to enforce its own rule. Scripts are the opposite kind of seam: the automation runtime is the first of several possible script engines, and its current concrete coupling is exactly the drift §5.2 describes.
 
 Today's `API-M` reaches into ring internals (`len(ring.events)` for the capacity in `/v1/status`). After extraction that becomes `ring.Stats()` — same value, no cross-package field access.
 
@@ -184,7 +184,7 @@ Honest findings from reading the code, not opinions:
 
 ### 5.4 Honest limits
 
-The guard test checks imports, not semantics; a capability could still leak decision-making through a too-wide interface signature, and no automated check catches that. Reviews remain the backstop for that class; this plan records the limitation once, here, rather than pretending full enforcement. The ring's concrete seam (D5) is a deliberate exception to "everything behind an interface", taken for simplicity and argued in §4.3.
+The guard test checks imports, not semantics; a capability could still leak decision-making through a too-wide interface signature, and no automated check catches that. Reviews remain the backstop for that class; this plan records the limitation once, here, rather than pretending full enforcement. The ring's `EventsSource` seam (D5) is the inverse case: an interface with a single implementation, kept because the dependency rule requires it — not because polymorphism does.
 
 ## 6. Requirements
 
@@ -252,7 +252,7 @@ Recorded 2026-10-23.
 | D2 | Keep `monitor.*` config keys? | Keep; rename to `api.*` | **Keep.** Renaming buys a prettier key at the cost of every existing `kam.yml` and doc. Revisit only if a second listener ever appears |
 | D3 | What does `monitor.enabled: false` mean after the merge? | Disables everything; always-on listener regardless | **Disables everything.** Today's split leaves a write-capable, unauthenticated script listener up even with monitoring "off" (FMA D12/R5 accepted that posture); one knob with one meaning is simpler, and the security posture is unchanged either way. Stated once in §4.5 row 2 |
 | D4 | Script paths under `/v1`? | Keep `/scripts` shapes; fold into `/v1/scripts` | **Keep the shapes.** A client change is unavoidable (port); a path change adds nothing. The `/v1` prefix stays monitor-historical, documented once |
-| D5 | Where does the ring live? | Stay in the merged package; `internal/events` with `models.MonitorEvent`; read-only interface in `api` | **`internal/events`, concrete `*events.Ring` handed to `api`.** The record type and its JSON tags already live in `models` and are shared by the radio path; a read interface over a single in-memory buffer buys no testability the real ring doesn't already give |
+| D5 | Where does the ring live? | Stay in the merged package; `internal/events` with `models.MonitorEvent`; read-only interface in `api` | **`internal/events`; the handler sees `api.EventsSource`, node wraps the ring.** The original hand-off — concrete `*events.Ring` passed to `api` — failed this plan's own guard test on its first run: the parameter required an `internal/events` import into `internal/api` (UA-T-1). The seam won by the mechanism D10 built to enforce the rule; `events.Page` sheds its JSON tags because wire shapes live in `api` |
 | D6 | How does the handler get scripts? | `api` imports `db` directly; consumer interface + node adapter; `automation` returns `api` own DTOs | **Consumer interface `api.Scripts` + adapter in `node`.** First two options violate UA-T-1 or invert ownership; the adapter cost (~30 lines, same pattern as channels/rooms) is the price of the boundary |
 | D7 | Who applies `timeout_ms` defaults? | Handler (today); capability | **Capability.** It is resource policy, not HTTP shape; `db.DefaultAutomationTimeout` already names the value one level below the handler today |
 | D8 | Which sentinels does the handler map? | `db.Err*` directly (today); automation-owned domain sentinels | **Automation owned.** The handler should not know which storage engine backs a capability; aliasing in `automation` keeps `db` out of `api` without inventing new semantics |

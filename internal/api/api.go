@@ -1,4 +1,14 @@
-package monitor
+// Package api is KAM's local REST layer: routes, JSON decoding and shape
+// validation, transport policy (loopback Host guard, at most eight concurrent
+// requests, a five-second deadline, panic recovery), the wire shapes of every
+// response, error-to-status translation, and the self-describing GET / index.
+//
+// The package is transport only: it implements no KAM capability and imports
+// nothing from this repository except internal/models (shared data types).
+// Capabilities are handed in through the seams below — an events source, a
+// status function, and the channel/room readers — and are composed in
+// internal/node. See docs/FeatureUnifiedApi.md.
+package api
 
 import (
 	"context"
@@ -12,7 +22,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"kam.bytecoder.nl/internal/events"
 	"kam.bytecoder.nl/internal/models"
 )
 
@@ -21,6 +30,32 @@ type apiEndpoint struct {
 	Method  string `json:"method"`
 	Path    string `json:"path"`
 	Purpose string `json:"purpose"`
+}
+
+// EventsResponse is the events-page wire shape; the events package's own Page
+// carries the same fields without JSON tags, and the composition root maps
+// between the two through EventsSource.
+type EventsResponse struct {
+	Epoch     string                `json:"epoch"`
+	FirstSeq  uint64                `json:"first_seq"`
+	LastSeq   uint64                `json:"last_seq"`
+	NextAfter uint64                `json:"next_after"`
+	Reset     bool                  `json:"reset"`
+	Events    []models.MonitorEvent `json:"events"`
+}
+
+// RingStats is the ring snapshot the status handler folds into /v1/status.
+type RingStats struct {
+	Epoch    string
+	Capacity int
+	FirstSeq uint64
+	LastSeq  uint64
+}
+
+// EventsSource is the read seam over the buffered event ring.
+type EventsSource interface {
+	Page(after uint64, epoch string, limit int) (EventsResponse, error)
+	Stats() RingStats
 }
 
 type Channel struct {
@@ -159,15 +194,15 @@ type Status struct {
 	EventRing   RingStatus             `json:"event_ring"`
 }
 
-func NewHandler(ring *events.Ring, status func() Status) http.Handler {
+func NewHandler(ring EventsSource, status func() Status) http.Handler {
 	return NewHandlerWithResources(ring, status, nil, nil)
 }
 
-func NewHandlerWithChannels(ring *events.Ring, status func() Status, channels ChannelReader) http.Handler {
+func NewHandlerWithChannels(ring EventsSource, status func() Status, channels ChannelReader) http.Handler {
 	return NewHandlerWithResources(ring, status, channels, nil)
 }
 
-func NewHandlerWithResources(ring *events.Ring, status func() Status, channels ChannelReader, rooms RoomReader) http.Handler {
+func NewHandlerWithResources(ring EventsSource, status func() Status, channels ChannelReader, rooms RoomReader) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/events", func(w http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query()
@@ -359,7 +394,7 @@ func NewHandlerWithResources(ring *events.Ring, status func() Status, channels C
 			"api_version": 1,
 			"endpoints":   endpoints,
 			// The Local Management API address is fixed (automation.LocalAPIAddress);
-			// a literal here avoids a dependency from monitor onto automation.
+			// a literal here avoids a dependency from the API package onto automation.
 			"script_api": "http://127.0.0.1:8765/",
 			"docs":       "docs/APIdetails.md",
 		})

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"kam.bytecoder.nl/internal/api"
 	"kam.bytecoder.nl/internal/kiss"
 	"kam.bytecoder.nl/internal/models"
-	"kam.bytecoder.nl/internal/monitor"
 )
 
 func TestMonitorDisabledOrBindFailureKeepsManagerAlive(t *testing.T) {
@@ -63,7 +63,7 @@ func TestMonitorStatusWithoutAutomation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var value monitor.Status
+	var value api.Status
 	if err := json.Unmarshal(body, &value); err != nil {
 		t.Fatal(err)
 	}
