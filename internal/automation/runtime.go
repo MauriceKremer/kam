@@ -279,6 +279,16 @@ func (r *Runtime) Stop() {
 		r.intakeMu.Unlock()
 	})
 	<-r.done
+	r.waitForInFlightMutation()
+}
+
+// waitForInFlightMutation waits out a mutation already holding mutationMu.
+// Save, SetEnabled and Delete write to the repository under that lock, and
+// Stop's caller closes the repository next, hence the empty critical section:
+// it is a wait, not a guard. Whoever acquires the lock after it finds
+// r.ctx cancelled and returns before writing, and freeze always runs on the
+// worker, which has exited by <-r.done.
+func (r *Runtime) waitForInFlightMutation() {
 	r.mutationMu.Lock()
 	r.mutationMu.Unlock()
 }
