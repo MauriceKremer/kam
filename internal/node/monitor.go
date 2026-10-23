@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"kam.bytecoder.nl/internal/db"
+	"kam.bytecoder.nl/internal/events"
 	"kam.bytecoder.nl/internal/models"
 	"kam.bytecoder.nl/internal/monitor"
 	"kam.bytecoder.nl/internal/room"
@@ -138,7 +139,7 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 		slog.Error("monitor disabled", "error", err)
 		return
 	}
-	ring := monitor.NewRing(settings.EventRing)
+	ring := events.NewRing(settings.EventRing)
 	if n.rooms != nil {
 		n.rooms.SetMonitorRecorder(ring.Record)
 	}

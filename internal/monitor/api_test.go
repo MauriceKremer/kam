@@ -10,15 +10,17 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"kam.bytecoder.nl/internal/events"
 )
 
 func TestEventsPaginationAndReset(t *testing.T) {
-	ring := NewRing(3)
+	ring := events.NewRing(3)
 	for range 5 {
-		ring.Record(Event{Kind: "rx", At: time.Now(), PayloadType: "TRACE"})
+		ring.Record(events.Event{Kind: "rx", At: time.Now(), PayloadType: "TRACE"})
 	}
 	handler := NewHandler(ring, func() Status { return Status{NodeName: "test"} })
-	read := func(query string, code int) EventsResponse {
+	read := func(query string, code int) events.Page {
 		t.Helper()
 		request := httptest.NewRequest("GET", "http://127.0.0.1/v1/events"+query, nil)
 		response := httptest.NewRecorder()
@@ -26,7 +28,7 @@ func TestEventsPaginationAndReset(t *testing.T) {
 		if response.Code != code {
 			t.Fatalf("%s: status %d: %s", query, response.Code, response.Body)
 		}
-		var page EventsResponse
+		var page events.Page
 		if code == http.StatusOK {
 			if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
 				t.Fatal(err)
@@ -92,7 +94,7 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 		return seen
 	}
 
-	base := paths(readIndex(NewHandler(NewRing(4), func() Status { return Status{} })))
+	base := paths(readIndex(NewHandler(events.NewRing(4), func() Status { return Status{} })))
 	for _, want := range []string{"GET /v1/status", "GET /v1/events", "GET /v1/rooms", "GET /v1/rooms/{id}/clients", "GET /v1/rooms/{id}/posts"} {
 		if !base[want] {
 			t.Fatalf("index missing %s: %+v", want, base)
@@ -102,7 +104,7 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 		t.Fatalf("index lists channels without a channel reader: %+v", base)
 	}
 
-	full := paths(readIndex(NewHandlerWithResources(NewRing(4), func() Status { return Status{} }, &testChannelReader{}, &testRoomReader{})))
+	full := paths(readIndex(NewHandlerWithResources(events.NewRing(4), func() Status { return Status{} }, &testChannelReader{}, &testRoomReader{})))
 	for _, want := range []string{"GET /v1/channels", "GET /v1/channels/{name}/messages"} {
 		if !full[want] {
 			t.Fatalf("index missing %s: %+v", want, full)
@@ -150,7 +152,7 @@ func TestChannelEndpointsAndValidation(t *testing.T) {
 		channels: []Channel{{Name: "#emmen", KeyStrategy: "derived", Enabled: true, StoredMessages: 1}},
 		page:     ChannelPage{Messages: []ChannelMessage{}, NextBeforeID: nil},
 	}
-	handler := NewHandlerWithChannels(NewRing(256), func() Status { return Status{} }, reader)
+	handler := NewHandlerWithChannels(events.NewRing(256), func() Status { return Status{} }, reader)
 	request := func(path string, code int) string {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -186,7 +188,7 @@ func TestRoomReadEndpoints(t *testing.T) {
 		clients: []RoomClient{},
 		posts:   []RoomPost{{ID: 7, Body: "hello"}},
 	}
-	handler := NewHandlerWithResources(NewRing(256), func() Status { return Status{} }, nil, reader)
+	handler := NewHandlerWithResources(events.NewRing(256), func() Status { return Status{} }, nil, reader)
 	request := func(path string, code int) string {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -207,7 +209,7 @@ func TestRoomReadEndpoints(t *testing.T) {
 	}
 	request("/v1/rooms/missing/posts", 404)
 	request("/v1/rooms/lobby/posts?limit=201", 400)
-	disabled := NewHandler(NewRing(256), func() Status { return Status{} })
+	disabled := NewHandler(events.NewRing(256), func() Status { return Status{} })
 	response := httptest.NewRecorder()
 	disabled.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1/v1/rooms", nil))
 	if response.Code != 503 {
@@ -216,7 +218,7 @@ func TestRoomReadEndpoints(t *testing.T) {
 }
 
 func TestEmptyStatusHostAndListenerGuards(t *testing.T) {
-	ring := NewRing(256)
+	ring := events.NewRing(256)
 	handler := NewHandler(ring, func() Status { return Status{NodeName: "node"} })
 	for _, test := range []struct {
 		url  string
@@ -232,13 +234,6 @@ func TestEmptyStatusHostAndListenerGuards(t *testing.T) {
 		if test.code == 200 && response.Header().Get("Content-Type") != "application/json" {
 			t.Fatal("missing JSON content type")
 		}
-	}
-	page, err := ring.page(0, "", 1000)
-	if err != nil || page.FirstSeq != 0 || page.LastSeq != 0 || page.NextAfter != 0 || page.Events == nil {
-		t.Fatalf("empty page: %+v %v", page, err)
-	}
-	if page, _ = ring.page(100, "old-epoch", 1000); !page.Reset || page.NextAfter != 0 {
-		t.Fatalf("empty reset: %+v", page)
 	}
 	if server, err := Listen("0.0.0.0:0", handler); err == nil {
 		server.Close()
@@ -269,8 +264,8 @@ func (w *slowResponse) Write(body []byte) (int, error) {
 }
 
 func TestSlowReaderDoesNotHoldRingLock(t *testing.T) {
-	ring := NewRing(256)
-	ring.Record(Event{Kind: "rx", At: time.Now()})
+	ring := events.NewRing(256)
+	ring.Record(events.Event{Kind: "rx", At: time.Now()})
 	handler := NewHandler(ring, func() Status { return Status{} })
 	response := &slowResponse{header: make(http.Header), entered: make(chan struct{}), release: make(chan struct{})}
 	done := make(chan struct{})
@@ -280,7 +275,7 @@ func TestSlowReaderDoesNotHoldRingLock(t *testing.T) {
 	}()
 	<-response.entered
 	recorded := make(chan struct{})
-	go func() { ring.Record(Event{Kind: "rx", At: time.Now()}); close(recorded) }()
+	go func() { ring.Record(events.Event{Kind: "rx", At: time.Now()}); close(recorded) }()
 	select {
 	case <-recorded:
 	case <-time.After(time.Second):
@@ -290,23 +285,10 @@ func TestSlowReaderDoesNotHoldRingLock(t *testing.T) {
 	<-done
 }
 
-func TestRingOwnsCapturedValues(t *testing.T) {
-	ring := NewRing(256)
-	name := "before"
-	snr := 8.5
-	ring.Record(Event{At: time.Now(), Name: &name, SNRDB: &snr})
-	name = "after"
-	snr = 0
-	page, _ := ring.page(0, "", 100)
-	if *page.Events[0].Name != "before" || *page.Events[0].SNRDB != 8.5 {
-		t.Fatal("captured values mutated")
-	}
-}
-
 func TestConcurrentRequestLimit(t *testing.T) {
 	entered := make(chan struct{}, 8)
 	release := make(chan struct{})
-	handler := NewHandler(NewRing(256), func() Status { entered <- struct{}{}; <-release; return Status{} })
+	handler := NewHandler(events.NewRing(256), func() Status { entered <- struct{}{}; <-release; return Status{} })
 	var requests sync.WaitGroup
 	for range 8 {
 		requests.Add(1)
@@ -325,31 +307,4 @@ func TestConcurrentRequestLimit(t *testing.T) {
 	}
 	close(release)
 	requests.Wait()
-}
-
-func BenchmarkRingRecordWithReaders(b *testing.B) {
-	ring := NewRing(8192)
-	for range 8192 {
-		ring.Record(Event{Kind: "rx", At: time.Now()})
-	}
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				ring.page(0, "", 1000)
-			}
-		}
-	}()
-	b.ResetTimer()
-	for b.Loop() {
-		ring.Record(Event{Kind: "rx", At: time.Now()})
-	}
-	b.StopTimer()
-	close(stop)
-	<-done
 }

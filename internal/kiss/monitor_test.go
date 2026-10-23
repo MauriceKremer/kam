@@ -7,24 +7,25 @@ import (
 	"testing"
 	"time"
 
+	"kam.bytecoder.nl/internal/events"
 	"kam.bytecoder.nl/internal/models"
 	"kam.bytecoder.nl/internal/monitor"
 )
 
-func monitoredManager(t *testing.T) (*Manager, *monitor.Ring) {
+func monitoredManager(t *testing.T) (*Manager, *events.Ring) {
 	t.Helper()
 	m := &Manager{}
 	m.TestInit()
-	ring := monitor.NewRing(32)
+	ring := events.NewRing(32)
 	m.SetMonitor(ring, models.RadioConfig{FrequencyHz: 868000000, BandwidthHz: 125000, SpreadingFactor: 8, CodingRate: 5})
 	return m, ring
 }
 
-func monitorPage(t *testing.T, ring *monitor.Ring) monitor.EventsResponse {
+func monitorPage(t *testing.T, ring *events.Ring) events.Page {
 	t.Helper()
 	response := httptest.NewRecorder()
 	monitor.NewHandler(ring, func() monitor.Status { return monitor.Status{} }).ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1/v1/events", nil))
-	var page monitor.EventsResponse
+	var page events.Page
 	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
 		t.Fatal(err)
 	}

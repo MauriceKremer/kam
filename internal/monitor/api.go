@@ -2,39 +2,25 @@ package monitor
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
+	"kam.bytecoder.nl/internal/events"
 	"kam.bytecoder.nl/internal/models"
 )
-
-type Event = models.MonitorEvent
 
 // apiEndpoint is one row of the self-describing index served at GET /.
 type apiEndpoint struct {
 	Method  string `json:"method"`
 	Path    string `json:"path"`
 	Purpose string `json:"purpose"`
-}
-
-type EventsResponse struct {
-	Epoch     string  `json:"epoch"`
-	FirstSeq  uint64  `json:"first_seq"`
-	LastSeq   uint64  `json:"last_seq"`
-	NextAfter uint64  `json:"next_after"`
-	Reset     bool    `json:"reset"`
-	Events    []Event `json:"events"`
 }
 
 type Channel struct {
@@ -110,113 +96,6 @@ type RoomReader interface {
 	Posts(context.Context, string, int) ([]RoomPost, error)
 }
 
-type Ring struct {
-	mu       sync.Mutex
-	epoch    string
-	events   []Event
-	next     int
-	count    int
-	sequence uint64
-}
-
-func NewRing(capacity int) *Ring {
-	if capacity < 1 {
-		panic("monitor ring capacity must be positive")
-	}
-	var epoch [16]byte
-	if _, err := rand.Read(epoch[:]); err != nil {
-		panic(err)
-	}
-	return &Ring{epoch: hex.EncodeToString(epoch[:]), events: make([]Event, capacity)}
-}
-
-func boundedText(value *string) *string {
-	if value == nil {
-		return nil
-	}
-	text := strings.ToValidUTF8(*value, "")
-	if len(text) > 64 {
-		text = text[:64]
-		for !utf8.ValidString(text) {
-			text = text[:len(text)-1]
-		}
-	}
-	return &text
-}
-
-func (r *Ring) Record(event Event) {
-	event.Name = boundedText(event.Name)
-	event.Channel = boundedText(event.Channel)
-	event.Room = boundedText(event.Room)
-	if value := boundedText(&event.Client); value != nil {
-		event.Client = *value
-	}
-	if value := boundedText(&event.Event); value != nil {
-		event.Event = *value
-	}
-	if value := boundedText(&event.Role); value != nil {
-		event.Role = *value
-	}
-	event.DestHash = boundedText(event.DestHash)
-	event.AdvertRole = boundedText(event.AdvertRole)
-	if event.SNRDB != nil {
-		value := *event.SNRDB
-		event.SNRDB = &value
-	}
-	if event.RSSIDBM != nil {
-		value := *event.RSSIDBM
-		event.RSSIDBM = &value
-	}
-	if event.AirtimeMS != nil {
-		value := *event.AirtimeMS
-		event.AirtimeMS = &value
-	}
-	if event.OK != nil {
-		value := *event.OK
-		event.OK = &value
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sequence++
-	event.Seq = r.sequence
-	event.At = event.At.UTC().Truncate(time.Millisecond)
-	r.events[r.next] = event
-	r.next = (r.next + 1) % len(r.events)
-	if r.count < len(r.events) {
-		r.count++
-	}
-}
-
-func (r *Ring) page(after uint64, epoch string, limit int) (EventsResponse, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	response := EventsResponse{Epoch: r.epoch, LastSeq: r.sequence, NextAfter: after, Events: []Event{}}
-	response.Reset = epoch != "" && epoch != r.epoch
-	if !response.Reset && after > r.sequence {
-		return response, fmt.Errorf("after is beyond last_seq")
-	}
-	if r.count == 0 {
-		response.NextAfter = 0
-		return response, nil
-	}
-	response.FirstSeq = r.sequence - uint64(r.count) + 1
-	if after > 0 && after < response.FirstSeq-1 {
-		response.Reset = true
-	}
-	if response.Reset || after == 0 {
-		after = response.FirstSeq - 1
-	}
-	response.NextAfter = after
-	start := int(after + 1 - response.FirstSeq)
-	oldest := (r.next - r.count + len(r.events)) % len(r.events)
-	for index := start; index < r.count && len(response.Events) < limit; index++ {
-		event := r.events[(oldest+index)%len(r.events)]
-		response.Events = append(response.Events, event)
-		response.NextAfter = event.Seq
-	}
-	return response, nil
-}
-
 type RadioStatus struct {
 	FrequencyHz     uint32 `json:"frequency_hz"`
 	BandwidthHz     uint32 `json:"bandwidth_hz"`
@@ -280,15 +159,15 @@ type Status struct {
 	EventRing   RingStatus             `json:"event_ring"`
 }
 
-func NewHandler(ring *Ring, status func() Status) http.Handler {
+func NewHandler(ring *events.Ring, status func() Status) http.Handler {
 	return NewHandlerWithResources(ring, status, nil, nil)
 }
 
-func NewHandlerWithChannels(ring *Ring, status func() Status, channels ChannelReader) http.Handler {
+func NewHandlerWithChannels(ring *events.Ring, status func() Status, channels ChannelReader) http.Handler {
 	return NewHandlerWithResources(ring, status, channels, nil)
 }
 
-func NewHandlerWithResources(ring *Ring, status func() Status, channels ChannelReader, rooms RoomReader) http.Handler {
+func NewHandlerWithResources(ring *events.Ring, status func() Status, channels ChannelReader, rooms RoomReader) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/events", func(w http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query()
@@ -308,7 +187,7 @@ func NewHandlerWithResources(ring *Ring, status func() Status, channels ChannelR
 			writeJSON(w, 400, map[string]string{"error": "limit must be between 1 and 2000"})
 			return
 		}
-		page, err := ring.page(after, query.Get("epoch"), limit)
+		page, err := ring.Page(after, query.Get("epoch"), limit)
 		if err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
@@ -317,9 +196,9 @@ func NewHandlerWithResources(ring *Ring, status func() Status, channels ChannelR
 	})
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, request *http.Request) {
 		value := status()
-		page, _ := ring.page(0, "", 1)
-		value.APIVersion, value.Epoch, value.Now = 1, page.Epoch, time.Now().UTC().Truncate(time.Millisecond)
-		value.EventRing = RingStatus{Capacity: len(ring.events), FirstSeq: page.FirstSeq, LastSeq: page.LastSeq}
+		stats := ring.Stats()
+		value.APIVersion, value.Epoch, value.Now = 1, stats.Epoch, time.Now().UTC().Truncate(time.Millisecond)
+		value.EventRing = RingStatus{Capacity: stats.Capacity, FirstSeq: stats.FirstSeq, LastSeq: stats.LastSeq}
 		writeJSON(w, 200, value)
 	})
 	if channels != nil {
