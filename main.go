@@ -99,7 +99,10 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	n.Run(ctx)
+	if err := n.Run(ctx); err != nil {
+		slog.Error("Node stopped with error", "error", err)
+		os.Exit(1)
+	}
 
 	slog.Info("Stopped")
 }
