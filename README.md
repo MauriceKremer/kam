@@ -248,7 +248,7 @@ A wrong password gets no answer at all (the client times out); that is how MeshC
 | `mesh.default_scope`, `mesh.regions` | none | Region used for adverts and for replies whose request scope is unknown; extra regions recognised on inbound floods. |
 | `mesh.duty_cycle_percent` | 10 | Estimated airtime per hour allowed for pushes and adverts. ACKs and login replies are never held back. |
 
-At most 4 rooms run. A room with invalid settings is reported in the log and stays disabled; the other rooms and radio ingestion keep running.
+At most 10 rooms run. A room with invalid settings is reported in the log and stays disabled; the other rooms and radio ingestion keep running.
 
 Things to know:
 

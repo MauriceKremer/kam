@@ -378,7 +378,7 @@ Status as of 2026-10-10. **Done** means implemented and covered by tests (see §
 | RS-OPS-1 | Partly | Counters in `room.Stats` and `TxScheduler.Stats`; room statistics are logged at shutdown; no export. |
 | RS-OPS-2 | Deferred | D17. |
 | RS-OPS-3, RS-OPS-4, RS-OPS-5 | Done | Intake, then automation, rooms, scheduler, manager; a room that cannot start never stops ingestion; a start-up warning when the host clock is earlier than the newest stored post. |
-| RS-MULTI-1 .. RS-MULTI-5 | Done | Up to 4 rooms (D13). Regeneration avoids hash collisions at creation; keys that already collide are used and logged, and the first MAC that verifies wins. |
+| RS-MULTI-1 .. RS-MULTI-5 | Done | Up to 10 rooms (D13). Regeneration avoids hash collisions at creation; keys that already collide are used and logged, and the first MAC that verifies wins. |
 
 ### 6.15 Deviations and additions found while building
 
@@ -444,7 +444,7 @@ Recorded 2026-10-10. D7 and D9 differ from the recommendation; their consequence
 | D10 | **Open rooms** | Allow blank guest password silently, or require explicit opt-in | Require `open_room: true`. A blank guest password already means anyone logs in as read-write under the reference `strcmp` rule (inferred from `RS.cpp`; the CLI doc lists the default as blank). | **Accepted.** |
 | D11 | **Where passwords live** (RS-CFG-2) | (A) environment variables, (B) a `0600` secrets file, (C) plain text in `kam.yml` | A: keeps secrets out of a file that `SaveKamConfig` rewrites at `0644`. | **C, plain text in `kam.yml`.** Consistent with the README Philosophy (enthusiast project, pragmatism over hardening) and with explicit channel `key_hex`, which is already plain text there. `SaveKamConfig` is unchanged (8.2). |
 | D12 | **Identity storage** (refines D1, RS-ID-1) | Key file per room; inside SQLite; environment variable | Key file per room, mode `0600`. | **Key file per room** at `<database directory>/rooms/<id>.key`. The seed is generated, not hand-written, and KAM rewrites `kam.yml` (dropping comments), so it stays out of the yml. |
-| D13 | **Room limit** (RS-MULTI-5) | 2, 4 or 8 rooms | 4, a constant that can be raised after airtime measurement. | **4.** |
+| D13 | **Room limit** (RS-MULTI-5) | 2, 4 or 8 rooms | 4, a constant that can be raised after airtime measurement. | **4, raised to 10.** |
 | D14 | **Advert defaults** (RS-ADV-3) | Reference defaults; conservative (10 min / 12 h); minimal | Reference defaults. | **Zero-hop every 2 minutes, flood every 47 hours, plus one flood advert at start-up.** |
 | D15 | **Duty-cycle cap in this round** (RS-TX-3) | Basic cap in the scheduler; or document the gap | Basic cap. | **Basic cap:** sliding one-hour estimate, default 10%, defers pushes and adverts only. |
 | D16 | **Retention defaults** (RS-POST-7) | 1000 posts / 30 days; 200 / 7 days; unlimited | 1000 / 30. | **1000 posts / 30 days**; 0 means unlimited. |

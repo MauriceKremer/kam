@@ -100,7 +100,7 @@
                         <tr><td>Keep-alive requests</td><td><span class="badge badge-green">Implemented</span></td><td>Direct routes only, as in MeshCore.</td></tr>
                         <tr><td>Signed <code>ROOM</code> adverts</td><td><span class="badge badge-green">Implemented</span></td><td>At start-up, every 2 minutes (zero-hop) and every 47 hours (flood) by default.</td></tr>
                         <tr><td>Sessions survive a restart</td><td><span class="badge badge-green">Implemented</span></td><td>Role, sync cursor, route and replay timestamp are stored.</td></tr>
-                        <tr><td>Up to 4 rooms on one radio</td><td><span class="badge badge-green">Implemented</span></td><td>Each room has its own key, clients, posts and passwords.</td></tr>
+                        <tr><td>Up to 10 rooms on one radio</td><td><span class="badge badge-green">Implemented</span></td><td>Each room has its own key, clients, posts and passwords.</td></tr>
                         <tr><td>Airtime cap for pushes and adverts</td><td><span class="badge badge-green">Implemented</span></td><td>Based on an estimate of airtime, not a modem measurement.</td></tr>
                         <tr><td><code>kam room show</code> command</td><td><span class="badge badge-green">Implemented</span></td><td>Prints each room's public key, contact link and signed advert.</td></tr>
                         <tr><td>Status, telemetry and access-list requests</td><td><span class="badge badge-slate">Not implemented</span></td><td>KAM sends no reply, so an app that asks for a room's status times out.</td></tr>
@@ -199,7 +199,7 @@ rooms:
                         <tr><td><code>mesh.duty_cycle_percent</code></td><td>10</td><td>Share of each hour KAM may spend transmitting pushes and adverts; ACKs and login replies are never held back.</td></tr>
                     </tbody>
                 </table>
-                <p>Room settings are read when KAM starts. Restart KAM after you change them. At most 4 rooms run at once.</p>
+                <p>Room settings are read when KAM starts. Restart KAM after you change them. At most 10 rooms run at once.</p>
             </section>
 
             <!-- Workflow -->
@@ -326,7 +326,7 @@ rooms:
                         <tr><td>Post text</td><td>150 bytes</td><td>The reference constant says 151, but its copy keeps at most 150. KAM truncates at a UTF-8 boundary, so a multi-byte character is never split.</td></tr>
                         <tr><td>Stored posts</td><td>Reference: 32, in RAM only</td><td>Lost on reboot. KAM stores posts in SQLite (default newest 1000 and at most 30 days) and sends a returning client the newest 32.</td></tr>
                         <tr><td>Clients</td><td>20</td><td>When full, the least recently active non-admin is evicted. KAM's limit is configurable (1-100).</td></tr>
-                        <tr><td>Rooms</td><td>4</td><td>All rooms share one radio and one airtime budget.</td></tr>
+                        <tr><td>Rooms</td><td>10</td><td>All rooms share one radio and one airtime budget.</td></tr>
                         <tr><td>Password length</td><td>15 bytes</td><td>Clients truncate longer passwords, so KAM rejects longer configured ones.</td></tr>
                         <tr><td>Pushes in flight</td><td>1 per client</td><td>Round-robin across clients, at most one every 1.2 s (150 ms between idle scans). A post must be 6 s old first.</td></tr>
                         <tr><td>Push ACK timeout</td><td>12 s flood; 4 s + 2 s &times; (hops + 1) direct</td><td>Each timeout is one failure; 3 failures pause the client.</td></tr>
@@ -335,6 +335,7 @@ rooms:
                     </tbody>
                 </table>
                 <p>These numbers are why KAM has an airtime budget: pushes and adverts wait when the estimated airtime in the last hour would exceed <code>duty_cycle_percent</code>, while ACKs and login replies are never delayed or dropped for it.</p>
+                <p>The budget keeps your own node polite, but the air in your area is shared with every other node. KAMmon, the companion dashboard, shows your observed airtime; use it to watch how much of the hour your node is transmitting, and tune <code>duty_cycle_percent</code>, advert intervals and the number of rooms so your node does not crowd the network around you. The cap automatically holds back pushes and adverts, but you choose the settings that keep the shared channel free for others.</p>
             </section>
 
             <!-- How KAM differs -->
@@ -349,7 +350,7 @@ rooms:
                         <tr><td>Sessions</td><td>RAM; only admins are saved.</td><td>Role, cursor, route and replay timestamp are stored (written every 5 seconds and at shutdown). Secrets are recomputed, not stored. A restored client is not pushed to until it is heard from again, so a client that left does not cost airtime.</td></tr>
                         <tr><td>Blank-password login</td><td>Known clients are accepted; nothing else changes.</td><td>Same, and the client counts as active again.</td></tr>
                         <tr><td>After 3 failed pushes</td><td>Keeps the out path.</td><td>Also drops the out path so the next exchange rediscovers the route.</td></tr>
-                        <tr><td>Number of rooms</td><td>One.</td><td>Up to 4, each with its own identity, clients, posts, passwords and advert.</td></tr>
+                        <tr><td>Number of rooms</td><td>One.</td><td>Up to 10, each with its own identity, clients, posts, passwords and advert.</td></tr>
                         <tr><td>Over-the-air CLI</td><td>Yes (admin).</td><td>None in v1.</td></tr>
                         <tr><td>Forwarding</td><td>The reference room server defaults to not forwarding.</td><td>Never forwards or repeats any packet.</td></tr>
                         <tr><td>Passwords</td><td>Default admin password is <code>password</code>.</td><td>Refuses to start a room whose admin password is empty or <code>password</code>; compares passwords in constant time; rate-limits logins. Passwords themselves are plain text in <code>kam.yml</code>.</td></tr>

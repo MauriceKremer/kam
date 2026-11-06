@@ -13,7 +13,7 @@ import (
 const (
 	// MaxRooms bounds the rooms one KAM instance runs; every room shares one
 	// radio and one airtime budget (docs/FeatureRoomServer.md RS-MULTI-5).
-	MaxRooms = 4
+	MaxRooms = 10
 	// MaxPasswordBytes is the longest password MeshCore clients send; they
 	// truncate at 15 bytes, so a longer configured password could never match.
 	MaxPasswordBytes = 15

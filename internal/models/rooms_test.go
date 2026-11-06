@@ -1,6 +1,7 @@
 package models
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -263,12 +264,16 @@ rooms:
 func TestResolveRoomsLimitsRoomCount(t *testing.T) {
 	var extra strings.Builder
 	extra.WriteString("rooms:\n")
-	for _, id := range []string{"r1", "r2", "r3", "r4", "r5"} {
+	ids := make([]string, 0, MaxRooms+1)
+	for i := 1; i <= MaxRooms+1; i++ {
+		ids = append(ids, fmt.Sprintf("r%d", i))
+	}
+	for _, id := range ids {
 		extra.WriteString("  - id: " + id + "\n    name: " + id + "\n    admin_password: s3cret\n")
 	}
 	cfg := parseRoomConfig(t, extra.String())
 	_, rooms, problems := cfg.ResolveRooms()
-	if len(rooms) != MaxRooms || len(problems) != 1 || !strings.Contains(problems[0].Error(), "room r5 disabled") {
+	if len(rooms) != MaxRooms || len(problems) != 1 || !strings.Contains(problems[0].Error(), fmt.Sprintf("room %s disabled", ids[len(ids)-1])) {
 		t.Fatalf("rooms=%d problems=%v", len(rooms), problems)
 	}
 }
