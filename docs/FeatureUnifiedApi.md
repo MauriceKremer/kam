@@ -6,12 +6,12 @@
 
 ## 1. Summary
 
-KAM serves two REST APIs today:
+*(Historical section, describes the pre-cutover state.)* KAM served two REST APIs when this plan was written:
 
 | API | Code | Address | What it serves |
 |---|---|---|---|
-| Local Management (script) API | [internal/automation/api.go](../internal/automation/api.go) | `127.0.0.1:8765` (fixed constant) | `/scripts` CRUD, `validate`, `enable`/`disable`/`recover` |
-| Monitor API | [internal/monitor/api.go](../internal/monitor/api.go) | `127.0.0.1:8766` (`monitor.listen`) | `/v1/status`, `/v1/events`, `/v1/channels*`, `/v1/rooms*` |
+| Local Management (script) API | `internal/automation/api.go` (pre-cutover path; dissolved, see §4.4) | `127.0.0.1:8765` (fixed constant) | `/scripts` CRUD, `validate`, `enable`/`disable`/`recover` |
+| Monitor API | `internal/monitor/api.go` (pre-cutover path; the package was dissolved, see §4.4) | `127.0.0.1:8766` (`monitor.listen`) | `/v1/status`, `/v1/events`, `/v1/channels*`, `/v1/rooms*` |
 
 They are two `http.Server`s with two goroutine rows in [SYSTEM_DESIGN.md §2](SYSTEM_DESIGN.md) (7a and 7d), two shutdown paths in [Node.Run](../internal/node/node.go), two `GET /` indexes, two loopback guards with different `403` texts, and two `writeJSON` helpers. The split was decided in [FeatureKamApi.md](FeatureKamApi.md) D4; the cost of keeping it is now visible in that code.
 
@@ -48,7 +48,7 @@ Plain words for terms used below:
 
 **Non-goals**
 
-- New endpoints. Modem control, room-client removal, script dry runs and run info stay where they are planned ([FeatureKamApi.md §7 and §10](FeatureKamApi.md)). This feature moves wiring, not features.
+- New endpoints. Room-client removal and script dry runs/run info remain planned ([FeatureKamApi.md §7 and §10](FeatureKamApi.md)); the modem snapshot/apply routes that §7 lists landed directly on this unified listener when their phase shipped. This feature moved wiring, not features.
 - Authentication, TLS, CORS, WebSockets, or any change to the loopback-only posture (FeatureKamApi D12, kept).
 - A new configuration schema. `monitor.enabled`, `monitor.listen` and `monitor.event_ring` keep working exactly as today (§4.5, D2).
 - Any change to existing response shapes. Script JSON and monitor JSON stay byte-identical apart from the unifications §4.5 states once (rows 5, 6 and 8); no resource gains or loses a field.
@@ -62,10 +62,10 @@ Sources are KAM's own code and docs; this feature has no external protocol surfa
 
 | Key | File | Used for |
 |---|---|---|
-| `API-A` | [internal/automation/api.go](../internal/automation/api.go) | Script routes, guards, listener, evidence of concrete coupling (`NewAPI(runtime *Runtime)`, `db` imports, client-side defaults) |
+| `API-A` | `internal/automation/api.go` (pre-cutover path; its API files were deleted in the cutover) | Script routes, guards, listener, evidence of concrete coupling (`NewAPI(runtime *Runtime)`, `db` imports, client-side defaults) |
 | `API-A-T` | [internal/automation/runtime_test.go](../internal/automation/runtime_test.go) | Current script-API test style: real runtime + real SQLite (`openTestRepository`) |
-| `API-M` | [internal/monitor/api.go](../internal/monitor/api.go) | Monitor routes, ring, middlewares, index, `ChannelReader`/`RoomReader` seams |
-| `API-M-T` | [internal/monitor/api_test.go](../internal/monitor/api_test.go) | Fake-reader test precedent (`testChannelReader`, `testRoomReader`); ring lock test (`TestSlowReaderDoesNotHoldRingLock`); concurrency limit test |
+| `API-M` | `internal/monitor/api.go` (pre-cutover; dissolved into `internal/api`, see §4.4) | Monitor routes, ring, middlewares, index, `ChannelReader`/`RoomReader` seams |
+| `API-M-T` | `internal/monitor/api_test.go` (pre-cutover; split into `internal/api` and `internal/events` tests) | Fake-reader test precedent (`testChannelReader`, `testRoomReader`); ring lock test (`TestSlowReaderDoesNotHoldRingLock`); concurrency limit test |
 | `NODE` | [internal/node/node.go](../internal/node/node.go), [internal/node/monitor.go](../internal/node/monitor.go) | Composition root today: startup flags, shutdown order, `monitorChannels`/`monitorRooms` adapters, status closure |
 | `MODELS` | [internal/models/monitor.go](../internal/models/monitor.go) | `MonitorConfig` (defaults, validation), `MonitorSink { Record(MonitorEvent) }`, `MonitorEvent` wire shape |
 | `AGENTS` | [AGENTS.md](../AGENTS.md) | Philosophy, and the rule that API docs and the `endpoints` slices must change together |
@@ -119,7 +119,7 @@ Today's `API-M` reaches into ring internals (`len(ring.events)` for the capacity
 
 ### 4.4 Package moves
 
-- `internal/monitor` **dissolves**. Routes, DTOs, middleware, error mapping and the index move to `internal/api`; [api_test.go](../internal/monitor/api_test.go) splits along the same seam; the ring moves to `internal/events` with its lock behaviour and tests untouched.
+- `internal/monitor` **dissolves**. Routes, DTOs, middleware, error mapping and the index move to `internal/api`; its `api_test.go` split along the same seam; the ring moves to `internal/events` with its lock behaviour and tests untouched.
 - `internal/events` (new, tiny) holds the bounded ring. It imports only `models`. `kiss.Manager` and `room.Service` keep recording `models.MonitorEvent` through the existing `models.MonitorSink` interface — the radio path gains no dependency on any HTTP package (GL-5).
 - `internal/automation` keeps the runtime and loses HTTP: `NewAPI`, `ServeLocalAPI`, `ListenLocalAPI`, `listenLoopback`, `LocalAPIAddress` and `requireLocalJSON` leave the package; in their place come the domain sentinels and default application (D7, D8). The loopback/JSON guards move to `internal/api` as the single implementation (D11).
 - `internal/node` stays the composition root: it keeps the channel/room adapters, gains the script adapter, and holds the one `http.Server`.
@@ -162,7 +162,7 @@ This section answers the question this plan was written against: are the separat
 - [APP_STRUCTURE.md](APP_STRUCTURE.md) states, for the monitor: "A small `models.MonitorSink` interface separates transport from HTTP handling" and "No monitor handler opens the modem or accesses worker-owned room maps directly" ([APS] Lifecycle and Data Ownership).
 - [FeatureKamApi.md](FeatureKamApi.md) made the owner rules goals: GL-3 ("Every write goes through the part of KAM that already owns that data") and GL-7 ("The API describes KAM's own things … No field exists only to suit one client").
 - The consumer-side interface pattern is proven in-repo: `ChannelReader`/`RoomReader` defined by the handler package, implemented by adapters in `node`, tested with fakes ([API-M-T]).
-- [AGENTS.md](AGENTS.md) forces documentation and code to move together; `models` exists precisely as the shared, dependency-free data-type layer.
+- [AGENTS.md](../AGENTS.md) forces documentation and code to move together; `models` exists precisely as the shared, dependency-free data-type layer.
 - [FeatureKissModem.md §7.1 D8](FeatureKissModem.md) already knew what was missing and said so: "A later `GET /radio/status` on the Local Management API needs a shared mux so it does not depend on the automation runtime."
 
 ### 5.2 Where the principles failed to hold the line

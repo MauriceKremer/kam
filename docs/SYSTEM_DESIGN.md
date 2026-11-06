@@ -119,11 +119,11 @@ send.Sender  --> kiss.TxScheduler (legacy TxChan adapter, queued as group text)
 | Package | Role |
 |---|---|
 | `main` | Flag parse, slog setup, load `kam.yml`, build `Node`, block on SIGINT/SIGTERM. Also the short-lived `channel upsert` and `room show` commands. |
-| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*kiss.TxScheduler`, `*send.Sender`, the optional `*automation.Runtime` and the optional `*room.Service` with its repository. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg, creates the scheduler, then (best effort) starts the rooms and the automation runtime. `startMonitor` builds the unified local API handler from capability adapters and owns its HTTP server. `Run` blocks until ctx cancelled, then shuts down in the order of §6. |
+| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*kiss.TxScheduler`, `*send.Sender`, the optional `*automation.Runtime` and the optional `*room.Service` with its repository. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg, creates the scheduler, then (best effort) starts the rooms and the automation runtime. `startMonitor` builds the unified local API handler from capability adapters and owns its HTTP server; when the API is enabled it also runs the modem refresh loop (`internal/node/modem.go`) behind the `/v1/modem` routes, and `node.Run` starts the 500 ms config watcher and the 30 s radio health probe. `Run` blocks until ctx cancelled or the modem link is lost, then shuts down in the order of §6. |
 | `internal/config` | `LoadKamConfig` (YAML + normalize/validate), `BootstrapChannels` (load `#public` + enabled channels from the config into parser topic registry), `UpsertRuntimeChannelAndApply` (write a runtime channel back into the YAML file + apply live), `ResolveDBPath`. |
 | `internal/models` | Pure config + record structs. Validation lives here, including `MeshConfig`, `RoomConfig` and `KamConfig.ResolveRooms` (an invalid room is disabled, never fatal). |
 | `internal/mesh` | MeshCore wire primitives with no transport dependency: `Packet` parse/encode, `EncryptThenMAC`/`MACThenDecrypt`, `Identity` (Ed25519 + X25519 via `math/big` and `crypto/ecdh`), signed advert payloads, region keys and transport codes, ACK hashes. |
-| `internal/kiss` | KISS TNC protocol core: `Manager`, reader/writer/router loops, `RadioClient`, the time-bounded dedup cache, RxMeta hold/attach/flush, the packet tap, and the `TxScheduler` (priority queue, one frame in flight, `TxDone` gate, duty-cycle cap, airtime estimate). |
+| `internal/kiss` | KISS TNC protocol core: `Manager`, reader/writer/router loops, `RadioClient` (request gate, pending-request slot, typed modem commands), the time-bounded dedup cache, RxMeta hold/attach/flush, the packet tap, the modem-event loop, and the `TxScheduler` (priority queue, one frame in flight, `TxDone` gate, duty-cycle cap, airtime estimate). Diagnostic read commands live in `cmd_diagnostics.go`. |
 | `internal/kiss/parsers` | Per-payload-type parsers: `ParseAdvert` (Ed25519 verify), `ParseGroupText` (decrypt via channel secret), public-channel secret registry. |
 | `internal/kiss/send` | `Builder` constructs outbound group-text frames; `Sender` queues them on the transmit scheduler. |
 | `internal/room` | `Service`: logins and roles, posts, push sync, keep-alive, adverts, login rate limiting, identity files. One worker goroutine owns all room state. |
@@ -146,8 +146,9 @@ send.Sender  --> kiss.TxScheduler (legacy TxChan adapter, queued as group text)
 ## 2. Goroutine map
 
 KAM is a single process with several long-lived goroutines plus short-lived
-request goroutines on the radio-control path. All long-lived loops exit on
-`stopChan` close and are ordered at shutdown.
+request goroutines on the radio-control path. The three Manager loops and the
+modem event loop exit on `stopChan` close; every other long-lived goroutine is
+cancelled through its own context or stop signal and joined in the §6 order.
 
 ```
 main goroutine
@@ -160,7 +161,7 @@ main goroutine
   |   |- manager.Start() -------> [readLoop]    (kiss_reader.go)
   |                        \----> [writeLoop]   (kiss_writer.go)
   |                        \----> [routeLoop]   (kiss_router.go)
-  |   |- radio.ApplyRadioConfig  (sync, short-lived: registers waiter, blocks)
+  |   |- radio.ApplyRadioConfig  (sync, short-lived: takes the request slot, blocks)
   |   |- kiss.NewTxScheduler + Start -> [tx scheduler goroutine]  (kiss/scheduler.go)
   |   |- send.NewSender(scheduler)
   |   |- rooms (best effort; a failure leaves radio ingestion running):
@@ -172,11 +173,18 @@ main goroutine
   |        automation.NewRuntime -> manager.SubscribeGroupText(runtime.Handle)
   |                              -> [automation worker goroutine]   (internal/automation)
   |   |- node.startMonitor -> [local API server goroutine on 127.0.0.1:8766]  (internal/api)
+  |   |- node.startMonitor -> [modem event loop]  (kiss_manager.go: routes modem
+  |   |                              events, incl. link_lost/link_restored, to subscribers)
   |   |- node.startMonitor -> [modem refresh loop, one batch of reading commands
   |   |                      at most every 10 s]                        (internal/node/modem.go)
+  |   |- Run also starts a config watcher (polls the YAML every 500 ms, applies
+  |   |    runtime channel changes) and a radio health probe (Ping + GetRadio
+  |    every 30 s; after 3 consecutive timeouts it gives up silently)
   |
-  `- n.Run(ctx):  <-ctx.Done()  (SIGINT/SIGTERM)
-       |- local API Shutdown (one server: reads and scripts)   (stop intake)
+  `- n.Run(ctx):  <-ctx.Done()  (SIGINT/SIGTERM) or manager.Done() (modem link lost)
+       |- stop radio probe and config watcher; wait for the watcher
+       |- local API Shutdown (one server: reads, scripts and modem control)   (stop intake)
+       |- modemController.Stop() (joins the refresh loop; with the API enabled)
        |- unsubscribe (group text, packets)
        |- runtime.Stop()    (cancel active script, drop queued events, join worker)
        |- rooms.Stop()      (join worker, flush client sessions); close room repository
@@ -206,7 +214,7 @@ main goroutine
 | 7c | room worker | `room.Service` | `Start`→`Stop` | recv a bounded packet queue (64) and a 50 ms tick; owns every room's state; writes `RoomRepository`, submits to the scheduler |
 | 7d | modem refresh loop | `node.startMonitor` (the `modemController`) | monitor start→`modemController.Stop` | a ticker (10 s) plus an immediate-refresh signal; sends a bounded batch of reading commands through `RadioClient`, writes the cache the `/v1/modem` snapshot serves; skips while a radio change runs and yields to it mid-batch |
 | 8 | (planned) analytics/metrics aggregator | future package | subscribe via `SubscribeGroupText` | same tap pattern as the automation runtime |
-| * | radio request | caller (e.g. `main`/`New`) | per `Get`/`Set` call | register waiter on `ResponseRegistry`, push `txChan`, block on resp |
+| * | radio request | caller (e.g. `main`/`New`) | per `Get`/`Set` call | take the `requestGate` slot, push `txChan`, block on the pending-request result channel |
 
 > Goroutine 8 is **not yet implemented**; it is recorded here to make the
 > intended growth direction explicit. Today the automation worker (7) is the
@@ -225,22 +233,24 @@ shuts the API listener down before the underlying owners.
 
 ## 3. Concurrency model
 
-### 3.1 Hardware mutex (`hwTxMutex`)
+### 3.1 Request gate (`requestGate`)
 
 MeshCore radios are constrained: no transaction IDs and a small internal
-queue. `Manager.hwTxMutex` makes only one KISS request in-flight at a time.
-Any caller doing bidirectional hardware I/O (`RadioClient.Get/Set`,
-`ApplyRadioConfig`) takes `LockDevice`/`UnlockDevice`. Because only one
-goroutine holds the lock, the next response frame is unambiguously theirs.
+queue. `Manager.requestGate` (a capacity-one channel semaphore) makes only one
+KISS request in-flight at a time. Every caller doing bidirectional hardware
+I/O takes the slot before sending and releases it when the round trip ends
+(`RadioClient.exchange`); the pending-request slot below routes the one
+response frame that can arrive, so it is unambiguously the current holder's.
 
-### 3.2 Response registry (`internal/kiss/registry.go`)
+### 3.2 Pending-request slot (`requestMu`/`pending`)
 
-`readLoop`→`routeLoop` runs continuously. When a `CMD_SETHARDWARE` response
-arrives, `routeLoop` calls `registry.Dispatch(subCmd, payload)`, which routes
-to the single registered waiter channel. Waiter channels are buffered
-(`cap 1`) so the parser loop **never blocks** even if the caller already
-abandoned the request on context timeout. `Register`/`Deregister` bracket
-each request.
+`readLoop`→`routeLoop` runs continuously. The sender registers a
+`pendingRequest` (expected response sub-types plus a result channel buffered
+to 1) under `requestMu` before sending. When a `CMD_SETHARDWARE` response
+arrives, `routeLoop` hands the payload to the pending request's channel if the
+frame matches an expected sub-type; the buffered channel means the router loop
+**never blocks** even if the caller already abandoned the request on context
+timeout (`clearRequest` removes the entry without blocking the router).
 
 ### 3.3 Tx path
 
@@ -409,13 +419,13 @@ automation.worker ──> reply ──> send.Sender.Send(ctx, channel, body)
 
 ```
 main/node.New ──> RadioClient.ApplyRadioConfig(ctx, cfg)
-   |-> Set(ctx, &cfg)   [LockDevice; register SUB_RESP_OK; txChan<- set frame]
+   |-> Set(ctx, &cfg)   [take request gate; register SUB_RESP_OK; txChan<- set frame]
    |                    writeLoop ──> serial ──> radio
-   |                    radio ──> readLoop ──> rxChan ──> routeLoop ──> registry.Dispatch
+   |                    radio ──> readLoop ──> rxChan ──> routeLoop ──> pending request
    |                    <-respChan (OK)
-   |-> Get(ctx)         [LockDevice; register SUB_RESP_RADIO; txChan<- get frame]
+   |-> Get(ctx)         [take request gate; register SUB_RESP_RADIO; txChan<- get frame]
    |                    ... same round trip ...
-   `-> returns verified RadioConfig (read back from hardware)
+   `-> returns verified RadioConfig (read back from the modem's response, not a chip-side cache)
 ```
 
 ### 4.5 Room login, post and push
@@ -464,19 +474,25 @@ Client                                 KAM room (ADV_TYPE_ROOM, default scope)
 
 | State | Guard | Notes |
 |---|---|---|
-| `hwTxMutex` | `sync.Mutex` | One in-flight hardware request. Held by `RadioClient.Get/Set`. |
-| `ResponseRegistry.waiters` | `sync.Mutex` | Waiter channels are `cap 1` so dispatch never blocks. |
+| `requestGate` | capacity-one channel | One in-flight hardware request. Taken by `RadioClient.exchange`, released when the round trip ends. |
+| `requestMu`/`pending` | `sync.Mutex` + one `*pendingRequest` | Routes the sole response frame; result channel is `cap 1` so dispatch never blocks. |
+| `RadioClient.identityMu` | `sync.RWMutex` | Cached device name / protocol version (`CachedIdentity` reads; command responses update). |
+| `eventMu` + `eventChan` (modem events) | `sync.RWMutex` + buffered channel | Modem-event handlers read under RLock in `modemEventLoop`; subscribe/unsubscribe writes. |
+| `csmaMu` / `airtimeMu` | `sync.RWMutex` ×2 | Cached CSMA settings and one-hour airtime estimate read by the API snapshot and the scheduler. |
 | `onGroupText` handlers | `onGroupTextMu sync.RWMutex` | Route loop reads (RLock); subscribe/unsubscribe writes. Unsubscribe nils the slot, doesn't shrink slice. |
 | `pendingGroupText` + timer | `pendingMu sync.Mutex` | Single in-flight group text awaiting RxMeta. |
 | `dedupCache` | `sync.Mutex` | Checked by `routeLoop`, marked by the scheduler (`MarkSeen`). Bounded: 2 minutes, 512 entries. |
 | `onPacket` handlers | `onPacketMu sync.RWMutex` | Same pattern as `onGroupText`. |
 | `TxScheduler` queue, airtime ledger, in-flight flag | `sync.Mutex` | Producers submit from any goroutine; one run goroutine sends. Modem events reach it through a buffered channel and never block the event loop. |
-| Room state (client tables, post caches, timers, push state) | none (room worker only) | Counters are atomics, so `Stats()` is safe from any goroutine. |
+| Room state (client tables, post caches, timers, push state) | none (room worker only) | Counters are atomics, so `Stats()` is safe from any goroutine. Monitor snapshots copy under the service's `monitorMu`; activity recorder swaps serialize on it. |
 | `RoomRepository` | single SQLite connection | Writes first in every transaction, so a concurrent commit by the persistence connection cannot fail it with `SQLITE_BUSY_SNAPSHOT`. |
 | `AdvertQueue.ch` / `GroupTextQueue.ch` | channel | Bounded; enqueue non-blocking. |
 | automation `queue` | channel | Bounded (128); enqueue non-blocking, drops are logged. |
-| automation `scripts` (compiled programs) | `sync.RWMutex` + `mutationMu` | Worker snapshots under RLock; API mutations and freezes serialize on `mutationMu` and publish a new entry only after the SQLite write commits. |
-| `stopChan` | `close()` | Signal-all for the three Manager loops. Each queue/service has its own stop signal. |
+| automation `scripts` (compiled programs) | `sync.RWMutex` + `mutationMu` | Worker snapshots under RLock; API mutations and freezes serialize on `mutationMu` and publish a new entry only after the SQLite write commits. Intake (`Save`/`Delete`) serializes on `intakeMu`; the worker's stop and join are sequenced by `waitForInFlightMutation`. |
+| `stopChan` | `close()` | Signal-all for the three Manager loops and the modem event loop. Each queue/service has its own stop signal. |
+| node `radioRuntime` (settings + modem echo, TX-power state) | `sync.Mutex` + `atomic.Bool`s | The single radio truth: written by startup apply and the reset probe's reapply; read by the refresh loop, the monitor snapshot and the scheduler's duty-cycle estimate. |
+| modemController readings/last change/txPaused/signal report | `c.mu sync.Mutex` | `/v1/modem` snapshot reads it; the refresh loop and `PUT /v1/modem/radio` write it. |
+| events ring page | `sync.Mutex` | Short lock: record under it, copy pages out under it, never encode JSON while holding it. |
 
 ---
 
@@ -484,8 +500,12 @@ Client                                 KAM room (ADV_TYPE_ROOM, default scope)
 
 `Node.Run` blocks on `<-ctx.Done()` (SIGINT/SIGTERM), then:
 
-1. Shut down the local API (one HTTP server; it serves the read-only data
-   surfaces and script management), then unsubscribe the group-text and packet
+1. Stop the radio health probe and the config watcher (`Run` cancels their
+   contexts from the caller's context or after `manager.Done()`), then wait
+   for the watcher to exit. Then shut down the local API (one HTTP server; it
+   serves the read-only data surfaces, script management and modem control)
+   and, if the API is enabled, `modemController.Stop()` (joins the refresh
+   loop), then unsubscribe the group-text and packet
    handlers (stop intake), then `automation.Runtime.Stop()` (cancel the active script, drop
    queued events, join the worker, wait for in-flight mutations) and close the
    automation repository, all **before** the TX path goes away.
@@ -551,7 +571,7 @@ they can understand actual network behaviour — not just decode traffic, but
 | Clock drift | advert/group-text parser | both row types (`time_drift_seconds`) |
 | Sender / channel / body | group-text parser | group-text rows |
 | Node identity, node type, nickname, location | advert parser | advert rows |
-| Duplicate suppression | `seenHashes` FIFO | counter only (drop logged) |
+| Duplicate suppression | dedup cache (SHA-256 prefix of payload type + payload, 2 min / 512 entries) | counter only (drop logged) |
 | Persistence queue depth / drops / flushes | `AdvertQueue.Metrics()`, `GroupTextQueue` counters | in-memory counters, not yet exported |
 
 ### 8.1 Network-congestion monitoring (intended)

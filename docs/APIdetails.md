@@ -1,14 +1,15 @@
 # KAM REST API details
 
 This is the reference for the REST endpoints KAM serves **today**. It lists only
-implemented endpoints, with their parameters and responses. Endpoints that are
-still planned live in [FeatureKamApi.md](FeatureKamApi.md) §7 and §10;
-they are not described here.
+implemented endpoints, with their parameters and responses. Planned endpoints
+(room-client removal, script dry runs and run info) live in
+[FeatureKamApi.md](FeatureKamApi.md) §7 and §10; they are not described here.
 
 KAM serves one small REST API, loopback-only and without authentication, at
 `monitor.listen` (default `127.0.0.1:8766`). It hosts the read-only data
-surfaces (status, events, channels, rooms) and, on the same listener, Starlark
-script management. The separate script listener on port `8765` is retired; scripts live
+surfaces (status, events, channels, rooms), Starlark
+script management, and the modem snapshot/query/radio routes. The separate
+script listener on port `8765` is retired; scripts live
 on the address above since the two APIs merged.
 
 Quick check that it is up:
@@ -28,9 +29,16 @@ automation stays off: the read-only surfaces work, every script route answers
 
 - **Loopback only.** The `Host` header must be `localhost` or a loopback IP.
   Anything else gets `403`. This is a DNS-rebinding guard, not a login.
-- **Errors are JSON.** Every error is `{"error": "message"}` with a suitable
-  status code (`400`, `403`, `404`, `405`, `409`, `415`, `422`, `500`, `503`).
-- **Wrong method** on a known path returns `405` with an `Allow` header.
+- **Errors are JSON.** Errors the API itself produces are
+  `{"error": "message"}` with a suitable status code (`400`, `403`, `404`,
+  `405`, `409`, `415`, `422`, `500`, `502`, `503`, `504`; the modem routes add
+  `502` for a rejected command and `504` for a timed-out one). The Go
+  standard-library mux still answers a completely unknown path or a wrong
+  method on an unregistered path with its plain-text default (`404 page not
+  found`), outside KAM's JSON error writer.
+- **Wrong method** on a known path returns `405` with an `Allow` header
+  (standard-library response; on an unregistered path it is plain text, see
+  above).
 - **JSON bodies.** `POST` and `PUT` need `Content-Type: application/json`
   (otherwise `415`); request bodies with unknown JSON fields are rejected with
   `400`.
@@ -55,10 +63,10 @@ curl -s http://127.0.0.1:8766/
 ```
 
 Each entry shows `method`, `path` and `purpose`; the response also carries
-`api_version` and `docs`. Script routes are listed even when automation is off
-(their routes then answer `503`); channel routes appear when the database is
-open. The example below is abridged; the live list always matches the endpoints
-documented here.
+`api_version` and `docs`. Script, room and modem routes are listed even when
+their capability is off (they then answer `503`); channel routes appear when
+the database is open. The example below is abridged; the live list always
+matches the endpoints documented here.
 
 ```json
 {
@@ -175,7 +183,7 @@ values; it never talks to the modem.
 | `now`, `started_at` | Request time and process start time. |
 | `node_name` | The node's name from `kam.yml`. |
 | `modem` | `link` (`up`/`down`), `device_name`, `firmware_version`. |
-| `radio` | Saved radio settings plus `tx_power_dbm`; `source` is `modem_echo` (the modem's stored copy). |
+| `radio` | The modem's echo of `frequency_hz`, `bandwidth_hz`, `spreading_factor` and `coding_rate`, plus `tx_power_dbm` from `kam.yml`; `source` is `modem_echo` (the values come from the modem's stored copy, not from the RF chip). |
 | `duty_cycle` | Airtime budget: `configured_percent`, `used_ms` in the sliding `window_s` window. |
 | `tx` | Transmit scheduler counters: `queued`, `submitted`, `sent`, `completed`, `rejected`, `evicted`, `deferred`, `gate_timeouts`. |
 | `persistence` | Queues for `adverts` and `group_texts`, each with `depth` and `dropped`. |

@@ -1,6 +1,6 @@
 # Feature: KAM API
 
-**Status:** Phases 1-2 implemented (2026-10-12): loopback status/events, bounded RX/TX/room event ring, read-only channel and room resources, persisted signal metadata and client last-heard times. Phases 3-5 remain planned. Real-radio capture and hardware timing verification remain pending.
+**Status:** Phases 1-3 implemented (2026-10-12 phases 1-2; phase 3, modem snapshot/query/radio apply with save, landed with the unified listener — hardware verification remains pending). Phases 4 (room-client removal) and 5 (script run info and dry runs) remain planned. Real-radio capture and hardware timing verification remain pending.
 **Scope:** The REST interface KAM offers on the local device — the **KAM API** — for any local program. KAMmon, a separate web monitor running on the same computer, is the initial consumer: it reads live radio, channel, room and script data, manages room clients, and changes the KISS modem radio settings.
 **Written from:** KAMmon's point of view. The feature needs are in `tmp/KAMmon_Req_*.md`; the UI is shown in `tmp/kammon-prototype.html`. KAMmon is a separate Go project and never opens KAM's SQLite file.
 
@@ -36,7 +36,7 @@ KAM has a Local Management API on `127.0.0.1:8765` that manages Starlark scripts
 
 > **Superseded by [FeatureUnifiedApi.md](FeatureUnifiedApi.md) D1:** one listener on `monitor.listen` (default 8766) serves monitoring and script management; port 8765 is closed.
 
-This plan adds one small package, `internal/monitor`, with three parts:
+*(Historical: at the time this plan was written it added a small `internal/monitor` package with three parts. [FeatureUnifiedApi.md](FeatureUnifiedApi.md) §4 later dissolved it — the routes live in `internal/api`, the ring in `internal/events` — and the same cutover implemented phase 3, the modem routes.)*
 
 1. **An event ring.** A fixed-size, in-memory list of recent events (packets heard, packets sent, room activity, script runs). Each event has a sequence number. Nothing is written to SQLite.
 2. **A second loopback listener** (default `127.0.0.1:8766`) with read endpoints for status, events, channels, rooms and the modem, and write endpoints for room clients and the modem radio.
@@ -80,7 +80,7 @@ Everything here is based on the KAM source in this repository, read 2026-10-11. 
 
 | Key | File | Used for |
 |---|---|---|
-| `API` | [internal/automation/api.go](../internal/automation/api.go) | Existing listener guards, route style, error format |
+| `API` | `internal/automation/api.go` (pre-unification path; removed by [FeatureUnifiedApi.md](FeatureUnifiedApi.md) §4.4) | Listener guards, route style, error format at the time; they live in `internal/api` today |
 | `ROUTE` | [internal/kiss/kiss_router.go](../internal/kiss/kiss_router.go) | Where inbound packets are parsed, deduplicated and dispatched |
 | `MGR` | [internal/kiss/kiss_manager.go](../internal/kiss/kiss_manager.go) | Packet tap, group-text tap, modem events |
 | `SCHED` | [internal/kiss/scheduler.go](../internal/kiss/scheduler.go) | Transmit counters and duty-cycle accounting |
@@ -122,7 +122,7 @@ Recorded 2026-10-11 from the planning questions.
 
 **Consequences of the decisions that go beyond the recommendation or change existing text**
 
-- **D4 versus [FeatureRoomServer.md](FeatureRoomServer.md) RS-OPS-2.** RS-OPS-2 expected room endpoints on the Local Management API. They are on the monitoring listener instead. KAMmon therefore holds two base URLs: scripts on 8765, everything else on 8766. The two listeners share no code path other than the guards in §5.
+- **D4 versus [FeatureRoomServer.md](FeatureRoomServer.md) RS-OPS-2.** RS-OPS-2 expected room endpoints on the Local Management API. They are on the monitoring listener instead. KAMmon therefore held two base URLs: scripts on 8765, everything else on 8766. The two listeners shared no code path other than the guards in §5. *(Superseded by [FeatureUnifiedApi.md](FeatureUnifiedApi.md) D1: one base URL on `monitor.listen`.)*
 
   *(Superseded by [FeatureUnifiedApi.md](FeatureUnifiedApi.md) D1: one base URL on `monitor.listen`; room endpoints and scripts share the listener.)*
 - **D5 versus [FeatureKissModem.md](FeatureKissModem.md) D8 and the hot-reload non-goal.** Both said "no HTTP surface" and "radio settings stay startup-only". This plan replaces them. `APP_STRUCTURE.md` must be updated when it ships.
@@ -550,7 +550,7 @@ IDs are stable. "From" lists the KAMmon feature document that needs the item (`t
 | C2 | [FeatureKissModem.md](FeatureKissModem.md) D8: no HTTP surface; non-goal: no hot reload of radio settings. | Replaced by D5 and API-MD-3. |
 | C3 | [APP_STRUCTURE.md](APP_STRUCTURE.md): radio settings are read at startup and need a restart. | No longer true once API-MD-3 ships. |
 | C4 | Earlier draft: override password roles with pinned client roles. | Withdrawn by D11. Existing MeshCore room authentication remains unchanged; web permissions belong to KAMmon. |
-| C5 | [FeatureRoomServer.md](FeatureRoomServer.md) RS-OPS-2: management endpoints on the Local Management API. | They are on the monitoring listener (D4). |
+| C5 | [FeatureRoomServer.md](FeatureRoomServer.md) RS-OPS-2: management endpoints on the Local Management API. | They are on the monitoring listener (D4). *(D4 then superseded by [FeatureUnifiedApi.md](FeatureUnifiedApi.md) D1: one listener on `monitor.listen`.)* |
 | C6 | Prototype sample scripts use `msg.text` and `reply(msg, ...)`. | Real scripts define `on_group_text(message)`, read `message["body"]` and call `reply(channel, text)` (`RT`, [echo.star](examples/echo.star)). |
 | C7 | `room.Stats` looks per room. | It is one set of counters for the whole service (`ROOM`). |
 

@@ -33,7 +33,7 @@ Findings that shape the plan:
 | **Scope / region** | A transport-code namespace on flood packets (`ROUTE_TYPE_TRANSPORT_FLOOD`). |
 | **Role** | `GUEST` 0, `READ_ONLY` 1, `READ_WRITE` 2, `ADMIN` 3 (low 2 bits of permissions). |
 
-[DESIGN.md §1.1](DESIGN.md) says KAM will "aggregate and serve group-text rooms". This document uses "room" only in the MeshCore sense above. Mirroring channels into a room is out of scope (§3).
+This document uses "room" only in the MeshCore sense above. Mirroring channels into a room is out of scope (§3). (An earlier draft design doc's "aggregate and serve group-text rooms" wording caused this clarification; that doc has been removed.)
 
 ## 3. Goals and non-goals
 
@@ -329,8 +329,8 @@ stateDiagram-v2
 | ID | Requirement | Pri | Basis |
 |---|---|---|---|
 | RS-OPS-1 | Counters: logins ok/failed/rate-limited, posts accepted/rejected, pushes sent/acked/timed-out, active clients, per-client backlog, TX queue depth and defers, airtime used, dedup drops. | MUST | |
-| RS-OPS-2 | Local Management API endpoints (loopback, same posture as automation): list clients, set role or remove, list/create/delete posts, force advert, show pubkey and advert, show stats. | SHOULD | G4 |
-| RS-OPS-3 | Ordered shutdown: stop intake, stop the room worker (flush commits), stop TX, then the manager. | MUST | [DESIGN.md](DESIGN.md) |
+| RS-OPS-2 | KAM API endpoints (loopback, same posture as automation): list clients, set role or remove, list/create/delete posts, force advert, show pubkey and advert, show stats. | SHOULD | G4 |
+| RS-OPS-3 | Ordered shutdown: stop intake, stop the room worker (flush commits), stop TX, then the manager. | MUST | [SYSTEM_DESIGN.md §6](SYSTEM_DESIGN.md) |
 | RS-OPS-4 | A room failure never stops radio ingestion. | MUST | |
 | RS-OPS-5 | Log a warning when the host time at startup is earlier than the newest stored post or advert timestamp. Do not refuse to run (D9). | MAY | 9 R7 |
 
@@ -421,7 +421,7 @@ flowchart LR
     Room -->|"TX requests"| TX["TX scheduler<br/>(TxDone-gated, priority, airtime)"]
     Automation["automation runtime"] -->|"TX requests"| TX
     TX --> Manager
-    API["Local Management API"] --> Room
+    API["KAM API"] --> Room
 ```
 
 New code lives in `internal/mesh` (packet framing, envelope, identity, adverts, region codes; the AES/HMAC primitives moved out of `parsers`, which now delegates), the `TxScheduler`, airtime estimate and dedup cache in `internal/kiss`, `internal/room` (service, push engine, adverts, identity files, login limiter), and `internal/db/rooms.go`. `internal/node` wires it and owns shutdown order. Room settings are in `internal/models/rooms.go`.
@@ -436,7 +436,7 @@ Recorded 2026-10-10. D7 and D9 differ from the recommendation; their consequence
 | D2 | **Post retention and backlog** | Mirror the 32-post RAM queue, or durable store with a backlog window | Durable store; keep all posts within configured count/age; each login receives at most the newest N (default 32). | **Accepted.** |
 | D3 | **Role semantics** | Mirror the reference (`READ_ONLY` can post) or enforce intent | Enforce intent: only `READ_WRITE` and `ADMIN` post. Document the deviation. | **Accepted.** |
 | D4 | **Session persistence** | RAM only (reference) or persist | Persist role, cursor, out path and last client timestamp; recompute secrets. | **Accepted.** |
-| D5 | **Over-the-air CLI** | None, subset, full | None in v1; administer through the Local Management API. | **Accepted.** |
+| D5 | **Over-the-air CLI** | None, subset, full | None in v1; administer through the KAM API. | **Accepted.** |
 | D6 | **Region scoping** | Default scope plus known regions, or unscoped only | Support both; require the operator to choose, and warn when unscoped. Confirm key-name format first (R5). | **Accepted.** Phase 0 confirms the key format. |
 | D7 | **Rooms per instance** | One, or N identities on one radio | One in v1. Key all state by identity so N later is additive. | **Decided: multiple rooms in v1** (recommendation was one). |
 | D8 | **Channel bridging** | In scope or later | Later. | **Accepted.** |
@@ -456,10 +456,10 @@ D1, D2, D3, D6, D7, D9 and D11 are candidates for ADRs.
 
 **D7, multiple rooms in v1**
 
-- Config becomes a `rooms:` list (RS-CFG-1). Each room is a separate identity with its own client table, post store and push engine; the radio, TX scheduler, airtime budget, scope settings and Local Management API are shared (RS-MULTI-1..5).
+- Config becomes a `rooms:` list (RS-CFG-1). Each room is a separate identity with its own client table, post store and push engine; the radio, TX scheduler, airtime budget, scope settings and KAM API are shared (RS-MULTI-1..5).
 - Receive and dispatch must try every room that matches `dest_hash`. 1-byte hash collisions between a KAM's own rooms are avoidable at identity generation (RS-MULTI-3).
 - Airtime scales with the room count: adverts, pushes and catch-up all draw from one budget, so the room limit is a Phase 0 output, not a free parameter.
-- The Local Management API endpoints in RS-OPS-2 take a room id.
+- The KAM API endpoints in RS-OPS-2 take a room id.
 - Open question: the maximum number of rooms to support.
 
 **D9, trust the host clock only**
@@ -487,7 +487,7 @@ D1, D2, D3, D6, D7, D9 and D11 are candidates for ADRs.
 | R6 | `ServerStats` is a raw C struct; natural-alignment offsets are an inference. | Capture a real status reply and pin the layout with a golden test. |
 | R7 | A Pi without RTC or NTP can have a wrong clock; clients use timestamps for replay checks and cursor logic. Accepted under D9; the failure is silent. | Operator docs; RS-OPS-5 warning; RS-POST-2 and RS-ADV-2 within a run. |
 | R8 | One half-duplex radio is shared with automation replies and group-text sends. | RS-TX-1/7. |
-| R9 | The Local Management API is unauthenticated (loopback only) and would control roles and posts. | Keep the loopback and `Host` checks; no role changes from unauthenticated non-loopback paths; note for the Remote API design. |
+| R9 | The KAM API is unauthenticated (loopback only) and would control roles and posts. | Keep the loopback and `Host` checks; no role changes from unauthenticated non-loopback paths; note for the Remote API design. |
 | R10 | Login flooding costs an ECDH per attempt; the reference has no rate limit. | RS-AUTH-8. |
 | R11 | Client variance across companion apps and firmware levels (multi-byte path hashes from 1.14, `FIRMWARE_VER_LEVEL` 1). | Test at least two client implementations (§12). |
 | R12 | Reference quirks (`READ_ONLY` posting, 150-byte cap, no out-path reset, no inactive-client eviction, replay state in RAM). | D3, RS-PUSH-6, RS-AUTH-9; list deviations in operator docs. |
@@ -508,7 +508,7 @@ D1, D2, D3, D6, D7, D9 and D11 are candidates for ADRs.
 | §5.10 of the first draft of this document | Region key is `SHA-256(region name)` | `SHA-256("#" + name)`; a name without `#` gets one prepended (R5). |
 | §10.1 | Constants list | Omits `MAX_CLIENTS` (20) and the LRU eviction rule. |
 
-SYSTEM_DESIGN.md §10 and DESIGN.md §9 were updated with these corrections on 2026-10-10. Where the old text is quoted above it is listed for the record only.
+SYSTEM_DESIGN.md §10 was updated with these corrections on 2026-10-10 (the earlier draft DESIGN.md parallel architecture doc has been removed; its unique content lives in SYSTEM_DESIGN.md). Where the old text is quoted above it is listed for the record only.
 
 ## 11. Delivery plan
 
@@ -520,14 +520,14 @@ No time estimates. Each phase ends with an observable exit criterion.
 | **1. Foundations** | Packet tap with route/scope/path; dedup fix; TX scheduler with `TxDone`; mesh crypto/identity package; config and secrets handling; room-keyed state; signed `ROOM` advert per room. | A stock client discovers or imports the room contact. Existing group-text and automation behaviour unchanged. |
 | **2. Login and sessions** | `ANON_REQ` to `RESPONSE`/`PATH` return; client table and roles; replay rules; path learning; rate limit. | A client logs in as admin, read-write and guest, and sees a correct role. |
 | **3. Posts and push** | Post store, ACK-after-commit, push engine, ACK handling, keep-alive, backlog window, session persistence. | Two clients exchange posts through KAM; an offline client catches up; restart loses nothing acknowledged. |
-| **4. Operations** | Status reply, counters, airtime cap, retention, Local Management API endpoints, startup validation, operator docs. | Soak test within the duty-cycle cap; clean shutdown with pending pushes. |
+| **4. Operations** | Status reply, counters, airtime cap, retention, KAM API endpoints, startup validation, operator docs. | Soak test within the duty-cycle cap; clean shutdown with pending pushes. |
 | **5. Optional** | Starlark room event and `room_post` host function, channel bridge, CLI subset (multi-room moved into v1 by D7). | Per item. |
 
 **Status 2026-10-18.**
 
 - Phase 0: paused (2026-10-18) — the captures from a real room server are not possible at the moment: the login/push/status capture (golden files and the `ServerStats` layout, R6) needs a second device running MeshCore room-server firmware. Interoperability is validated instead by the operator subscribing to KAM while it runs, against the §12 scenarios, with the hosted rooms advertised at start-up (RS-ADV-6). The modem-side measurements ran 2026-10-18 ([FeatureKissModem.md](FeatureKissModem.md) §11): TXDELAY adds 0.3-0.6 s per transmission at the 500 ms default, and the modem's `airtime(255)` reading of 848 ms scales to roughly 0.55 s for a 166-byte post, consistent with the R3 estimate; the duty-cycle ledger still needs confirmation against real catch-up traffic.
 - Phases 1-3: done (§6.14).
-- Phase 4: the duty-cycle cap, retention pruning, counters and start-up validation are done; the status reply, counter export, and Local Management API endpoints are open; operator documentation is in the README and the manual.
+- Phase 4: the duty-cycle cap, retention pruning, counters and start-up validation are done; the status reply, counter export, and KAM API endpoints are open; operator documentation is in the README and the manual.
 - Phase 5: open.
 
 ## 12. Verification
@@ -553,4 +553,4 @@ Not covered by automated tests: a real radio or MeshCore client — validated by
 
 - Whether KAM should also act as a **client** of other room servers (for example to fetch their status for the operator metrics surface in [SYSTEM_DESIGN.md §8](SYSTEM_DESIGN.md)). It reuses the same crypto and envelope but is a separate feature.
 - `docs/qr_codes.md` was read: a contact is shared as `meshcore://contact/add?name=...&public_key=<64 hex>&type=3` (`kam room show` prints it). `docs/number_allocations.md` was not read; check it if registered data types matter.
-- Deferred from this round: status/telemetry/access-list replies, the Local Management API endpoints for rooms, system posts, the over-the-air CLI, `GetAirtime` accounting, and a Go fuzz target for the parsers.
+- Deferred from this round: status/telemetry/access-list replies, the KAM API endpoints for rooms, system posts, the over-the-air CLI, `GetAirtime` accounting, and a Go fuzz target for the parsers.

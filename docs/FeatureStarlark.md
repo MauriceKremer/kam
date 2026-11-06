@@ -1,9 +1,19 @@
 # Feature: Starlark Automations
 
-**Status:** v1 implemented (storage, runtime, Local Management API, ECHO as an example script, tests, operator docs); the only open item is the post-v1 weather capability
-**Scope:** Store operator-managed Starlark scripts in SQLite, manage them through an on-device Local Management API, and replace the native ECHO service with a Starlark script.
+**Written from:** KAM's own code and the MeshCore Starlark standard library, not MeshCore firmware sources. Plan-format note: earlier rounds of this plan predate the AGENTS.md sources/corrections table convention, so both tables were added late; the sources below are the files this plan's claims come from.
 
-**API naming:** This plan uses **Local Management API** for the API available only on the KAM device. The later authenticated interface is called the **Remote API**. “Open API” can imply an unauthenticated/public API, while “OpenAPI” commonly refers to the API-description standard.
+| Key | File | Used for |
+|---|---|---|
+| `RT` | [internal/automation/runtime.go](../internal/automation/runtime.go) | Runtime, worker, host functions, sentinels, `timeout_ms` defaulting, `Validate`, `MonitorStats` |
+| `DB` | [internal/db/automation.go](../internal/db/automation.go) | `automation_scripts` schema, `AutomationRepository`, revision compare-and-set |
+| `ADAPT` | [internal/node/scripts.go](../internal/node/scripts.go) | The seam adapter the API's script routes call |
+| `ECHO` | [docs/examples/echo.star](examples/echo.star) | The example script that replaced the native ECHO service |
+| `UA` | [FeatureUnifiedApi.md](FeatureUnifiedApi.md) | The unified listener the script routes now serve |
+
+**Status:** v1 implemented (storage, runtime, KAM API, ECHO as an example script, tests, operator docs); the only open item is the post-v1 weather capability
+**Scope:** Store operator-managed Starlark scripts in SQLite, manage them through an on-device KAM API, and replace the native ECHO service with a Starlark script.
+
+**API naming:** FeatureKamApi.md D19 (2026-10-23) named the on-device API the **KAM API** (earlier plans said "Local Management API"); the name here follows that rename. The later authenticated interface is called the **Remote API**. “Open API” can imply an unauthenticated/public API, while “OpenAPI” commonly refers to the API-description standard.
 
 ## Summary
 
@@ -36,7 +46,7 @@ YAML remains the source for node, radio, and channel configuration. SQLite becom
 ## Goals
 
 - Store source, identity, enabled state, and revision of each automation in SQLite.
-- Provide an on-device Local Management API to list, create, validate, enable, update, disable, recover, and delete scripts.
+- Provide an on-device KAM API to list, create, validate, enable, update, disable, recover, and delete scripts.
 - Apply valid script changes without restarting the node.
 - Keep script execution and host capabilities isolated from packet routing and direct hardware access.
 - Preserve event order for each script and bound memory, execution time, and outbound effects.
@@ -50,7 +60,7 @@ YAML remains the source for node, radio, and channel configuration. SQLite becom
 - Multiple event types beyond group text.
 - Parallel execution of a single script.
 - Weather-provider integration in the first release; it is explicitly post-v1.
-- Per-user script ownership, multi-tenant permissions, or ownership transfer. The initial deployment has a small operator population; the Local Management API has a single system-administrator model.
+- Per-user script ownership, multi-tenant permissions, or ownership transfer. The initial deployment has a small operator population; the KAM API has a single system-administrator model.
 - The future Remote API. It is a separate project and must define authentication and authorization before exposure beyond the local device.
 - Automatically hot-reloading radio, database path, node identity, or channel configuration through the automation API.
 
@@ -143,7 +153,7 @@ Design notes:
 - Use stable IDs (for example `builtin.echo`) so API renames do not change identity.
 - `name` is a human-facing unique identifier; reject empty names and reserved IDs/names as appropriate.
 - `source` stores UTF-8 Starlark source, not compiled bytecode. Compile on startup and on update; bytecode compatibility is not a persistence concern.
-- `timeout_ms` is the per-script execution budget in milliseconds. It defaults to 500 and can be tuned by the system administrator through the Local Management API. The implementation may use interpreter instruction accounting internally to enforce this wall-clock timeout, but that is not a separate script setting.
+- `timeout_ms` is the per-script execution budget in milliseconds. It defaults to 500 and can be tuned by the system administrator through the KAM API. The implementation may use interpreter instruction accounting internally to enforce this wall-clock timeout, but that is not a separate script setting.
 - `runtime_status` is persisted as `READY`, `BROKEN`, or `FROZEN`, defaulting to `READY`. `enabled` is the operator's desired state; a script is runnable only when enabled and `runtime_status = 'READY'`.
 - `last_error` stores the latest error detail associated with `BROKEN` or `FROZEN`. It is not an error history. Whenever a status transition sets `runtime_status = 'READY'`, clear `last_error` to `NULL` in the same SQLite transaction.
 - `revision` increments on every source or enabled-state change and supports optimistic concurrency in the API.
@@ -171,7 +181,7 @@ The API and database are the only writers of script definitions. The existing YA
 
 - Load each script record from SQLite once during automation startup, then keep its compiled Starlark `Program`, timeout, and status in the in-memory runtime registry for the lifetime of the process (or until that script is updated, disabled, deleted, frozen, or marked broken).
 - For each message, invoke the resident compiled program with fresh per-invocation Starlark execution state. Do not reload or recompile the source from SQLite for each event, and do not retain mutable Starlark globals between events.
-- Normal event processing performs no reads or writes to the `automation_scripts` table. SQLite access occurs at startup, Local Management API mutations, and meaningful status transitions such as marking a script `BROKEN` or `FROZEN`; successful invocations do not write script state. Only the latest `BROKEN`/`FROZEN` error is persisted in `last_error`, not a history.
+- Normal event processing performs no reads or writes to the `automation_scripts` table. SQLite access occurs at startup, KAM API mutations, and meaningful status transitions such as marking a script `BROKEN` or `FROZEN`; successful invocations do not write script state. Only the latest `BROKEN`/`FROZEN` error is persisted in `last_error`, not a history.
 - An API mutation persists and compiles a candidate once, then replaces the in-memory program only after the DB transaction succeeds. A restart reloads and recompiles scripts from SQLite.
 
 ### Event path
@@ -199,7 +209,7 @@ flowchart LR
 
 For create/update/enable/recover:
 
-1. Accept the request only through the on-device Local Management API. This initial API uses a single system-administrator model; it has no per-user script ownership or multi-tenant ACLs. Bind it to loopback HTTP only.
+1. Accept the request only through the on-device KAM API. This initial API uses a single system-administrator model; it has no per-user script ownership or multi-tenant ACLs. Bind it to loopback HTTP only.
 2. Validate ID/name uniqueness, positive timeout, and expected revision.
 3. Compile candidate source in memory and verify its required entry point and allowed built-ins.
 4. Persist source, enabled state, timeout, status, last_error, and revision in a SQLite transaction.
@@ -221,7 +231,7 @@ For disable/delete, update persistent state first, then atomically remove the pr
 
 ## ECHO as a Script
 
-The former native ECHO service is gone. Its behavior lives in the example script [examples/echo.star](examples/echo.star); an operator edits its three settings (`CHANNELS`, `MENTION`, `NODE_NAME`) and installs it through the Local Management API (see the README).
+The former native ECHO service is gone. Its behavior lives in the example script [examples/echo.star](examples/echo.star); an operator edits its three settings (`CHANNELS`, `MENTION`, `NODE_NAME`) and installs it through the KAM API (see the README).
 
 ### Behavior
 
@@ -242,7 +252,7 @@ The former native ECHO service is gone. Its behavior lives in the example script
 
 ### Phase 0: Interface and compatibility decisions
 
-- [x] Implement the Local Management API over loopback HTTP only; do not listen on LAN interfaces.
+- [x] Implement the KAM API over loopback HTTP only; do not listen on LAN interfaces.
 - [x] Confirm stable script ID/name rules, the explicit recover operation, and the downgrade policy. `builtin.echo` is editable and deletable.
 - [x] Choose the Starlark module version and verify interpreter interruption, thread/cancellation semantics, and license.
 - [x] Fix and document the first-release message fields, handler signature, host built-ins, queue/drop/shutdown policy, and persisted status transitions.
@@ -268,7 +278,7 @@ The former native ECHO service is gone. Its behavior lives in the example script
 
 ### Phase 3: API and live script management
 
-- [x] Add Local Management API endpoints for list/get/create/validate/update/enable/disable/recover/delete.
+- [x] Add KAM API endpoints for list/get/create/validate/update/enable/disable/recover/delete.
 - [x] Keep the API local-only by default and use the single system-administrator model; do not add per-user ownership or ACL columns.
 - [x] Require revisions for updates and return compile diagnostics without activating invalid source.
 - [x] Persist source, timeout, status, last_error, and revision first, then atomically update the active runtime snapshot.
@@ -302,7 +312,7 @@ The former native ECHO service is gone. Its behavior lives in the example script
 
 ## Acceptance Criteria
 
-- A script can be created, validated, enabled, updated, disabled, recovered, and deleted through the on-device Local Management API without restarting KAM.
+- A script can be created, validated, enabled, updated, disabled, recovered, and deleted through the on-device KAM API without restarting KAM.
 - Script definitions survive process restart and SQLite backup/restore.
 - Every script is loaded into memory and compiled/validated on startup. Invalid scripts are marked `BROKEN`, remain inactive, and do not prevent radio ingestion.
 - Each script stores a timeout defaulting to 500 ms. Exceeding it marks the script `FROZEN` and persists `last_error`; later invocations stop until operator recovery. Switching status to `READY` clears `last_error` in the same transaction.
@@ -316,9 +326,16 @@ The former native ECHO service is gone. Its behavior lives in the example script
 
 ## Settled v1 Decisions
 
-- Local Management API uses loopback HTTP only.
+- KAM API uses loopback HTTP only.
 - The per-script timeout is the only operator-configurable execution limit. It defaults to 500 ms, must be positive, and has no application-imposed maximum; the system administrator accepts responsibility for tuning it.
 - There are no product-level v1 caps on script count, source length, or reply rate. The event queue remains internally bounded to protect packet routing.
 - Default `runtime_status` to `READY`. Persist current status and `last_error` for `BROKEN`/`FROZEN`; clear `last_error` when status changes to `READY`. Also log errors to the console; do not persist error history.
 - If automation schema setup fails, continue core radio ingestion/persistence with automation disabled.
 - Weather is post-v1. The Remote API and its authentication/authorization model must be designed separately before remote exposure.
+
+## Corrections
+
+| Earlier claim | What is true |
+|---|---|
+| The script routes live on a dedicated loopback listener on port `8765`. | They are served by the unified local API on `monitor.listen` (default `127.0.0.1:8766`); port 8765 is gone ([FeatureUnifiedApi.md](FeatureUnifiedApi.md) D1). |
+| The plan calls the on-device API the "Local Management API". | Renamed the **KAM API** by [FeatureKamApi.md](FeatureKamApi.md) D19 (2026-10-23). |
