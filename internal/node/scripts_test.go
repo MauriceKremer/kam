@@ -31,7 +31,7 @@ func scriptServer(t *testing.T) (*httptest.Server, *automation.Runtime) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = repository.Close() })
-	runtime, err := automation.NewRuntime(context.Background(), repository, stubSender{})
+	runtime, err := automation.NewRuntime(context.Background(), repository, stubSender{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +126,22 @@ func TestScriptRoutesThroughUnifiedListener(t *testing.T) {
 	var listed []db.AutomationScript
 	if err := json.Unmarshal([]byte(body), &listed); err != nil || len(listed) != 1 {
 		t.Fatalf("list: %s %v %v", body, listed, err)
+	}
+
+	// The timer interval comes from the compiled source, is visible on reads, and a
+	// request cannot set it.
+	status, body = doScript(t, http.MethodPost, scriptPath(server, "/scripts"),
+		`{"script":{"id":"timer","name":"timer","source":"timer_interval_minutes = 5\ndef on_timer(message):\n    pass\n","timer_interval_minutes":99}}`, "application/json")
+	if status != http.StatusCreated || !strings.Contains(body, `"timer_interval_minutes":5`) {
+		t.Fatalf("timer create: %d %q", status, body)
+	}
+	status, body = doScript(t, http.MethodGet, scriptPath(server, "/scripts/timer"), "", "")
+	if status != http.StatusOK || !strings.Contains(body, `"timer_interval_minutes":5`) {
+		t.Fatalf("timer read: %d %q", status, body)
+	}
+	status, body = doScript(t, http.MethodGet, scriptPath(server, "/scripts"), "", "")
+	if status != http.StatusOK || !strings.Contains(body, `"timer_interval_minutes":5`) || !strings.Contains(body, `"timer_interval_minutes":0`) {
+		t.Fatalf("timer list: %d %q", status, body)
 	}
 
 	// Deleting pins a revision; a missing script is a 404 with the capability text.

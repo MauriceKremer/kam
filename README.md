@@ -149,7 +149,7 @@ and [the contract](docs/FeatureKamApi.md).
 
 ## Automation (Starlark scripts)
 
-KAM runs operator-managed [Starlark](https://github.com/google/starlark-go) scripts for every decoded group text. Scripts live in SQLite (`automation_scripts`), not in `kam.yml`, and are managed at runtime through a local HTTP API. Design and status: [`docs/FeatureStarlark.md`](docs/FeatureStarlark.md).
+KAM runs operator-managed [Starlark](https://github.com/google/starlark-go) scripts for every decoded group text and, if a script asks for one, on a timer. Scripts live in SQLite (`automation_scripts`), not in `kam.yml`, and are managed at runtime through a local HTTP API. Design and status: [`docs/FeatureStarlark.md`](docs/FeatureStarlark.md).
 
 ```python
 def on_group_text(message):
@@ -158,7 +158,8 @@ def on_group_text(message):
 ```
 
 - `message` is a read-only dict: `channel`, `sender`, `body`, `timestamp_unix`, `hop_count`, `hop_stations`, `has_rx_meta`, `snr_quarter_db`, `rssi_dbm`, `time_drift_seconds`.
-- `reply(channel, text)` is the only host function. Scripts have no filesystem, network, or process access, and keep no state between events.
+- Host functions: `reply(channel, text)` answers on air, `room_post(room_id, text)` writes into one of KAM's own rooms, and `rest_get(url, headers=...)` fetches an HTTP(S) URL and returns `(body, status)`. `json` and `time` are available as modules. Scripts have no filesystem or process access, and keep no state between events.
+- Set `timer_interval_minutes` at the top of the source and define `def on_timer(message)` to run on a timer instead of (or as well as) on group text. One minute is the shortest interval; the timer only runs while the script is enabled and `READY`. [`docs/examples/periodic.star`](docs/examples/periodic.star) is a working weather post built this way.
 - Events are queued (128) and run one at a time, so a slow script never blocks packet routing; a full queue drops events and logs them.
 - Each script has a `timeout_ms` (default 500). A script that exceeds it becomes `FROZEN`; one that fails to compile on load becomes `BROKEN`. Neither runs until you recover or fix it. Other script errors are only logged.
 

@@ -60,7 +60,7 @@ flowchart TD
 | `internal/room` | The room server: logins and roles, posts committed before they are acknowledged, round-robin push sync, keep-alive, signed adverts, rate limiting, and identity files. One worker owns all room state. |
 | `internal/events` | The bounded metadata-only event ring. Copies event pages under a short lock and hands them out after releasing it, so a slow reader never blocks packet recording. |
 | `internal/db` | Opens SQLite, maintains advert, group-text, automation and room schemas, persists incoming records through bounded background writer queues, and provides the revision-checked `AutomationRepository` and the `RoomRepository` (own connection, `synchronous=FULL`). |
-| `internal/automation` | Compiles and runs operator-managed Starlark scripts on a single worker fed by a bounded queue, enforces per-script timeouts (`FROZEN`), exposes `reply` through the shared sender, applies `timeout_ms` defaults, and exports its domain sentinels for script mutations. It serves no HTTP; the local API's transport is `internal/api`. |
+| `internal/automation` | Compiles and runs operator-managed Starlark scripts on a single worker fed by a bounded queue, for decoded group texts and for due timers (a separate timer-loop goroutine owns the schedule and only enqueues fires). Enforces per-script timeouts (`FROZEN`), applies `timeout_ms` defaults, and exports its domain sentinels for script mutations. Host functions: `reply` through the shared sender, `rest_get` over one shared HTTP client with a 1 MiB response cap, and `room_post` through the consumer-defined `RoomPoster` seam. It serves no HTTP; the local API's transport is `internal/api`. |
 | `internal/api` | The local REST API (loopback, default port 8766): one listener for status, events, channel and room reads, script management, and the modem snapshot/query/radio routes. Transport only — routes, JSON decoding with unknown-field rejection, wire shapes, error classes → status codes, the loopback Host guard, an eight-request limit, a five-second deadline, panic recovery, and the self-describing `GET /` index. Imports only the standard library and `internal/models`; capabilities reach it through consumer-defined seams implemented by `internal/node` adapters. A guard test keeps the import rule. |
 
 ## Runtime Flows
@@ -123,14 +123,14 @@ flowchart LR
 - Live reload currently applies channel secrets only, and a radio change through `PUT /v1/modem/radio` updates the radio settings at runtime (and rewrites `kam.yml`). Node identity, database path, and the legacy YAML `echo` settings (consumed once by the migration) are still read at startup and require a restart to take effect.
 - `kiss.Manager` is the sole owner of the serial connection. It serializes radio control requests and routes inbound frames to the supported advert and group-text parsers.
 - Advert and group-text persistence is asynchronous. The route loop enqueues records to bounded queues; dedicated writers batch inserts into SQLite. Queue saturation can drop records rather than block packet routing.
-- The automation runtime is a group-text subscriber. Its handler clones the message and does a bounded, non-blocking enqueue; its worker runs enabled scripts sequentially, and `reply` sends through the shared sender and the transmit scheduler.
+- The automation runtime is a group-text subscriber. Its handler clones the message and does a bounded, non-blocking enqueue; its worker runs enabled scripts sequentially, and `reply` sends through the shared sender and the transmit scheduler. A timer loop feeds the same queue, so a timer run takes its turn with the group texts, and `room_post` hands the text to the room worker's queue.
 - Room servers subscribe to the packet tap. The handler does a bounded, non-blocking enqueue; one worker owns every room's client table, push state and advert timers. Posts are committed to SQLite before their ACK is queued; client sessions, including last-heard timestamps, are written in batches every 5 seconds and on shutdown. The API requests bounded snapshots through that worker. Room settings are read at start-up only.
 - Every outbound packet, whether a group text or a room packet, goes through the `TxScheduler`, which hands the modem one frame at a time and waits for `TxDone`.
 - On cancellation (or a lost modem link), the node first stops the radio health probe and the config watcher, then stops intake (both subscriptions) and shuts down the local API's one HTTP server, stopping the modem refresh loop with it, then the automation runtime, then the room worker (which flushes client state), then the transmit scheduler, and finally the manager. Manager shutdown closes persistence, which drains and flushes its queues, before closing SQLite and the serial port.
 
 ## Starlark Automations
 
-The automation runtime is implemented; remaining work (the weather capability) is tracked in [FeatureStarlark.md](FeatureStarlark.md), which also holds the detailed design.
+The automation runtime is implemented, including the timers, `rest_get` and `room_post` added by [FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md). The runtime itself is described in [FeatureStarlark.md](FeatureStarlark.md).
 
 ```mermaid
 flowchart LR
@@ -139,10 +139,12 @@ flowchart LR
     Repo --> Compile["Validate and compile"] --> Active["Active program snapshot"]
 
     GroupText["Decoded group text"] -->|"non-blocking enqueue"| Queue["Bounded event queue"]
+    Timer["Timer loop<br/>(next fire per script)"] -->|"non-blocking enqueue"| Queue
     Queue --> Worker["Single sequential worker"] --> Active
     Active --> Host["Restricted Starlark capabilities"]
     Host --> Sender["reply / sender"] --> Sched["TX scheduler"] --> KISS["KISS manager TX queue"]
-    Host -. "post-v1 bounded provider" .-> Weather["Weather service adapter"]
+    Host --> HTTP["rest_get / shared HTTP client"] --> Web["Operator's URL (http/https)"]
+    Host --> Poster["room_post / RoomPoster seam"] --> RoomWorker["Room worker queue"]
 ```
 
 - Scripts are persisted in SQLite; YAML remains authoritative for node, radio, and channel settings.
@@ -151,8 +153,11 @@ flowchart LR
 - Script administration uses one system-administrator model; there are no per-user ownership or ACL structures. A future Remote API is out of scope here and will require a separate authentication design.
 - The script routes are loopback HTTP only; with `monitor.enabled: false` they are unreachable together with the read-only data surfaces. If automation schema setup fails, core radio ingestion and persistence continue with automation disabled, and the script routes answer `503`.
 - ECHO is the example script [`examples/echo.star`](examples/echo.star), installed through the API; there is no native ECHO service.
-- `reply` is routed through the existing sender. Future weather access will be a constrained Go host capability, not arbitrary script HTTP.
-- Weather-provider integration is explicitly post-v1 and is not part of the initial Starlark release.
+- `reply` is routed through the existing sender.
+- A script runs on a timer when its source sets `timer_interval_minutes` and defines `on_timer(message)`. The interval is a compile-time integer literal of at least 1, so a script cannot change its own schedule; the API reports the value read-only.
+- `rest_get` is the only network access and is plain HTTP(S) from the script. It uses the invocation context as its deadline, caps a body at 1 MiB, and returns the status instead of failing on a non-2xx answer. There is no provider adapter and no fixed allowlist — the operator's URL and key live in the script source, like channel keys in `kam.yml`.
+- `room_post` writes into one of KAM's own rooms as the room identity. The room service exposes it as `AddSystemPost`, which runs on its worker and shares the script deadline.
+- [`examples/periodic.star`](examples/periodic.star) is the weather post built on these: every 15 minutes, one API call, one room line.
 
 ## Room Servers
 
@@ -181,4 +186,5 @@ Room servers are implemented for plan phases 1-3; the requirements, decisions an
 - Local REST API: [`internal/api`](../internal/api/), event ring [`internal/events`](../internal/events/), node adapters [`internal/node/monitor.go`](../internal/node/monitor.go), [`internal/node/scripts.go`](../internal/node/scripts.go), modem capability [`internal/node/modem.go`](../internal/node/modem.go)
 - Unified API design: [`FeatureUnifiedApi.md`](FeatureUnifiedApi.md)
 - Example ECHO script: [`examples/echo.star`](examples/echo.star)
-- Starlark automation design: [`FeatureStarlark.md`](FeatureStarlark.md)
+- Example periodic weather post: [`examples/periodic.star`](examples/periodic.star)
+- Starlark automation design: [`FeatureStarlark.md`](FeatureStarlark.md); timers, `rest_get` and `room_post`: [`FeatureStarlarkPeriodicPosts.md`](FeatureStarlarkPeriodicPosts.md)

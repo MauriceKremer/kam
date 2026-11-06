@@ -10,7 +10,7 @@
 | `ECHO` | [docs/examples/echo.star](examples/echo.star) | The example script that replaced the native ECHO service |
 | `UA` | [FeatureUnifiedApi.md](FeatureUnifiedApi.md) | The unified listener the script routes now serve |
 
-**Status:** v1 implemented (storage, runtime, KAM API, ECHO as an example script, tests, operator docs); the only open item is the post-v1 weather capability
+**Status:** v1 implemented (storage, runtime, KAM API, ECHO as an example script, tests, operator docs). The post-v1 capability arrived as the generic [periodic posts](FeatureStarlarkPeriodicPosts.md) extension: timers, `rest_get`, `room_post`, and a weather example; no provider-specific weather adapter exists or is planned.
 **Scope:** Store operator-managed Starlark scripts in SQLite, manage them through an on-device KAM API, and replace the native ECHO service with a Starlark script.
 
 **API naming:** FeatureKamApi.md D19 (2026-10-23) named the on-device API the **KAM API** (earlier plans said "Local Management API"); the name here follows that rename. The later authenticated interface is called the **Remote API**. “Open API” can imply an unauthenticated/public API, while “OpenAPI” commonly refers to the API-description standard.
@@ -19,7 +19,7 @@
 
 KAM will support a small number of operator-managed Starlark scripts that react to decoded group-text events. Scripts are persisted in SQLite, compiled and validated into memory at load, and run outside the KISS route loop by a bounded automation worker. Each script record has a configurable timeout, defaulting to 500 ms. A script that exceeds its timeout is frozen and remains inactive until an operator explicitly recovers it. A script that fails compilation or validation is marked broken and is not run.
 
-The first trigger is `group_text`. The first outbound capability is `reply(channel, text)`. The ECHO mention responder is an example Starlark script ([examples/echo.star](examples/echo.star)) that replaced the former native service. Weather lookups are a follow-on host capability, not arbitrary HTTP from Starlark.
+The first trigger is `group_text`, answered with `reply(channel, text)`. The ECHO mention responder is an example Starlark script ([examples/echo.star](examples/echo.star)) that replaced the former native service. [FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md) added a second trigger (`on_timer` on a declared interval) and two outbound capabilities, `rest_get(url, headers=...)` for HTTP(S) and `room_post(room_id, text)` for KAM's own rooms, plus the `json` and `time` modules ([examples/periodic.star](examples/periodic.star) is the weather post built on them).
 
 YAML remains the source for node, radio, and channel configuration. SQLite becomes the source of truth for automation script definitions and their enabled state. Advert and group-text records remain in SQLite as they are today.
 
@@ -32,7 +32,7 @@ YAML remains the source for node, radio, and channel configuration. SQLite becom
 - The script routes listen on the unified local REST API (`monitor.listen`, default `127.0.0.1:8766`) without authentication ([FeatureUnifiedApi.md](FeatureUnifiedApi.md) merged the two listeners, retiring port 8765). The routes are `GET /scripts`, `GET /scripts/{id}`, `POST /scripts`, `POST /scripts/validate`, `PUT /scripts/{id}`, `POST /scripts/{id}/enable`, `POST /scripts/{id}/disable`, `POST /scripts/{id}/recover`, and `DELETE /scripts/{id}?revision=N`. Create/update/action requests carry an `expected_revision`; create uses zero. Create/update payloads wrap the script record in a `script` object. A missing `timeout_ms` defaults to 500, and unknown JSON fields are rejected. `enable` and `disable` change only the desired state: a `FROZEN` or `BROKEN` script stays inactive until `recover` (which recompiles the stored source and may set `timeout_ms`) or a source update. Name collisions and stale revisions return 409; unknown IDs return 404.
 - Because the API has no authentication, it only serves loopback `Host` headers (DNS-rebinding guard) and requires `Content-Type: application/json` on `POST`/`PUT`, which browsers cannot send cross-site without a preflight that the API never answers.
 - A timeout freezes the script in memory immediately; if persisting `FROZEN` fails the error is logged and the script stays frozen until restart.
-- Host functions are registered in one table (`hostFunctions` in `internal/automation/runtime.go`); compilation only accepts those names as predeclared, and each call receives the invocation context so it shares the script deadline. Adding a capability such as weather means adding an entry there.
+- Host functions are registered in one table (`hostFunctions` in `internal/automation/runtime.go`); compilation only accepts those names as predeclared, and each call receives the invocation context so it shares the script deadline. Adding a capability means adding an entry there, as done for `rest_get` and `room_post`.
 - Status changes (`BROKEN`, `FROZEN`) and API mutations (save, enable/disable, delete) are logged to the console, together with queue drops and script errors.
 
 ## Current State
@@ -57,7 +57,7 @@ YAML remains the source for node, radio, and channel configuration. SQLite becom
 - General-purpose Go plugins or arbitrary Go evaluation.
 - Arbitrary outbound HTTP, filesystem access, process execution, dynamic package loading, or goroutine creation from scripts.
 - Persistent per-script mutable globals or a general key/value store.
-- Multiple event types beyond group text.
+- Multiple event types beyond group text. *(Superseded: see [FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md) — a timer trigger was added. Nothing else was: there is still no file event, no advert trigger and no other callback name.)*
 - Parallel execution of a single script.
 - Weather-provider integration in the first release; it is explicitly post-v1.
 - Per-user script ownership, multi-tenant permissions, or ownership transfer. The initial deployment has a small operator population; the KAM API has a single system-administrator model.
@@ -68,35 +68,28 @@ YAML remains the source for node, radio, and channel configuration. SQLite becom
 
 ### Script shape
 
-Each script exports one entry point:
+Each script exports at least one entry point. `on_group_text(message)` runs for every decoded group text; `on_timer(message)` runs on the interval the source declares in `timer_interval_minutes` ([FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md)). A script needs one of the two, or both:
 
 ```python
 def on_group_text(message):
     pass
 ```
 
-A script is compiled and checked for this callable before it can be enabled. Scripts execute with a fresh Starlark thread per invocation; persistent state must not be hidden in module globals. Events are processed sequentially in the first release, so event ordering is deterministic and scripts need no internal locking.
+A script is compiled and checked for its entry points before it can be enabled. Scripts execute with a fresh Starlark thread per invocation; persistent state must not be hidden in module globals. Events are processed sequentially in the first release, so event ordering is deterministic and scripts need no internal locking.
 
-Illustrative post-v1 weather script (not part of the first release; the host functions shown here are proposed, not implemented):
+The weather script that shipped is the opposite of this earlier sketch: no coordinate syntax and no provider adapter, just the operator's own API URL on a timer ([examples/periodic.star](examples/periodic.star), described in [FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md)):
 
 ```python
-def on_group_text(message):
-    if message["channel"] != "#kam-test":
-        return
-    if "@kam_weather" not in message["body"]:
-        return
+timer_interval_minutes = 15
+API_URL = "https://api.weatherapi.com/v1/current.json?key=YOUR_KEY&q=Emmen"
 
-    coords = gps_coordinates(message["body"])
-    if coords == None:
-        reply(message["channel"], "Include latitude and longitude.")
+def on_timer(message):
+    body, status = rest_get(API_URL)
+    if status != 200:
         return
-
-    forecast = weather_forecast(coords["latitude"], coords["longitude"])
-    if forecast == None:
-        reply(message["channel"], "Forecast unavailable right now.")
-        return
-
-    reply(message["channel"], "Forecast: %s" % forecast["summary"])
+    current = json.decode(body)["current"]
+    room_post("lobby", "Emmen %s°C, feels %s°C, %s" % (
+        current["temp_c"], current["feelslike_c"], current["condition"]["text"]))
 ```
 
 ### Event data
@@ -296,11 +289,11 @@ The former native ECHO service is gone. Its behavior lives in the example script
 
 ### Phase 5: Weather capability (post-v1, explicitly out of first release)
 
-- [ ] Select a weather provider, licensing/attribution requirements, credential source, and supported forecast fields.
-- [ ] Implement a Go provider adapter with coordinate validation, TLS, strict deadlines, response-size limits, caching, and provider-level rate limits.
-- [ ] Expose only normalized forecast fields to Starlark; never expose arbitrary URLs or raw credentials.
-- [ ] Add tests with a fake provider for successful forecast, provider timeout/error, malformed response, caching, and rate limiting.
-- [ ] Add an example `@kam_weather` Starlark script and document its expected coordinate syntax and response size.
+Superseded by [FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md). A provider adapter with its own credential handling, caching and rate limits turned out to be more machinery than the goal needed: one plain `rest_get` call plus `json`/`time` lets an operator write the provider script themselves, key and all, and `room_post` puts the answer in a room on a timer. `docs/examples/periodic.star` is the working result, so the items below are not built and need not be.
+
+- [ ] Select a weather provider, licensing/attribution requirements, credential source, and supported forecast fields. *(Not done: `rest_get` leaves the choice, key and attribution to the script.)*
+- [ ] Implement a Go provider adapter with coordinate validation, TLS, strict deadlines, response-size limits, caching, and provider-level rate limits. *(Not done: TLS, the script deadline and the 1 MiB cap come from `rest_get`; caching and rate limits are the script's own interval.)*
+- [ ] Expose only normalized forecast fields to Starlark; never expose arbitrary URLs or raw credentials. *(Not done: `rest_get` exposes arbitrary URLs by design, and the key lives in the script source like channel keys in `kam.yml`.)*
 
 ### Phase 6: Operational hardening and documentation
 

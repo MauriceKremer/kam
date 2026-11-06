@@ -615,16 +615,26 @@ func (r *roomState) onText(c *client, pkt mesh.Packet, plain []byte, now time.Ti
 // addPost stores a post and only then updates the client's timestamp, so a
 // failed write leaves the client free to retry.
 func (r *roomState) addPost(c *client, text string, clientTimestamp uint32, now time.Time) error {
+	if err := r.storePost(c.pub[:], text, c.pub[:], clientTimestamp, now, hex.EncodeToString(c.pub[:]), roleName(c.role)); err != nil {
+		return err
+	}
+	c.lastTimestamp = clientTimestamp
+	return nil
+}
+
+// storePost persists one post and, only on success, adds it to the in-memory
+// backlog that clients are served from. A nil clientKey skips the client
+// timestamp update, which is what a room-authored post needs.
+func (r *roomState) storePost(author []byte, text string, clientKey []byte, clientTimestamp uint32, now time.Time, client, role string) error {
 	s := r.svc
 	text = mesh.TruncateUTF8(text, maxPostTextLen)
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		post := db.RoomPost{Timestamp: s.uniqueNow(now), Author: append([]byte(nil), c.pub[:]...), Text: text, CreatedAt: now.UTC().Truncate(time.Second)}
+		post := db.RoomPost{Timestamp: s.uniqueNow(now), Author: append([]byte(nil), author...), Text: text, CreatedAt: now.UTC().Truncate(time.Second)}
 		ctx, cancel := storeContext()
-		err := s.store.AppendPost(ctx, r.cfg.ID, post, c.pub[:], clientTimestamp)
+		err := s.store.AppendPost(ctx, r.cfg.ID, post, clientKey, clientTimestamp)
 		cancel()
 		if err == nil {
-			c.lastTimestamp = clientTimestamp
 			r.posts = append(r.posts, post)
 			if over := len(r.posts) - r.cfg.BacklogPosts; over > 0 {
 				r.posts = append([]db.RoomPost(nil), r.posts[over:]...)
@@ -632,7 +642,7 @@ func (r *roomState) addPost(c *client, text string, clientTimestamp uint32, now 
 			r.nextPush = now.Add(pushNotifyDelay)
 			s.cnt.postsAccepted.Add(1)
 			r.cnt.postsAccepted.Add(1)
-			s.recordRoomEvent(r.cfg.ID, "post", hex.EncodeToString(c.pub[:]), roleName(c.role), now)
+			s.recordRoomEvent(r.cfg.ID, "post", client, role, now)
 			return nil
 		}
 		lastErr = err
@@ -643,6 +653,27 @@ func (r *roomState) addPost(c *client, text string, clientTimestamp uint32, now 
 		// unique timestamp is one higher.
 	}
 	return lastErr
+}
+
+// addSystemPost runs on the worker and stores a post authored by the room
+// itself, so scripts and adverts reach clients through the normal backlog and
+// push paths.
+func (s *Service) addSystemPost(roomID, text string, now time.Time) error {
+	var room *roomState
+	for _, candidate := range s.rooms {
+		if candidate.cfg.ID == roomID {
+			room = candidate
+			break
+		}
+	}
+	if room == nil {
+		return errors.New("unknown room")
+	}
+	if err := room.storePost(room.pub[:], text, nil, 0, now, "", "system"); err != nil {
+		slog.Error("[Room] system post failed", "room", roomID, "error", err)
+		return err
+	}
+	return nil
 }
 
 // onRequest handles a REQ from a client. Keep-alive is supported; status,

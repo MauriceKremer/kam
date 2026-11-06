@@ -93,11 +93,12 @@ Every read and write returns a script in this shape:
 |---|---|
 | `id` | Unique short identifier, used in the URL. |
 | `name` | Display name; unique across scripts. |
-| `source` | The Starlark source code, defining at least `on_group_text`. |
+| `source` | The Starlark source code, defining `on_group_text`, a timer, or both. |
 | `enabled` | Desired state. A `FROZEN` or `BROKEN` script stays inactive even when enabled. |
 | `timeout_ms` | Maximum run time in milliseconds; default 500. |
 | `runtime_status` | `READY`, `BROKEN` (compile or run failure) or `FROZEN` (persist failed). |
 | `last_error` | Last error text; omitted when there is none. |
+| `timer_interval_minutes` | Minutes between timer runs, taken from the source's `timer_interval_minutes`; `0` means no timer. A request's value is ignored, because the source decides it. |
 | `revision` | Counter that goes up on every change; pass it as `expected_revision` to make a change. |
 | `created_at`, `updated_at` | Unix epoch seconds. |
 

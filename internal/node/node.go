@@ -167,9 +167,15 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 	var automationRuntime *automation.Runtime
 	var automationRepository *db.AutomationRepository
 	var unsubscribe func()
+	// room_post reaches rooms only when they run; automation.NewRuntime keeps
+	// the script valid and fails the call instead.
+	var poster automation.RoomPoster
+	if roomService != nil {
+		poster = roomPoster{service: roomService}
+	}
 	if repository, err := db.OpenAutomationRepository(dbPath); err != nil {
 		slog.Error("[Node] automation disabled: open automation repository failed", "error", err)
-	} else if runtime, err := automation.NewRuntime(context.Background(), repository, sender); err != nil {
+	} else if runtime, err := automation.NewRuntime(context.Background(), repository, sender, poster); err != nil {
 		slog.Error("[Node] automation disabled: load scripts failed", "error", err)
 		_ = repository.Close()
 	} else {
@@ -486,4 +492,11 @@ func (n *Node) ConfigPath() string { return n.configPath }
 // directly).
 func (n *Node) UpsertChannel(channel models.ChannelConfig) error {
 	return config.UpsertRuntimeChannelAndApply(n.configPath, channel)
+}
+
+// roomPoster adapts the room service to automation.RoomPoster.
+type roomPoster struct{ service *room.Service }
+
+func (r roomPoster) Post(ctx context.Context, roomID, text string) error {
+	return r.service.AddSystemPost(ctx, roomID, text)
 }

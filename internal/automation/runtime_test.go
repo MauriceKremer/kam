@@ -53,7 +53,7 @@ func TestRuntimeFreezesTimedOutScript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := NewRuntime(context.Background(), repository, &testSender{calls: make(chan [2]string, 1)})
+	runtime, err := NewRuntime(context.Background(), repository, &testSender{calls: make(chan [2]string, 1)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestRuntimeStaysFrozenWhenPersistenceFails(t *testing.T) {
 	save("a-loop", "def on_group_text(message):\n    reply(message[\"channel\"], \"loop\")\n    for index in range(1000000000):\n        pass\n", 20)
 	save("z-probe", "def on_group_text(message):\n    reply(message[\"channel\"], \"probe\")\n", 500)
 	sender := &recordingSender{}
-	runtime, err := NewRuntime(context.Background(), statusFailingRepository{repository}, sender)
+	runtime, err := NewRuntime(context.Background(), statusFailingRepository{repository}, sender, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestRuntimeMarksUncompilableScriptBrokenAndKeepsOthersRunning(t *testing.T)
 		}
 	}
 	sender := &testSender{calls: make(chan [2]string, 1)}
-	runtime, err := NewRuntime(context.Background(), repository, sender)
+	runtime, err := NewRuntime(context.Background(), repository, sender, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestRuntimeStopCancelsInvocationAndDropsQueuedEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	sender := &waitingSender{entered: make(chan struct{})}
-	runtime, err := NewRuntimeWithQueueSize(context.Background(), repository, sender, 1)
+	runtime, err := NewRuntimeWithQueueSize(context.Background(), repository, sender, nil, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func saveScript(t *testing.T, repository *db.AutomationRepository, id, source st
 
 func newTestRuntime(t *testing.T, repository Repository, sender Sender) *Runtime {
 	t.Helper()
-	runtime, err := NewRuntime(context.Background(), repository, sender)
+	runtime, err := NewRuntime(context.Background(), repository, sender, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestHandleNeverBlocksWhenQueueIsFull(t *testing.T) {
 	repository := openTestRepository(t)
 	saveScript(t, repository, "sender", replySource("reply"))
 	sender := newGatedSender()
-	runtime, err := NewRuntimeWithQueueSize(context.Background(), repository, sender, 1)
+	runtime, err := NewRuntimeWithQueueSize(context.Background(), repository, sender, nil, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

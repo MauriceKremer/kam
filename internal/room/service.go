@@ -33,6 +33,8 @@ const (
 	tickInterval = 50 * time.Millisecond
 	// inboundQueue bounds packets waiting for the worker.
 	inboundQueue = 64
+	// systemPostQueue bounds script posts waiting for the worker.
+	systemPostQueue = 16
 	// storeTimeout bounds one database call made by the worker.
 	storeTimeout = 10 * time.Second
 )
@@ -155,11 +157,20 @@ type Service struct {
 
 	in        chan kiss.RxPacket
 	monitor   chan monitorSnapshotRequest
+	systemIn  chan systemPostRequest
 	stop      chan struct{}
 	done      chan struct{}
 	started   atomic.Bool
 	startOnce sync.Once
 	stopOnce  sync.Once
+}
+
+// systemPostRequest is a post a script asked for; reply has capacity one so the
+// worker never blocks delivering its verdict.
+type systemPostRequest struct {
+	roomID string
+	text   string
+	reply  chan error
 }
 
 // NewService loads each room's stored state and prepares the service. It does
@@ -175,16 +186,17 @@ func NewService(opts Options) (*Service, error) {
 		return nil, err
 	}
 	s := &Service{
-		store:   opts.Store,
-		tx:      opts.Transmitter,
-		now:     opts.Now,
-		random:  opts.Random,
-		mesh:    opts.Mesh,
-		limiter: newLoginLimiter(),
-		in:      make(chan kiss.RxPacket, inboundQueue),
-		monitor: make(chan monitorSnapshotRequest),
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
+		store:    opts.Store,
+		tx:       opts.Transmitter,
+		now:      opts.Now,
+		random:   opts.Random,
+		mesh:     opts.Mesh,
+		limiter:  newLoginLimiter(),
+		in:       make(chan kiss.RxPacket, inboundQueue),
+		monitor:  make(chan monitorSnapshotRequest),
+		systemIn: make(chan systemPostRequest, systemPostQueue),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -362,6 +374,8 @@ func (s *Service) run() {
 			s.process(pkt.Packet, s.now())
 		case request := <-s.monitor:
 			request.reply <- s.monitorSnapshot()
+		case request := <-s.systemIn:
+			request.reply <- s.addSystemPost(request.roomID, request.text, s.now())
 		case <-ticker.C:
 			s.tick(s.now())
 		}
@@ -396,6 +410,32 @@ func (s *Service) process(pkt mesh.Packet, now time.Time) {
 // belongs to a forwarder, not to its final destination.
 func (s *Service) forUs(pkt mesh.Packet) bool {
 	return !(pkt.IsDirect() && pkt.HashCount() > 0)
+}
+
+// AddSystemPost stores a post authored by the room itself. It is safe from any
+// goroutine: the request is handed to the worker, which owns room state. The
+// caller's context bounds the wait for the verdict, but the worker may still
+// store the post after a context error.
+func (s *Service) AddSystemPost(ctx context.Context, roomID, text string) error {
+	request := systemPostRequest{roomID: roomID, text: text, reply: make(chan error, 1)}
+	select {
+	case <-s.stop:
+		return errors.New("room service is stopped")
+	default:
+	}
+	select {
+	case s.systemIn <- request:
+	default:
+		return errors.New("system post queue is full")
+	}
+	select {
+	case err := <-request.reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.stop:
+		return errors.New("room service is stopped")
+	}
 }
 
 func (s *Service) tick(now time.Time) {

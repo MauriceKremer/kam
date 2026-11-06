@@ -193,6 +193,35 @@ func TestScriptRoutesForwardAndMapErrors(t *testing.T) {
 	}
 }
 
+// The timer interval is part of the resource: it serializes on reads and a
+// request value is carried to the capability untouched, which then ignores it.
+func TestScriptCarriesTheTimerInterval(t *testing.T) {
+	var fake scriptFake
+	timer := Script{ID: "weather", Name: "weather", Source: "x", TimerIntervalMinutes: 5, Revision: 1}
+	fake.list = func() ([]Script, error) { return []Script{timer}, nil }
+	fake.get = func(string) (Script, error) { return timer, nil }
+	handler := scriptHandler(&fake)
+
+	response := scriptRequest(handler, http.MethodGet, "/scripts", "", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"timer_interval_minutes":5`) {
+		t.Fatalf("list: %d %q", response.Code, response.Body)
+	}
+	response = scriptRequest(handler, http.MethodGet, "/scripts/weather", "", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"timer_interval_minutes":5`) {
+		t.Fatalf("get: %d %q", response.Code, response.Body)
+	}
+	// The field is part of the accepted body, not an unknown field.
+	var forwarded Script
+	fake.save = func(script Script, expected int64) (Script, error) {
+		forwarded = script
+		return script, nil
+	}
+	response = scriptRequest(handler, http.MethodPost, "/scripts", `{"script":{"id":"weather","name":"weather","source":"x","timer_interval_minutes":5}}`, "application/json")
+	if response.Code != http.StatusCreated || forwarded.TimerIntervalMinutes != 5 {
+		t.Fatalf("create: %d %q, forwarded %d", response.Code, response.Body, forwarded.TimerIntervalMinutes)
+	}
+}
+
 func TestScriptRouteBodiesAndValidation(t *testing.T) {
 	var fake scriptFake
 	var validatedID, validatedSource string

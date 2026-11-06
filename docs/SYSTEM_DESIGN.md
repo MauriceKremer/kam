@@ -130,7 +130,7 @@ send.Sender  --> kiss.TxScheduler (legacy TxChan adapter, queued as group text)
 | `internal/api` | The local REST API's transport only: routes, JSON decode with unknown-field rejection, wire shapes, error class → status mapping, loopback Host guard, 8-slot concurrency limit, 5 s deadline, panic recovery, and the `GET /` index. Imports nothing from this repository except `internal/models`; capabilities reach it through consumer-defined seams (`Scripts`, `EventsSource`, `ChannelReader`, `RoomReader`, the status function), implemented by adapters in `internal/node`. A guard test enforces the import rule. |
 | `internal/db` | SQLite handle + WAL. `Persistence` implements `kiss.Persistence`. `AdvertQueue` + `GroupTextQueue` = batched background writers. `AutomationRepository` stores Starlark scripts (`automation_scripts`) on its own single connection. `RoomRepository` stores `rooms`, `room_posts` and `room_clients` on its own single connection with `synchronous=FULL`. Channel config lives in YAML. |
 | `internal/events` | The bounded metadata-only event ring, copied into pages under a short lock; the radio and room paths record through `models.MonitorSink`. Nothing here touches HTTP, SQLite or the modem. |
-| `internal/automation` | `Runtime` loads, compiles, and runs operator-managed Starlark scripts for each group text on one bounded-queue worker; `reply(channel, text)` is the only host function. It applies `timeout_ms` defaults and exports its domain sentinels (`ErrScriptNotFound`, `ErrScriptConflict`, `ErrScriptNameTaken`) for the transport's adapters. ECHO is the example script `docs/examples/echo.star`. See [FeatureStarlark.md](FeatureStarlark.md). |
+| `internal/automation` | `Runtime` loads, compiles, and runs operator-managed Starlark scripts on one bounded-queue worker, for each group text and for each due timer. A timer loop goroutine owns the schedule (a per-script next-fire time recomputed from `timer_interval_minutes`, nudged by save/enable/recover/delete) and only enqueues fires, so invocation stays on the single worker. Host functions are `reply(channel, text)`, `rest_get(url, headers=...)` and `room_post(room_id, text)`; `json` and `time` are predeclared modules. Room posting goes through the consumer-defined `RoomPoster` seam, which `internal/node` fills with the room service. It applies `timeout_ms` defaults and exports its domain sentinels (`ErrScriptNotFound`, `ErrScriptConflict`, `ErrScriptNameTaken`) for the transport's adapters. Examples: `docs/examples/echo.star` and `docs/examples/periodic.star`. See [FeatureStarlark.md](FeatureStarlark.md) and [FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md). |
 
 > **Extensibility seam.** `Manager.SubscribeGroupText` is the integration point
 > for any new consumer: analytics aggregation, room-server fan-out, emergency
@@ -172,6 +172,7 @@ main goroutine
   |        db.OpenAutomationRepository
   |        automation.NewRuntime -> manager.SubscribeGroupText(runtime.Handle)
   |                              -> [automation worker goroutine]   (internal/automation)
+  |                              -> [timer loop goroutine]  (one timer, re-armed per wake)
   |   |- node.startMonitor -> [local API server goroutine on 127.0.0.1:8766]  (internal/api)
   |   |- node.startMonitor -> [modem event loop]  (kiss_manager.go: routes modem
   |   |                              events, incl. link_lost/link_restored, to subscribers)
@@ -487,7 +488,9 @@ Client                                 KAM room (ADV_TYPE_ROOM, default scope)
 | Room state (client tables, post caches, timers, push state) | none (room worker only) | Counters are atomics, so `Stats()` is safe from any goroutine. Monitor snapshots copy under the service's `monitorMu`; activity recorder swaps serialize on it. |
 | `RoomRepository` | single SQLite connection | Writes first in every transaction, so a concurrent commit by the persistence connection cannot fail it with `SQLITE_BUSY_SNAPSHOT`. |
 | `AdvertQueue.ch` / `GroupTextQueue.ch` | channel | Bounded; enqueue non-blocking. |
-| automation `queue` | channel | Bounded (128); enqueue non-blocking, drops are logged. |
+| automation `queue` | channel | Bounded (128); carries both group texts and timer fires, enqueue non-blocking, drops are counted and logged. |
+| automation timer schedule | timer-loop goroutine only (no lock) | The loop owns `next[id]` and recomputes it from the scripts map on every wake. `Save`/`SetEnabled`/`Recover`/`Delete` nudge it through the size-1 `timerChanged` channel; the map read itself is under the `scripts` RLock. |
+| `RoomPoster` (script → room) | none; `systemIn` channel + room worker | `AddSystemPost` hands the request to the room worker's bounded channel (16) and waits for its reply or its own context, so `room_post` shares the script deadline. |
 | automation `scripts` (compiled programs) | `sync.RWMutex` + `mutationMu` | Worker snapshots under RLock; API mutations and freezes serialize on `mutationMu` and publish a new entry only after the SQLite write commits. Intake (`Save`/`Delete`) serializes on `intakeMu`; the worker's stop and join are sequenced by `waitForInFlightMutation`. |
 | `stopChan` | `close()` | Signal-all for the three Manager loops and the modem event loop. Each queue/service has its own stop signal. |
 | node `radioRuntime` (settings + modem echo, TX-power state) | `sync.Mutex` + `atomic.Bool`s | The single radio truth: written by startup apply and the reset probe's reapply; read by the refresh loop, the monitor snapshot and the scheduler's duty-cycle estimate. |
@@ -506,9 +509,11 @@ Client                                 KAM room (ADV_TYPE_ROOM, default scope)
    serves the read-only data surfaces, script management and modem control)
    and, if the API is enabled, `modemController.Stop()` (joins the refresh
    loop), then unsubscribe the group-text and packet
-   handlers (stop intake), then `automation.Runtime.Stop()` (cancel the active script, drop
-   queued events, join the worker, wait for in-flight mutations) and close the
-   automation repository, all **before** the TX path goes away.
+   handlers (stop intake), then `automation.Runtime.Stop()` (cancel the active script,
+   stop the timer loop so no new fire can be queued, drop queued events, join
+   the worker, wait for in-flight mutations) and close the automation
+   repository, all **before** the TX path goes away. Automation stops before
+   the room service because a running script may still post into a room.
 2. `room.Service.Stop()` joins the worker after a final flush of client
    sessions; then close the room repository.
 3. `TxScheduler.Stop()` discards queued packets and joins its goroutine.
