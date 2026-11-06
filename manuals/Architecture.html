@@ -189,7 +189,7 @@
                     <li>It sorts the packet by type. A group text goes to the <strong>parsers</strong>, which decrypt it with the channel keys loaded from <code>kam.yml</code>. An advert goes to the same place and has its signature checked.</li>
                     <li>The modem sends signal-quality numbers (SNR and RSSI) in a separate frame just after each packet. The route loop holds the decoded message for up to 200 ms to attach them, then moves on even if they never arrive.</li>
                     <li>The message is queued for SQLite, where a background writer saves it. Every group-text subscriber is then called. Automation is one subscriber: it copies the message into its own 128-slot queue.</li>
-                    <li>The automation worker runs your enabled scripts against the message.</li>
+                    <li>The automation worker runs your enabled scripts against the message. Timer scripts are not part of this flow: a timer loop calls them on their declared interval through the same 128-slot queue.</li>
                 </ol>
 
                 <h3 id="journey-room">A room packet is received</h3>
@@ -382,7 +382,7 @@ unsubscribePackets = manager.SubscribePackets(service.HandlePacket)</code></pre>
                     <tbody>
                         <tr><td>Reader loop to route loop</td><td>10 frames</td><td>The reader waits, so reading slows down.</td></tr>
                         <tr><td>Route loop to SQLite (adverts, group texts)</td><td>Bounded queues with batched writes</td><td>New records are dropped and counted.</td></tr>
-                        <tr><td>Route loop to automation</td><td>128 messages</td><td>The message is dropped, a warning is logged and a counter goes up.</td></tr>
+                        <tr><td>Route loop to automation</td><td>128 messages (group texts and timer fires share the queue)</td><td>The message is dropped, a warning is logged and a counter goes up.</td></tr>
                         <tr><td>Route loop to room server</td><td>64 packets</td><td>The packet is dropped and a counter goes up.</td></tr>
                         <tr><td>Senders and rooms to transmit scheduler</td><td>128 packets</td><td>Pushes and adverts are evicted first. If nothing can be evicted the submit fails.</td></tr>
                         <tr><td>Transmit scheduler to radio</td><td>One frame in flight</td><td>The scheduler waits for <code>TxDone</code>. If it never comes, the writer gives up after a timeout and the scheduler moves on.</td></tr>

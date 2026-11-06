@@ -70,7 +70,7 @@
                     <thead><tr><th>Capability</th><th>Current status</th></tr></thead>
                     <tbody>
                         <tr><td>Decode device announcements and configured-channel messages; save records locally</td><td>Implemented</td></tr>
-                        <tr><td>Run installed Starlark scripts and send channel replies</td><td>Implemented; scripts must be installed and enabled</td></tr>
+                        <tr><td>Run installed Starlark scripts: react to channel messages, run on a timer, and post to rooms or trusted HTTP(S) services</td><td>Implemented; scripts must be installed and enabled</td></tr>
                         <tr><td>Configure and query a KISS radio modem</td><td>Implemented in code; real-radio smoke tests and timing measurements remain pending</td></tr>
                         <tr><td>Host MeshCore room servers (message boards that MeshCore apps log in to)</td><td>Implemented and tested in software; real-radio verification pending. Optional and off until you add a <code>rooms:</code> list</td></tr>
                         <tr><td>Weather lookup capability and an operator analytics dashboard</td><td>Planned, not available</td></tr>
@@ -115,8 +115,8 @@
                 <h3>One owner for a constrained radio</h3>
                 <p>KAM's radio manager is the only part that uses the serial connection. It coordinates commands and outgoing messages so scripts and other components cannot independently overwhelm the modem. This matters because the modem has limited space for pending work and cannot attach a unique request number to every response.</p>
                 <h3>Make optional behavior replaceable</h3>
-                <p><strong>Starlark</strong> is a small Python-like scripting language. An operator can install a script to react to a decoded channel message without rebuilding KAM. Scripts run with restricted capabilities: they can reply through KAM, but do not have general access to files, the internet, or operating-system commands.</p>
-                <p>A script runs with fresh state for each message. A timeout limits how long it can run; a script that exceeds its limit is marked <code>FROZEN</code> and needs operator attention. Optional automation is kept separate from the core job of receiving and storing traffic.</p>
+                <p><strong>Starlark</strong> is a small Python-like scripting language. An operator can install a script to react to a decoded channel message or to run on a timer (for example, posting the current weather into a room every 15 minutes) without rebuilding KAM. Scripts run with restricted capabilities: they can reply through KAM, write into KAM's own rooms, and fetch one HTTP(S) URL they name, but do not have general access to files, the internet, or operating-system commands.</p>
+                <p>A script runs with fresh state for each event or timer fire. A timeout limits how long it can run; a script that exceeds its limit is marked <code>FROZEN</code> and needs operator attention. Optional automation is kept separate from the core job of receiving and storing traffic.</p>
                 <h3>Give settings and records clear homes</h3>
                 <p><strong>YAML</strong> is the readable, indentation-based format used by <code>kam.yml</code>. This file holds node, radio, and channel settings. SQLite holds received records and installed scripts. Keeping that distinction clear makes it easier to understand what to edit and what to back up.</p>
             </section>
@@ -129,7 +129,7 @@
                     <li>The modem sends the packet over USB to KAM inside a KISS frame, the protocol's packet container.</li>
                     <li>KAM recognizes a supported group-text packet and attempts to decrypt it using its enabled channel keys.</li>
                     <li>A decoded message is queued for local storage. If signal information is available, KAM attaches it to the record.</li>
-                    <li>Enabled scripts receive the decoded message through a separate queue. A script may request a reply through the same radio manager.</li>
+                    <li>Enabled scripts receive the decoded message through a separate queue. A script may request a reply through the same radio manager. Scripts that declare a timer are also called on their interval, independent of radio traffic.</li>
                 </ol>
                 <div class="mermaid">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 240" role="img" aria-labelledby="flow-title flow-description">
@@ -285,7 +285,7 @@ find /dev -name 'ttyUSB*' -o -name 'ttyACM*'</code></pre>
                         <tr><td>Queue</td><td>A limited waiting list between jobs such as decoding and writing to disk.</td></tr>
                         <tr><td>SQLite / YAML</td><td>KAM's local database; the text format used for its settings.</td></tr>
                         <tr><td>Loopback / API</td><td>A network address pointing to this computer; an interface for programmatic requests.</td></tr>
-                        <tr><td>Starlark</td><td>The restricted scripting language used for KAM's message responders.</td></tr>
+                        <tr><td>Starlark</td><td>The restricted scripting language used for KAM's message responders and timer scripts.</td></tr>
                     </tbody>
                 </table>
                 <h3>Where to go next</h3>
