@@ -19,8 +19,8 @@ CREATE TABLE IF NOT EXISTS group_texts (
   time_drift_seconds INTEGER NOT NULL,
   hop_count INTEGER NOT NULL DEFAULT 0,
   hop_stations TEXT NOT NULL DEFAULT '[]',
-	snr_quarter_db INTEGER,
-	rssi_dbm INTEGER,
+  snr_quarter_db INTEGER,
+  rssi_dbm INTEGER,
   received_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 

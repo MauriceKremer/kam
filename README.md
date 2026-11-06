@@ -19,7 +19,7 @@ We value pragmatism over overly strict design or extreme security hardening. KAM
 
 ### Prerequisites
 
-- Go 1.22+ (matches `go.mod` directive)
+- Go 1.25+ (matches `go.mod` directive)
 - A MeshCore-compatible KISS TNC / LoRa radio (e.g. Heltec) connected over USB serial
 - OS serial driver present (most platforms auto-load; Linux may need the `dialout` group: `sudo usermod -aG dialout $USER`)
 
@@ -42,7 +42,7 @@ go install kam.bytecoder.nl@latest
 Copy the example config and edit the radio port for your OS:
 
 ```sh
-cp kam.yml kam.yml.local   # or edit kam.yml in place
+cp kam.yml kam.yml.local   # run with `-config kam.yml.local` to use the copy
 ```
 
 ```yaml
@@ -63,7 +63,7 @@ channels:
     enabled: true
 ```
 
-See [Channel Credentials Storage Design](#channel-credentials-storage-design-step-1) below for the full `key_strategy` semantics (`public` / `derived` / `explicit`).
+See [Channel Credentials Storage Design](#channel-credentials-storage-design) below for the full `key_strategy` semantics (`public` / `derived` / `explicit`).
 
 ### Run
 
@@ -126,8 +126,9 @@ listener and turns the event recorder off; automation scripts keep running, but
 they can no longer be managed or observed until the listener is back. Invalid
 `monitor` settings or a busy port are
 logged without stopping radio ingestion. Changes to this block require a restart.
-The API has no authentication and serves loopback hosts only; KAMmon owns its
-web authentication. JSON events contain metadata, never message bodies or keys.
+The API has no authentication and serves loopback hosts only; KAMmon, the
+separate web-monitor project, owns its web authentication. JSON events contain
+metadata, never message bodies or keys.
 
 ```sh
 curl --fail-with-body http://127.0.0.1:8766/v1/status
@@ -193,8 +194,6 @@ jq -n --rawfile source docs/examples/echo.star '{script: {id: "echo", name: "ech
   | curl -s -X POST localhost:8766/scripts -H 'Content-Type: application/json' -d @-
 ```
 
-A database that already ran the former one-time migration keeps its `builtin.echo` script; it is an ordinary script you can edit or delete.
-
 ### Backups
 
 `kam.db` now holds your script source and room posts. Include it in backups, using `sqlite3 kam.db ".backup kam-backup.db"` while running, or copying `kam.db` with its `-wal` and `-shm` files while stopped. If you run room servers, also back up the `rooms/` directory next to the database: it holds each room's identity key, and losing it changes the room's address.
@@ -234,9 +233,10 @@ A wrong password gets no answer at all (the client times out); that is how MeshC
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `id` | required | Lowercase letters, digits, `-`, `_` (at most 32). Names the identity file `rooms/<id>.key`. |
+| `id` | required | Lowercase letters, digits, `-`, `_` (at most 32); must start with a letter or digit. Names the identity file `rooms/<id>.key`. |
 | `name` | required | Advert name, at most 31 bytes (23 when a `location` is set). |
 | `admin_password` | required | At most 15 bytes (clients truncate longer ones); never `password`. |
+| `enabled` | `true` | `false` leaves the room out of KAM's config entirely (key file untouched). |
 | `guest_password`, `open_room`, `allow_read_only` | none / `false` / `false` | See the table above. `open_room: true` needs an empty `guest_password`. |
 | `location` | none | `latitude` and `longitude` advertised to clients. |
 | `max_clients` | 20 | Client table size (1-100). The least recently active non-admin is evicted when full. |
@@ -259,9 +259,9 @@ Things to know:
 
 ## Architecture TL;DR
 
-For the full, language-agnostic runtime architecture (with Mermaid diagrams),
-see [`docs/DESIGN.md`](docs/DESIGN.md). The Go-specific module/goroutine map
-lives in [`docs/SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md).
+The Go-specific module/goroutine map lives in
+[`docs/SYSTEM_DESIGN.md`](docs/SYSTEM_DESIGN.md). The full KAM API surface is
+[`docs/APIdetails.md`](docs/APIdetails.md).
 
 ### Device Limitations
 The KISS infrastructure interfaces with constrained hardware devices (e.g., TNCs, LoRa radios). The primary limitations are:
@@ -271,15 +271,15 @@ The KISS infrastructure interfaces with constrained hardware devices (e.g., TNCs
 ### Architecture Approach
 To provide a clean, thread-safe, and asynchronous Go API (e.g., `cmd_radio.go`), while protecting the constrained hardware, the system employs the following:
 
-1. **Hardware Mutex (`hwTxMutex`)**: The `Manager` holds a `sync.Mutex` that locks access to the hardware. Any API call requesting bidirectional interaction with the hardware must acquire this lock. 
+1. **Request Gate (`requestGate`)**: `internal/kiss` serializes radio commands with a capacity-one channel semaphore. Any API call that talks to the hardware must take the single request slot before sending.
    - *Impact*: Enforces that only one command is "in-flight" at a time, protecting the hardware buffer from overrun.
-   - *Impact*: Alleviates the need for transaction IDs, as any incoming hardware response (e.g., `OK` or `Error`) is guaranteed to belong to the single goroutine currently holding the lock.
-2. **Event-Driven Response Registry (`internal/kiss/registry.go`)**: Incoming serial frames are processed continuously by a background parser loop. When a response byte is detected, the parser uses a registry map (`waiters map[byte]chan []byte`) to route the payload. 
-   - *Safety*: The registry uses buffered channels (`make(chan []byte, 1)`) to ensure the fast-running parser loop never blocks, even if the API caller abandoned the request due to a context timeout.
-3. **Context-Aware API**: High-level Go clients interact via synchronous interfaces using standard `context.Context` semantics (`func Set(ctx, ...)`). If the hardware lock cannot be acquired or the hardware fails to respond within the expected deadline, the API quickly unwinds and returns an error without stalling the caller.
+   - *Impact*: Alleviates the need for transaction IDs, as any incoming hardware response (e.g., `OK` or `Error`) is guaranteed to belong to the single request that currently holds the slot.
+2. **Pending-Request Slot**: The `Manager` tracks at most one pending radio request (`requestMu`/`pending` in `kiss_manager.go`, `pendingRequest` in `cmd_radio.go`). The frame router hands the response bytes of that one request type to its channel (buffered to 1) and records the result there.
+   - *Safety*: The result channel is buffered so the fast-running router loop never blocks, even if the API caller abandoned the request due to a context timeout.
+3. **Context-Aware API**: High-level Go clients interact via synchronous interfaces using standard `context.Context` semantics (`func Set(ctx, ...)`). If the request slot cannot be acquired or the hardware fails to respond within the expected deadline, the API quickly unwinds and returns an error without stalling the caller.
 4. **Payload Router (`internal/kiss/kiss_router.go`)**: Incoming `CMD_DATA` frames are decoded and dispatched by `routeLoop`. It extracts the header bits (`routeType`, `payloadType`, `version`) and routes to a dedicated per-type handler (e.g., `internal/kiss/parsers/advert.go`). `kiss_router.go` owns no parsing logic itself — it is a pure dispatcher. Each payload type lives in its own `internal/kiss/parsers/<type>.go` file, keeping parsing isolated and individually testable.
 
-## Channel Credentials Storage Design (Step 1)
+## Channel Credentials Storage Design
 
 System configuration lives in **one place**: the human-editable YAML file
 `kam.yml`. There is no channel state in SQLite — the durable store is used
@@ -332,6 +332,8 @@ The `radio` block configures the default serial port and LoRa parameters used at
 - `bandwidth_hz` — LoRa bandwidth in Hz.
 - `spreading_factor` — LoRa spreading factor.
 - `coding_rate` — LoRa coding rate.
+- `tx_power_dbm` — TX power in dBm, 1–22 (optional; the modem keeps its current power when omitted).
+- `csma` — optional channel-access timing: `txdelay_ms` and `slot_time_ms` (multiples of 10, 0–2550; defaults 500 / 100), `persistence` (0–255, default 63), `full_duplex` (default `false`). Supplied, it must be the complete object.
 
 These values are pushed to the hardware during `main.go` initialization.
 
@@ -385,32 +387,9 @@ ignored, so the last valid channel registry remains active. This live reload
 currently applies channel settings only; radio, node, database, and echo
 settings still require a restart. `#public` must still be edited directly.
 
-### Planned Go models
+### Go models
 
-```go
-type KamConfig struct {
-    Version  int             `yaml:"version"`
-    NodeName string          `yaml:"node_name"`
-    Radio    RadioConfig     `yaml:"radio"`
-    Channels []ChannelConfig `yaml:"channels"`
-}
-
-type RadioConfig struct {
-    Port            string `yaml:"port"`
-    Baud            int    `yaml:"baud"`
-    FrequencyHz     uint32 `yaml:"frequency_hz"`
-    BandwidthHz     uint32 `yaml:"bandwidth_hz"`
-    SpreadingFactor uint8  `yaml:"spreading_factor"`
-    CodingRate      uint8  `yaml:"coding_rate"`
-}
-
-type ChannelConfig struct {
-    Name        string `yaml:"name"`
-    KeyStrategy string `yaml:"key_strategy"`
-    KeyHex      string `yaml:"key_hex,omitempty"`
-    Enabled     bool   `yaml:"enabled"`
-}
-```
+The parsed `kam.yml` is the `KamConfig` in [`internal/models/models.go`](internal/models/models.go), which also holds `RadioConfig` (with `tx_power_dbm` and the `csma` block), `ChannelConfig`, `MeshConfig`, `RoomConfig` and `MonitorConfig`. Read that file for the current field list instead of a copy here.
 
 ### Startup and runtime behavior
 
@@ -440,7 +419,7 @@ Validated `ADVERT` packets are persisted to SQLite without blocking the packet r
 
 ### SQLite write tuning
 
-The SQLite file (`kam.db`) is used for adverts and group texts. WAL mode is enabled at open time, along with a 5-second busy timeout and NORMAL synchronous mode. This keeps reads responsive while allowing concurrent writes. Channel configuration is **not** stored here — it lives only in `kam.yml`.
+The SQLite file (`kam.db`) holds ingested adverts and group texts, automation scripts, and room data. WAL mode is enabled at open time, along with a 5-second busy timeout and NORMAL synchronous mode. This keeps reads responsive while allowing concurrent writes. Channel configuration is **not** stored here — it lives only in `kam.yml`.
 
 ### Adverts schema
 
@@ -462,6 +441,8 @@ CREATE TABLE IF NOT EXISTS adverts (
   longitude REAL,
   time_drift_seconds INTEGER NOT NULL,
   raw_payload BLOB NOT NULL,
+  hop_count INTEGER NOT NULL DEFAULT 0,
+  hop_stations TEXT NOT NULL DEFAULT '[]',
   received_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -471,7 +452,7 @@ CREATE INDEX IF NOT EXISTS idx_adverts_node_hash ON adverts(node_hash);
 CREATE INDEX IF NOT EXISTS idx_adverts_node_type ON adverts(is_chat_node, is_repeater, is_room_server, is_sensor);
 ```
 
-The parser stores the full raw advert payload and the first byte of the public key (`node_hash`) so every persisted row remains self-contained and can be replayed or inspected later. RSSI/SNR are not stored because the MeshCore advert payload does not contain them; they would need to be captured from the radio's frame metadata and threaded into the parser.
+The parser stores the full raw advert payload and the first byte of the public key (`node_hash`) so every persisted row remains self-contained and can be replayed or inspected later. Adverts carry no RSSI/SNR because the MeshCore advert payload does not contain them; group texts do (`snr_quarter_db`, `rssi_dbm` below, captured from the radio's frame metadata).
 
 The parser extracts the node type from the lower nibble of the appdata flags byte per the MeshCore spec:
 - `0x01` — chat node
@@ -496,6 +477,10 @@ CREATE TABLE IF NOT EXISTS group_texts (
   public_key_prefix BLOB,
   message_timestamp INTEGER NOT NULL,
   time_drift_seconds INTEGER NOT NULL,
+  hop_count INTEGER NOT NULL DEFAULT 0,
+  hop_stations TEXT NOT NULL DEFAULT '[]',
+  snr_quarter_db INTEGER,
+  rssi_dbm INTEGER,
   received_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -529,7 +514,7 @@ Current defaults (hard-coded constants in `internal/db/adverts.go`):
 - Batch size: 50
 - Flush interval: 1 second
 
-If bursts consistently overflow the queue, increase capacity or reduce flush interval. If SQLite contention becomes the bottleneck, move the adverts table to a separate database file and adjust the store path in `main.go`.
+If bursts consistently overflow the queue, increase capacity or reduce flush interval. If SQLite contention becomes the bottleneck, move the adverts table to a separate database file and adjust the store path (`db.NewPersistence` in `internal/db`, called by `internal/node`).
 
 ### Duplicate suppression note
 
