@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="A layered map of KAM: what each part does, how packets move between the parts, and how the room server receives packets from the router.">
+    <title>KAM Architecture</title>
+    <link href="manuals.css" rel="stylesheet">
+    <script src="manuals.js" defer></script>
+    <script src="architecture.js" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <aside>
+        <div class="manual-brand"><strong>KAM</strong><span>Documentation</span></div>
+        <details class="manual-navigation" open>
+            <summary>Contents</summary>
+            <details class="navigation-section" open>
+                <summary>On this page</summary>
+                <nav aria-label="On this page">
+                    <a href="#overview">How to Read This Page</a>
+                    <a href="#layers">The Layered Map</a>
+                    <a href="#journeys">Follow One Journey</a>
+                    <a href="#room-server">How the Room Server Receives Packets</a>
+                    <a href="#waiting">Queues and Priorities</a>
+                    <a href="#lifecycle">Start-up and Shutdown</a>
+                    <a href="#reference">Package Reference</a>
+                    <a href="#status">Status and Sources</a>
+                </nav>
+            </details>
+            <details class="navigation-section" open>
+                <summary>Manuals</summary>
+                <nav aria-label="Manuals">
+                    <a href="KAM.html">KAM Guide</a>
+                    <a href="Architecture.html" aria-current="page">Architecture</a>
+                    <a href="FeatureStarlark.html">Starlark Automations</a>
+                    <a href="FeatureKissModem.html">KISS Modem</a>
+                    <a href="FeatureRoomServer.html">Room Server</a>
+                    <a href="FeatureMonitorApi.html">Backend API</a>
+                </nav>
+            </details>
+        </details>
+    </aside>
+    <main id="main-content" tabindex="-1">
+        <header>
+            <span>Reference</span>
+            <h1>Architecture</h1>
+            <p>See every part of KAM in one layered map, then follow a message through it.</p>
+            <p><span class="badge badge-green">Implemented</span><span>Describes the code as it stands on 6 November 2026. Room servers are implemented; the <a href="FeatureRoomServer.html">Room Server manual</a> tracks their hardware verification.</span></p>
+        </header>
+        <article class="prose">
+            <section id="overview">
+                <h2>How to Read This Page</h2>
+                <p>KAM is one program that runs on your computer. It listens to a MeshCore radio, saves what it hears in a database, runs your scripts, and can host room servers. Inside, it is split into small parts. Each part does one job and hands its result to the next part.</p>
+                <p>This page draws those parts as <strong>layers</strong>. Higher layers use lower layers; a lower layer never needs to know what is above it. That is why a broken script or room cannot stop the radio from receiving.</p>
+                <h3>What the diagram's shapes mean</h3>
+                <ul>
+                    <li><strong>Solid outline:</strong> always running while KAM runs.</li>
+                    <li><strong>Dashed outline:</strong> optional. KAM starts it on a best-effort basis; if it fails to start, KAM logs the problem and keeps receiving.</li>
+                    <li><strong>Grey fill:</strong> outside KAM, such as the radio, a file, or a person.</li>
+                    <li><strong>Arrows:</strong> the direction data travels. A label names the hand-off.</li>
+                    <li><strong>Blue:</strong> the journey you picked with the buttons above the diagram (needs JavaScript). The same journeys are written out as numbered steps further down.</li>
+                </ul>
+                <h3>Words used on this page</h3>
+                <table>
+                    <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+                    <tbody>
+                        <tr><td>KISS modem</td><td>A small radio board that passes raw radio packets to the computer over a USB serial cable. KISS is the simple framing protocol it speaks.</td></tr>
+                        <tr><td>Packet and frame</td><td>A packet is one MeshCore radio message. A frame is the packet wrapped for the serial cable.</td></tr>
+                        <tr><td>Loop</td><td>A task that repeats forever, such as "read bytes from the cable". Each loop runs in its own goroutine, Go's lightweight thread.</td></tr>
+                        <tr><td>Queue</td><td>A waiting line with a fixed size. When a queue is full, KAM drops the newest item and counts it instead of freezing the radio.</td></tr>
+                        <tr><td>Tap</td><td>A hook where another part asks to be told about every packet or message of one kind. The router calls the hook and does not know who is listening.</td></tr>
+                        <tr><td>Advert</td><td>A MeshCore announcement in which a node says who it is.</td></tr>
+                        <tr><td>Group text</td><td>An encrypted message sent to a channel. KAM can read it only if you configured that channel's key.</td></tr>
+                        <tr><td>Room server</td><td>A message board that MeshCore apps log in to. See the <a href="FeatureRoomServer.html">Room Server manual</a>.</td></tr>
+                        <tr><td>Starlark</td><td>The small scripting language KAM uses for automations. See the <a href="FeatureStarlark.html">Starlark manual</a>.</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="layers">
+                <h2>The Layered Map</h2>
+                <p>Read from top to bottom: people and tools, then four layers inside KAM, then the hardware and files. The column on the right lists the shared building blocks that every layer uses.</p>
+                <div id="arch-controls" hidden>
+                    <div class="arch-flows" id="arch-flows" role="group" aria-label="Highlight a journey on the diagram"></div>
+                    <p class="arch-flow-summary" id="arch-flow-summary" aria-live="polite"></p>
+                </div>
+                <div class="mermaid arch-diagram" id="layer-diagram">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 648" role="img" aria-labelledby="layers-title layers-desc">
+                        <title id="layers-title">KAM layered architecture</title>
+                        <desc id="layers-desc">Four layers inside KAM. Layer 1 holds main.go, the node and the local REST API entry. Layer 2 holds the optional room server and Starlark automation. Layer 3 is the packet pipeline: route loop, parsers, sender and transmit scheduler. Layer 4 is the radio link: reader loop, radio client and writer loop. Shared building blocks sit in a column on the right. The MeshCore radio, the SQLite file, kam.yml, a terminal and operator tools are outside KAM. The route loop hands packets to the room server through a packet tap and group texts to automation through a group-text tap. Room server and automation replies pass through the transmit scheduler to the writer loop and out to the radio.</desc>
+                        <defs>
+                            <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+                            <marker id="arch-arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+                        </defs>
+
+                        <!-- Outside, above -->
+                        <text class="layer-name" x="16" y="28">Outside KAM</text>
+                        <text class="note" x="16" y="44">people and tools</text>
+                        <g data-flows="cfg"><rect class="box box-outside" x="112" y="10" width="288" height="44" rx="8"/><text class="name mid" x="256" y="28">Terminal</text><text class="note mid" x="256" y="45">kam, kam channel upsert, kam room show, Ctrl-C</text></g>
+                        <g data-flows="api"><rect class="box box-outside" x="488" y="10" width="180" height="44" rx="8"/><text class="name mid" x="578" y="28">Operator tools</text><text class="note mid" x="578" y="45">curl, scripts, dashboards</text></g>
+                        <g data-flows="cfg"><rect class="box box-outside" x="696" y="10" width="240" height="44" rx="8"/><text class="name mid" x="816" y="28">kam.yml</text><text class="note mid" x="816" y="45">settings, the single source of truth</text></g>
+
+                        <!-- Frame and bands -->
+                        <text class="caption" x="16" y="70">Inside KAM: one Go program</text>
+                        <rect class="frame" x="8" y="76" width="944" height="476" rx="12"/>
+                        <rect class="band" x="16" y="92" width="664" height="72" rx="8"/>
+                        <rect class="band" x="16" y="180" width="664" height="92" rx="8"/>
+                        <rect class="band" x="16" y="316" width="664" height="116" rx="8"/>
+                        <rect class="band" x="16" y="448" width="664" height="92" rx="8"/>
+                        <rect class="band" x="688" y="92" width="256" height="448" rx="8"/>
+
+                        <text class="layer-name" x="24" y="116">1 · Control</text><text class="note" x="24" y="132">start and wire</text>
+                        <text class="layer-name" x="24" y="204">2 · Features</text><text class="note" x="24" y="220">optional extras</text>
+                        <text class="layer-name" x="24" y="340">3 · Pipeline</text><text class="note" x="24" y="356">decode, send</text>
+                        <text class="layer-name" x="24" y="472">4 · Radio</text><text class="note" x="24" y="488">serial and KISS</text>
+                        <text class="layer-name" x="700" y="110">Building blocks</text><text class="caption" x="700" y="124">shared by every layer</text>
+
+                        <!-- Layer 1 -->
+                        <g data-flows="cfg"><rect class="box" x="112" y="100" width="148" height="56" rx="8"/><text class="name mid" x="186" y="120">main.go</text><text class="note mid" x="186" y="137">flags, logging, signals</text><text class="note mid" x="186" y="151">kam channel / room</text></g>
+                        <g data-flows="api"><rect class="box" x="284" y="100" width="176" height="56" rx="8"/><text class="name mid" x="372" y="120">internal/node</text><text class="note mid" x="372" y="137">builds, wires and stops</text><text class="note mid" x="372" y="151">everything below</text></g>
+
+                        <!-- Layer 2 -->
+                        <g data-flows="room reply"><rect class="box box-optional" x="112" y="188" width="176" height="76" rx="8"/><text class="name mid" x="200" y="208">internal/room</text><text class="note mid" x="200" y="225">MeshCore room servers:</text><text class="note mid" x="200" y="239">logins, posts, pushes</text><text class="caption mid" x="200" y="256">optional, best effort</text></g>
+                        <g data-flows="text reply"><rect class="box box-optional" x="304" y="188" width="176" height="76" rx="8"/><text class="name mid" x="392" y="208">internal/automation</text><text class="note mid" x="392" y="225">Starlark scripts on one</text><text class="note mid" x="392" y="239">worker, bounded queue</text><text class="caption mid" x="392" y="256">optional, best effort</text></g>
+                        <g data-flows="api"><rect class="box box-optional" x="496" y="188" width="172" height="76" rx="8"/><text class="name mid" x="582" y="208">internal/api</text><text class="note mid" x="582" y="225">local REST API for</text><text class="note mid" x="582" y="239">status, events, scripts</text><text class="caption mid" x="582" y="256">optional, can be turned off</text></g>
+
+                        <!-- Layer 3 -->
+                        <g data-flows="text room"><rect class="box" x="112" y="324" width="128" height="100" rx="8"/><text class="name mid" x="176" y="344">Route loop</text><text class="note mid" x="176" y="361">drops duplicates,</text><text class="note mid" x="176" y="375">sorts packets by</text><text class="note mid" x="176" y="389">type</text><text class="path mid" x="176" y="408">kiss_router.go</text></g>
+                        <g data-flows="text cfg"><rect class="box" x="264" y="324" width="120" height="100" rx="8"/><text class="name mid" x="324" y="344">Parsers</text><text class="note mid" x="324" y="361">check advert</text><text class="note mid" x="324" y="375">signatures, decrypt</text><text class="note mid" x="324" y="389">group texts</text><text class="path mid" x="324" y="408">kiss/parsers</text></g>
+                        <g data-flows="reply"><rect class="box" x="408" y="324" width="116" height="100" rx="8"/><text class="name mid" x="466" y="344">Sender</text><text class="note mid" x="466" y="361">builds encrypted</text><text class="note mid" x="466" y="375">group texts and</text><text class="note mid" x="466" y="389">queues them</text><text class="path mid" x="466" y="408">kiss/send</text></g>
+                        <g data-flows="room reply"><rect class="box" x="548" y="324" width="120" height="100" rx="8"/><text class="name mid" x="608" y="344">TxScheduler</text><text class="note mid" x="608" y="361">priority queue,</text><text class="note mid" x="608" y="375">one frame at a time,</text><text class="note mid" x="608" y="389">airtime budget</text><text class="path mid" x="608" y="408">scheduler.go</text></g>
+
+                        <!-- Layer 4 -->
+                        <g data-flows="text room"><rect class="box" x="112" y="456" width="128" height="76" rx="8"/><text class="name mid" x="176" y="476">Reader loop</text><text class="note mid" x="176" y="493">serial bytes become</text><text class="note mid" x="176" y="507">KISS frames</text><text class="path mid" x="176" y="523">kiss_reader.go</text></g>
+                        <g data-flows=""><rect class="box" x="264" y="456" width="260" height="76" rx="8"/><text class="name mid" x="394" y="476">RadioClient</text><text class="note mid" x="394" y="493">ping, read version, set and verify</text><text class="note mid" x="394" y="507">radio settings, noise floor</text><text class="path mid" x="394" y="523">cmd_radio.go</text></g>
+                        <g data-flows="reply room"><rect class="box" x="548" y="456" width="120" height="76" rx="8"/><text class="name mid" x="608" y="476">Writer loop</text><text class="note mid" x="608" y="493">sends one frame,</text><text class="note mid" x="608" y="507">waits for TxDone</text><text class="path mid" x="608" y="523">kiss_writer.go</text></g>
+
+                        <!-- Building blocks -->
+                        <g data-flows="cfg"><rect class="box" x="700" y="134" width="232" height="60" rx="8"/><text class="name mid" x="816" y="152">internal/config</text><text class="note mid" x="816" y="169">loads and checks kam.yml,</text><text class="note mid" x="816" y="183">re-reads it every 500 ms</text></g>
+                        <g data-flows=""><rect class="box" x="700" y="204" width="232" height="44" rx="8"/><text class="name mid" x="816" y="222">internal/models</text><text class="note mid" x="816" y="238">settings and record types</text></g>
+                        <g data-flows="room"><rect class="box" x="700" y="258" width="232" height="56" rx="8"/><text class="name mid" x="816" y="276">internal/mesh</text><text class="note mid" x="816" y="292">packet format, encryption,</text><text class="note mid" x="816" y="306">identities, signed adverts</text></g>
+                        <g data-flows="api"><rect class="box" x="700" y="324" width="232" height="56" rx="8"/><text class="name mid" x="816" y="342">internal/events</text><text class="note mid" x="816" y="358">bounded ring of recent</text><text class="note mid" x="816" y="372">packet and room events</text></g>
+                        <g data-flows="text room api"><rect class="box" x="700" y="390" width="232" height="142" rx="8"/><text class="name mid" x="816" y="410">internal/db</text><text class="note mid" x="816" y="427">SQLite storage for adverts,</text><text class="note mid" x="816" y="441">group texts, scripts, rooms.</text><text class="note mid" x="816" y="455">Background writers save</text><text class="note mid" x="816" y="469">records, so the radio loop</text><text class="note mid" x="816" y="483">never waits for the disk.</text></g>
+
+                        <!-- Outside, below -->
+                        <text class="layer-name" x="16" y="608">Outside KAM</text>
+                        <text class="note" x="16" y="624">hardware, files</text>
+                        <g data-flows="text room reply"><rect class="box box-outside" x="112" y="584" width="556" height="52" rx="8"/><text class="name mid" x="390" y="602">MeshCore KISS radio</text><text class="note mid" x="390" y="619">a small board on USB serial; it speaks LoRa radio to the rest of the mesh</text></g>
+                        <g data-flows="text room api"><rect class="box box-outside" x="700" y="584" width="232" height="52" rx="8"/><text class="name mid" x="816" y="602">SQLite database file</text><text class="note mid" x="816" y="619">one local file, no server</text></g>
+
+                        <!-- Arrows -->
+                        <path class="link" data-flows="cfg" d="M186 54V100"/>
+                        <path class="link" data-flows="api" d="M578 54V188"/>
+                        <text class="caption end" x="570" y="128">local HTTP only</text>
+                        <path class="link link-both" data-flows="cfg" d="M900 54V134"/>
+                        <path class="link link-both" data-flows="text room api" d="M900 584V532"/>
+                        <path class="link" data-flows="text room" d="M176 584V532"/>
+                        <text class="caption" x="184" y="570">frames in</text>
+                        <path class="link" data-flows="reply room" d="M608 532V584"/>
+                        <text class="caption" x="616" y="570">frames out</text>
+                        <path class="link" data-flows="text room" d="M176 456V424"/>
+                        <path class="link" data-flows="text" d="M240 374H264"/>
+                        <path class="link" data-flows="room" d="M150 324V264"/>
+                        <text class="caption" x="158" y="306">packet tap</text>
+                        <path class="link" data-flows="text" d="M324 324V264"/>
+                        <text class="caption" x="332" y="306">group-text tap</text>
+                        <path class="link" data-flows="reply" d="M440 264V324"/>
+                        <text class="caption" x="448" y="306">reply()</text>
+                        <path class="link" data-flows="reply" d="M524 374H548"/>
+                        <path class="link" data-flows="room reply" d="M260 264V290H620V324"/>
+                        <text class="caption" x="486" y="285">ACKs, pushes, adverts</text>
+                        <path class="link" data-flows="reply room" d="M608 424V456"/>
+                    </svg>
+                </div>
+                <p class="text-sm">Figure 1. KAM's layers and the hand-offs between them. Dashed boxes are optional. The same information is in the tables under <a href="#reference">Package Reference</a> and <a href="#waiting">Queues and Priorities</a>.</p>
+            </section>
+
+            <section id="journeys">
+                <h2>Follow One Journey</h2>
+                <p>Each journey below matches a button above the diagram. The steps use the names printed in the boxes, so you can trace them on the map.</p>
+
+                <h3 id="journey-text">A group text is received</h3>
+                <p><strong>Example:</strong> someone sends "test" on a channel you configured.</p>
+                <ol>
+                    <li>The radio hears the packet and sends it to KAM as a KISS frame over the USB serial cable.</li>
+                    <li>The <strong>reader loop</strong> turns the incoming bytes into whole frames and puts each one on a ten-slot queue for the route loop.</li>
+                    <li>The <strong>route loop</strong> reads the packet header and drops the packet if it saw the same one recently, because mesh networks repeat packets.</li>
+                    <li>It sorts the packet by type. A group text goes to the <strong>parsers</strong>, which decrypt it with the channel keys loaded from <code>kam.yml</code>. An advert goes to the same place and has its signature checked.</li>
+                    <li>The modem sends signal-quality numbers (SNR and RSSI) in a separate frame just after each packet. The route loop holds the decoded message for up to 200 ms to attach them, then moves on even if they never arrive.</li>
+                    <li>The message is queued for SQLite, where a background writer saves it. Every group-text subscriber is then called. Automation is one subscriber: it copies the message into its own 128-slot queue.</li>
+                    <li>The automation worker runs your enabled scripts against the message.</li>
+                </ol>
+
+                <h3 id="journey-room">A room packet is received</h3>
+                <p><strong>Example:</strong> a MeshCore app logs in to your room and posts "hello".</p>
+                <ol>
+                    <li>The radio, the reader loop and the duplicate check work exactly as in steps 1 to 3 of the group-text journey above.</li>
+                    <li>The route loop sees a peer packet type (<code>REQ</code>, <code>TXT_MSG</code>, <code>ACK</code>, <code>ANON_REQ</code>, <code>PATH</code> or <code>MULTIPART</code>) and calls every packet-tap subscriber. The room server is the subscriber.</li>
+                    <li>The room service puts the packet in a 64-slot queue and returns immediately.</li>
+                    <li>The room worker takes the packet, works out which room and client it belongs to, and handles it.</li>
+                    <li>A post is saved to SQLite and flushed to disk before KAM queues the acknowledgement.</li>
+                    <li>The acknowledgement goes to the transmit scheduler, then out through the writer loop.</li>
+                </ol>
+                <p>The next section zooms in on steps 2 to 4.</p>
+
+                <h3 id="journey-reply">A reply is sent</h3>
+                <p><strong>Example:</strong> a script answers "test" with "received".</p>
+                <ol>
+                    <li>The script calls <code>reply(channel, text)</code>. Automation passes it to the <strong>sender</strong>.</li>
+                    <li>The sender builds an encrypted group-text packet and submits it to the <strong>transmit scheduler</strong>. A room submits its own packets the same way.</li>
+                    <li>The scheduler orders waiting packets by priority and keeps pushes and adverts inside an airtime budget, so one busy source cannot hog the radio.</li>
+                    <li>It hands one packet at a time to the <strong>writer loop</strong>, and notes the packet as sent by KAM so a repeater's echo is dropped as a duplicate instead of being processed again.</li>
+                    <li>The writer loop wraps the packet in a KISS frame, writes it to the serial port and waits for the modem's <code>TxDone</code> signal. Only then does the scheduler release the next packet.</li>
+                </ol>
+
+                <h3 id="journey-cfg">Settings change</h3>
+                <p><strong>Example:</strong> you run <code>kam channel upsert</code> to add a channel.</p>
+                <ol>
+                    <li>The command runs as a short separate process. It asks <strong>internal/config</strong> to add the channel to <code>kam.yml</code>, replacing the file atomically.</li>
+                    <li>The running KAM checks <code>kam.yml</code> every 500 ms.</li>
+                    <li>When the file changes, KAM validates it. If it is invalid, KAM keeps the last good settings.</li>
+                    <li>If it is valid, KAM builds a new channel registry and swaps it in. The parsers use it for the next packet. No restart is needed.</li>
+                </ol>
+
+                <h3 id="journey-api">A REST request</h3>
+                <p><strong>Example:</strong> an operator tool asks for recent events.</p>
+                <ol>
+                    <li>The tool sends an HTTP request to <code>127.0.0.1:8766</code>, the default address. The API listens on the local machine only.</li>
+                    <li><strong>internal/api</strong> checks the request, runs at most eight at once, applies a five-second limit and decodes any JSON body.</li>
+                    <li>The API never touches the radio or the database directly. It calls small adapters that <strong>internal/node</strong> supplies for status, events, channels, rooms and scripts.</li>
+                    <li>The adapters read the bounded event ring, the channel registry, the room service or the script repository, and the API sends back JSON.</li>
+                </ol>
+                <p>The <a href="FeatureMonitorApi.html">Backend API manual</a> lists every endpoint.</p>
+            </section>
+
+            <section id="room-server">
+                <h2>How the Room Server Receives Packets</h2>
+                <p>The route loop never calls the room server by name. It only knows a <strong>packet tap</strong>: a list of functions to call when a room-type packet arrives. When KAM starts, <code>internal/node</code> adds the room service's <code>HandlePacket</code> function to that list. That is the entire connection between the two.</p>
+                <p>Two rules keep the radio safe. The tap function runs on the route loop's own goroutine, so it must return at once. And the room server does its real work on a separate goroutine, which it feeds from a small queue.</p>
+
+                <div class="mermaid arch-diagram" id="room-sequence">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 660" role="img" aria-labelledby="seq-title seq-desc">
+                        <title id="seq-title">How a packet travels from the radio to the room server and back</title>
+                        <desc id="seq-desc">Eleven numbered steps. The radio sends a KISS frame to the reader loop, which puts it on a queue for the route loop. The route loop decodes it, drops duplicates and, for room packet types, calls HandlePacket on the room service. HandlePacket puts the packet in a 64-slot queue without blocking and returns at once. The room worker takes the packet, handles it by type, saves a post to SQLite with a full sync, then submits an ACK to the transmit scheduler, which sends one frame at a time and waits for TxDone.</desc>
+                        <defs>
+                            <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+                        </defs>
+
+                        <line class="life" x1="66" y1="60" x2="66" y2="654"/>
+                        <line class="life" x1="200" y1="60" x2="200" y2="654"/>
+                        <line class="life" x1="334" y1="60" x2="334" y2="654"/>
+                        <line class="life" x1="486" y1="60" x2="486" y2="654"/>
+                        <line class="life" x1="636" y1="60" x2="636" y2="654"/>
+                        <line class="life" x1="766" y1="60" x2="766" y2="654"/>
+                        <line class="life" x1="892" y1="60" x2="892" y2="654"/>
+
+                        <g><rect class="box box-outside" x="6" y="10" width="120" height="50" rx="8"/><text class="name mid" x="66" y="28">Radio</text><text class="note mid" x="66" y="46">USB serial</text></g>
+                        <g><rect class="box" x="140" y="10" width="120" height="50" rx="8"/><text class="name mid" x="200" y="28">Reader loop</text><text class="path mid" x="200" y="46">kiss_reader.go</text></g>
+                        <g><rect class="box" x="274" y="10" width="120" height="50" rx="8"/><text class="name mid" x="334" y="28">Route loop</text><text class="path mid" x="334" y="46">kiss_router.go</text></g>
+                        <g><rect class="box box-optional" x="426" y="10" width="120" height="50" rx="8"/><text class="name mid" x="486" y="28">room.Service</text><text class="note mid" x="486" y="46">tap entry + queue</text></g>
+                        <g><rect class="box box-optional" x="576" y="10" width="120" height="50" rx="8"/><text class="name mid" x="636" y="28">Room worker</text><text class="note mid" x="636" y="46">owns all room state</text></g>
+                        <g><rect class="box" x="706" y="10" width="120" height="50" rx="8"/><text class="name mid" x="766" y="28">RoomRepository</text><text class="note mid" x="766" y="46">SQLite store</text></g>
+                        <g><rect class="box" x="832" y="10" width="120" height="50" rx="8"/><text class="name mid" x="892" y="28">TxScheduler</text><text class="note mid" x="892" y="46">priority queue</text></g>
+
+                        <!-- 1 -->
+                        <path class="link" d="M66 100H200"/>
+                        <circle class="step" cx="82" cy="100" r="9"/><text class="step-text mid" x="82" y="104">1</text>
+                        <text class="note" x="98" y="92">KISS frame (serial)</text>
+                        <!-- 2 -->
+                        <path class="link" d="M200 135H334"/>
+                        <circle class="step" cx="216" cy="135" r="9"/><text class="step-text mid" x="216" y="139">2</text>
+                        <text class="note" x="232" y="127">rxChan ← frame</text>
+                        <!-- 3 -->
+                        <rect class="seq-note" x="262" y="156" width="290" height="62" rx="8"/>
+                        <circle class="step" cx="262" cy="156" r="9"/><text class="step-text mid" x="262" y="160">3</text>
+                        <text class="note" x="278" y="176">Decode the packet, drop duplicates.</text>
+                        <text class="note" x="278" y="192">Is the type REQ, TXT_MSG, ACK, ANON_REQ,</text>
+                        <text class="note" x="278" y="208">PATH or MULTIPART? Then call the tap.</text>
+                        <!-- 4 -->
+                        <path class="link" d="M334 250H486"/>
+                        <circle class="step" cx="350" cy="250" r="9"/><text class="step-text mid" x="350" y="254">4</text>
+                        <text class="note" x="366" y="242">HandlePacket(pkt)</text>
+                        <text class="caption" x="342" y="268">same goroutine, must not block</text>
+                        <!-- 5 -->
+                        <path class="link" d="M486 310H636"/>
+                        <circle class="step" cx="502" cy="310" r="9"/><text class="step-text mid" x="502" y="314">5</text>
+                        <text class="note" x="518" y="302">s.in ← pkt</text>
+                        <text class="caption" x="496" y="328">64 slots; full means dropped and counted</text>
+                        <!-- 6 -->
+                        <path class="link link-soft" d="M486 360H334"/>
+                        <circle class="step" cx="350" cy="360" r="9"/><text class="step-text mid" x="350" y="364">6</text>
+                        <text class="note" x="366" y="352">returns at once</text>
+                        <!-- 7 -->
+                        <rect class="seq-note" x="526" y="388" width="226" height="84" rx="8"/>
+                        <circle class="step" cx="526" cy="388" r="9"/><text class="step-text mid" x="526" y="392">7</text>
+                        <text class="note" x="542" y="408">process() by packet type:</text>
+                        <text class="note" x="542" y="424">ANON_REQ: login, password check</text>
+                        <text class="note" x="542" y="440">REQ, TXT_MSG, PATH: known client</text>
+                        <text class="note" x="542" y="456">ACK, MULTIPART: match a push</text>
+                        <text class="caption mid" x="636" y="490">also every 50 ms: pushes, adverts, saving clients</text>
+                        <!-- 8 -->
+                        <path class="link" d="M636 520H766"/>
+                        <circle class="step" cx="652" cy="520" r="9"/><text class="step-text mid" x="652" y="524">8</text>
+                        <text class="note" x="668" y="512">AppendPost(post)</text>
+                        <text class="caption" x="646" y="538">saved before the ACK is queued</text>
+                        <!-- 9 -->
+                        <path class="link link-soft" d="M766 568H636"/>
+                        <circle class="step" cx="652" cy="568" r="9"/><text class="step-text mid" x="652" y="572">9</text>
+                        <text class="note" x="668" y="560">committed</text>
+                        <!-- 10 -->
+                        <path class="link" d="M636 602H892"/>
+                        <circle class="step" cx="652" cy="602" r="9"/><text class="step-text mid" x="652" y="606">10</text>
+                        <text class="note" x="668" y="594">Submit(ACK, priority Reply)</text>
+                        <!-- 11 -->
+                        <path class="link link-soft" d="M892 636H66"/>
+                        <circle class="step" cx="82" cy="636" r="9"/><text class="step-text mid" x="82" y="640">11</text>
+                        <text class="note" x="98" y="628">one frame at a time; the writer loop waits for TxDone</text>
+                    </svg>
+                </div>
+                <p class="text-sm">Figure 2. A packet's trip to the room server and the acknowledgement's trip back. Solid arrows are calls or hand-offs; dashed arrows are returns or later effects.</p>
+
+                <h3>The steps</h3>
+                <table>
+                    <thead><tr><th>Step</th><th>What happens</th><th>Source</th></tr></thead>
+                    <tbody>
+                        <tr><td>1&ndash;2</td><td>The reader loop assembles a KISS frame and puts it on the route loop's queue.</td><td><a href="../internal/kiss/kiss_reader.go">kiss_reader.go</a></td></tr>
+                        <tr><td>3</td><td>The route loop decodes the packet, drops duplicates, and picks a path by payload type. Adverts and group texts keep their own paths. Six peer types go to the packet tap.</td><td><a href="../internal/kiss/kiss_router.go">kiss_router.go</a></td></tr>
+                        <tr><td>4</td><td>The tap copies its list of handlers and calls each one on the route loop's goroutine.</td><td><a href="../internal/kiss/kiss_manager.go">kiss_manager.go</a></td></tr>
+                        <tr><td>5&ndash;6</td><td><code>HandlePacket</code> tries to put the packet on a 64-slot channel. If the channel is full it counts a dropped packet and returns anyway.</td><td><a href="../internal/room/service.go">service.go</a></td></tr>
+                        <tr><td>7</td><td>The worker goroutine takes one packet at a time and handles it by type. It also wakes every 50 ms for time-driven work.</td><td><a href="../internal/room/service.go">service.go</a>, <a href="../internal/room/room.go">room.go</a></td></tr>
+                        <tr><td>8&ndash;9</td><td>A post is stored with a full disk sync before anything else happens.</td><td><a href="../internal/db/rooms.go">rooms.go</a></td></tr>
+                        <tr><td>10&ndash;11</td><td>The acknowledgement goes to the shared transmit scheduler, which sends it out when its turn comes.</td><td><a href="../internal/room/send.go">send.go</a>, <a href="../internal/kiss/scheduler.go">scheduler.go</a></td></tr>
+                    </tbody>
+                </table>
+
+                <h3>The wiring in code</h3>
+                <p>The node subscribes the room service after it starts it, in <a href="../internal/node/node.go">node.go</a>:</p>
+<pre><code class="language-go">service.Start()
+unsubscribePackets = manager.SubscribePackets(service.HandlePacket)</code></pre>
+                <p>The router sends the six peer packet types to the tap, in <a href="../internal/kiss/kiss_router.go">kiss_router.go</a>:</p>
+<pre><code class="language-go">case PAYLOAD_TYPE_REQ, PAYLOAD_TYPE_TXT_MSG, PAYLOAD_TYPE_ACK, PAYLOAD_TYPE_ANON_REQ, PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_MULTIPART:
+    m.dispatchPacket(RxPacket{Packet: pkt, ReceivedAt: time.Now()})</code></pre>
+                <p>The room service queues without ever waiting, in <a href="../internal/room/service.go">service.go</a>:</p>
+<pre><code class="language-go">func (s *Service) HandlePacket(pkt kiss.RxPacket) {
+	select {
+	case s.in &lt;- pkt:
+	default:
+		s.cnt.packetsDropped.Add(1)
+	}
+}</code></pre>
+
+                <h3>Why it is built this way</h3>
+                <ul>
+                    <li><strong>Rooms stay optional.</strong> The <code>kiss</code> package does not import <code>room</code>; the room package imports <code>kiss</code>. The router only knows a function type, so KAM works with no rooms configured, and a room that fails to start never stops the radio.</li>
+                    <li><strong>A slow room cannot stall reception.</strong> Saving to SQLite takes disk time. The route loop never waits for it, because the tap only drops a packet into a queue.</li>
+                    <li><strong>No locking on room state.</strong> One worker owns every room, client list and push cursor. Nothing else reads or writes them.</li>
+                    <li><strong>Overload loses packets, not control.</strong> A full queue drops the newest packet and counts it, so a burst costs a lost packet rather than a frozen radio. KAM cannot guarantee that every packet is delivered.</li>
+                    <li><strong>Duplicates never reach the room.</strong> The duplicate check runs before the tap, so a packet heard through two repeaters is handled once.</li>
+                </ul>
+
+                <h3>What the worker does with each packet type</h3>
+                <table>
+                    <thead><tr><th>Type</th><th>Meaning</th><th>What the room does</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>ANON_REQ</code></td><td>A login from a client the room does not know yet.</td><td>Applies the login rate limit, finds the room by its address byte, decrypts, checks the password, and answers.</td></tr>
+                        <tr><td><code>TXT_MSG</code></td><td>A post from a known client.</td><td>Saves the post, then queues the acknowledgement. A repeated timestamp is treated as a retry and acknowledged again.</td></tr>
+                        <tr><td><code>REQ</code></td><td>A request from a known client.</td><td>Answers keep-alives sent on a direct route. Other request types are counted and get no reply.</td></tr>
+                        <tr><td><code>PATH</code></td><td>The route a client found back to the room.</td><td>Remembers the route for later pushes. It may also carry an acknowledgement.</td></tr>
+                        <tr><td><code>ACK</code>, <code>MULTIPART</code></td><td>A client confirms it received a pushed post.</td><td>Matches the acknowledgement to the waiting push and moves that client's sync cursor on. Only acknowledgements inside a <code>MULTIPART</code> packet are used.</td></tr>
+                    </tbody>
+                </table>
+                <p>Before handling anything, the worker skips a direct packet that still has hops left. That packet is meant for a forwarder, not for its final destination. A packet that is not addressed to a room is dropped without a reply.</p>
+                <div class="info-box info-box-blue"><p><strong>Where the group-text tap differs.</strong> Automation is wired the same way, through <code>SubscribeGroupText</code>, but its tap fires after the 200 ms signal-quality wait and after the message is queued for SQLite. See <a href="#journey-text">A group text is received</a>.</p></div>
+            </section>
+
+            <section id="waiting">
+                <h2>Queues and Priorities</h2>
+                <p>Every hand-off between two parts goes through a waiting line of fixed size. Fixed sizes mean a burst of radio traffic cannot make KAM run out of memory or freeze. When a line is full, KAM sheds load in a known way instead.</p>
+                <table>
+                    <thead><tr><th>Hand-off</th><th>Size</th><th>When it is full</th></tr></thead>
+                    <tbody>
+                        <tr><td>Reader loop to route loop</td><td>10 frames</td><td>The reader waits, so reading slows down.</td></tr>
+                        <tr><td>Route loop to SQLite (adverts, group texts)</td><td>Bounded queues with batched writes</td><td>New records are dropped and counted.</td></tr>
+                        <tr><td>Route loop to automation</td><td>128 messages</td><td>The message is dropped, a warning is logged and a counter goes up.</td></tr>
+                        <tr><td>Route loop to room server</td><td>64 packets</td><td>The packet is dropped and a counter goes up.</td></tr>
+                        <tr><td>Senders and rooms to transmit scheduler</td><td>128 packets</td><td>Pushes and adverts are evicted first. If nothing can be evicted the submit fails.</td></tr>
+                        <tr><td>Transmit scheduler to radio</td><td>One frame in flight</td><td>The scheduler waits for <code>TxDone</code>. If it never comes, the writer gives up after a timeout and the scheduler moves on.</td></tr>
+                    </tbody>
+                </table>
+                <h3>Who goes first on the air</h3>
+                <p>All outgoing packets share one radio, so the transmit scheduler sends the lowest-numbered priority first. Pushes and adverts are the ones allowed to wait when the airtime budget is spent, so they cannot crowd out the answers people are waiting for.</p>
+                <table>
+                    <thead><tr><th>Priority</th><th>Name</th><th>Used for</th><th>Can wait</th></tr></thead>
+                    <tbody>
+                        <tr><td>0</td><td><code>Reply</code></td><td>Acknowledgements and direct replies a client is waiting on.</td><td>No</td></tr>
+                        <tr><td>1</td><td><code>FloodReply</code></td><td>Flood replies and PATH returns.</td><td>No</td></tr>
+                        <tr><td>2</td><td><code>GroupText</code></td><td>Group texts from the sender and from automation.</td><td>No</td></tr>
+                        <tr><td>3</td><td><code>Push</code></td><td>Room posts sent to logged-in clients.</td><td>Yes</td></tr>
+                        <tr><td>4</td><td><code>Advert</code></td><td>Adverts.</td><td>Yes</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="lifecycle">
+                <h2>Start-up and Shutdown</h2>
+                <p><code>internal/node</code> builds the parts in an order where each part only uses things that already exist. It stops them in nearly the reverse order, so nothing is closed while another part still needs it.</p>
+                <h3>Start-up order</h3>
+                <ol>
+                    <li>Load the channel keys from <code>kam.yml</code> into the parser registry.</li>
+                    <li>Open SQLite and start the advert and group-text writers.</li>
+                    <li>Open the serial port and start the reader, writer and route loops.</li>
+                    <li>Ping the modem, then set and verify the radio settings. Without a working modem, start-up fails and KAM exits.</li>
+                    <li>Create and start the transmit scheduler and the sender.</li>
+                    <li><em>Optional:</em> start the room servers and subscribe them to the packet tap.</li>
+                    <li><em>Optional:</em> load the scripts, start automation and subscribe it to the group-text tap.</li>
+                    <li><em>Optional:</em> start the local REST API.</li>
+                </ol>
+                <p>An invalid room is switched off with a log message, not a crash. A room or automation start-up failure never stops radio reception.</p>
+                <h3>Shutdown order</h3>
+                <ol>
+                    <li>Stop the radio health probe and the settings watcher.</li>
+                    <li>Shut down the REST API, waiting up to five seconds.</li>
+                    <li>Unsubscribe automation and the room server from their taps, so no new work arrives.</li>
+                    <li>Stop automation, then close its script repository.</li>
+                    <li>Stop the room server, which saves its client state, then close the room repository.</li>
+                    <li>Stop the transmit scheduler.</li>
+                    <li>Stop the KISS manager. It flushes the queued SQLite writes and closes the database and the serial port.</li>
+                </ol>
+                <div class="info-box info-box-amber"><p><strong>Stop KAM with Ctrl-C or SIGTERM.</strong> That runs the shutdown order above and saves queued records. Killing the process forcibly can lose records still waiting in queues.</p></div>
+            </section>
+
+            <section id="reference">
+                <h2>Package Reference</h2>
+                <p>Use this table to find the code behind each box on the map.</p>
+                <table>
+                    <thead><tr><th>Package</th><th>Layer</th><th>Job</th><th>Runs</th></tr></thead>
+                    <tbody>
+                        <tr><td><a href="../main.go"><code>main.go</code></a></td><td>1 · Control</td><td>Reads flags, sets up logging, loads <code>kam.yml</code>, builds the node and waits for SIGINT or SIGTERM. Also runs the short <code>kam channel upsert</code> and <code>kam room show</code> commands.</td><td>Always</td></tr>
+                        <tr><td><a href="../internal/node/"><code>internal/node</code></a></td><td>1 · Control</td><td>Builds, wires and stops every part. Supplies the adapters the REST API uses.</td><td>Always</td></tr>
+                        <tr><td><a href="../internal/api/"><code>internal/api</code></a></td><td>2 · Features</td><td>The local REST listener: routes, input checks, error codes and limits. It imports only the standard library and <code>models</code>.</td><td>Optional</td></tr>
+                        <tr><td><a href="../internal/automation/"><code>internal/automation</code></a></td><td>2 · Features</td><td>Compiles and runs Starlark scripts on one worker, with a time limit per script and a bounded queue.</td><td>Optional</td></tr>
+                        <tr><td><a href="../internal/room/"><code>internal/room</code></a></td><td>2 · Features</td><td>MeshCore room servers: logins and roles, posts, push sync, keep-alive, signed adverts, rate limiting and identity files.</td><td>Optional</td></tr>
+                        <tr><td><a href="../internal/kiss/kiss_router.go">Route loop</a> in <a href="../internal/kiss/"><code>internal/kiss</code></a></td><td>3 · Pipeline</td><td>Decodes packets, drops duplicates, sorts by type, and calls the taps.</td><td>Always</td></tr>
+                        <tr><td><a href="../internal/kiss/parsers/"><code>internal/kiss/parsers</code></a></td><td>3 · Pipeline</td><td>Verifies adverts, decrypts group texts, and holds the in-memory channel registry.</td><td>Always</td></tr>
+                        <tr><td><a href="../internal/kiss/send/"><code>internal/kiss/send</code></a></td><td>3 · Pipeline</td><td>Builds encrypted group-text packets and queues them on the scheduler.</td><td>Always</td></tr>
+                        <tr><td><a href="../internal/kiss/scheduler.go">TxScheduler</a> in <code>internal/kiss</code></td><td>3 · Pipeline</td><td>Orders outgoing packets by priority, sends one at a time, and enforces the airtime budget.</td><td>Always</td></tr>
+                        <tr><td>Reader loop, writer loop and <a href="../internal/kiss/cmd_radio.go">RadioClient</a> in <code>internal/kiss</code></td><td>4 · Radio</td><td>Owns the serial connection and the KISS framing, and sends radio commands to the modem.</td><td>Always</td></tr>
+                        <tr><td><a href="../internal/config/"><code>internal/config</code></a></td><td>Building block</td><td>Loads and validates YAML, watches it for changes, swaps the channel registry, and resolves the database path.</td><td>Always</td></tr>
+                        <tr><td><a href="../internal/models/"><code>internal/models</code></a></td><td>Building block</td><td>Settings and record types with their validation, including <code>mesh:</code> and <code>rooms:</code>.</td><td>Always</td></tr>
+                        <tr><td><a href="../internal/mesh/"><code>internal/mesh</code></a></td><td>Building block</td><td>MeshCore wire basics with no transport knowledge: packets, the AES-128 and HMAC envelope, identities, signed adverts, region keys and ACK hashes.</td><td>Always</td></tr>
+                        <tr><td><a href="../internal/events/"><code>internal/events</code></a></td><td>Building block</td><td>The bounded, metadata-only event ring that the REST API reads.</td><td>Always</td></tr>
+                        <tr><td><a href="../internal/db/"><code>internal/db</code></a></td><td>Building block</td><td>SQLite schemas, queued writers, the revision-checked script repository, and the room repository on its own connection.</td><td>Always</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section id="status">
+                <h2>Status and Sources</h2>
+                <table>
+                    <thead><tr><th>Capability</th><th>Status</th></tr></thead>
+                    <tbody>
+                        <tr><td>The layers, taps, queues and priorities on this page</td><td>Implemented</td></tr>
+                        <tr><td>Room servers on real radios</td><td>Hardware verification pending. See the <a href="FeatureRoomServer.html">Room Server manual</a>.</td></tr>
+                        <tr><td>Mirroring group-text channels into a room</td><td>Planned</td></tr>
+                        <tr><td>Radio links other than USB serial (TCP, Bluetooth)</td><td>Not yet validated</td></tr>
+                    </tbody>
+                </table>
+                <p>This page was written from the source code. Where the older design notes and the code differ, the page follows the code. Sizes and timings quoted above (10, 64, 128 slots; 50 ms, 200 ms, 500 ms) are the current defaults in the source and may change.</p>
+                <h3>Sources</h3>
+                <ul>
+                    <li><a href="../docs/APP_STRUCTURE.md">Application structure</a> and <a href="../docs/SYSTEM_DESIGN.md">System design</a>: package layout, goroutines and data flows.</li>
+                    <li><a href="../internal/node/node.go">node.go</a>: construction, wiring and shutdown order.</li>
+                    <li><a href="../internal/kiss/kiss_router.go">kiss_router.go</a> and <a href="../internal/kiss/kiss_manager.go">kiss_manager.go</a>: routing, duplicate check and the taps.</li>
+                    <li><a href="../internal/room/service.go">room/service.go</a> and <a href="../internal/room/room.go">room/room.go</a>: the room worker and packet handling.</li>
+                    <li><a href="../internal/kiss/scheduler.go">scheduler.go</a>: priorities, queue size and the airtime budget.</li>
+                    <li><a href="../docs/APIdetails.md">API details</a>: the REST endpoints.</li>
+                </ul>
+            </section>
+        </article>
+        <footer>KAM manual &middot; Architecture &middot; Updated 6 November 2026</footer>
+    </main>
+</body>
+</html>
