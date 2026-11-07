@@ -48,7 +48,7 @@
             <span>Getting Started</span>
             <h1>KAM</h1>
             <p>Understand the software, the radio network it connects to, and the decisions behind its design.</p>
-            <p><span class="badge badge-green">Core features implemented</span><span>For beginners and novice operators. Room servers are implemented but not yet verified on real radios; weather lookups are planned. Status checked 10 October 2026.</span></p>
+            <p><span class="badge badge-green">Core features implemented</span><span>For beginners and novice operators. Room servers are implemented but not yet verified on real radios. Scripts can fetch a weather service and post to rooms. Status checked 7 November 2026.</span></p>
         </header>
         <article class="prose">
             <section id="origins">
@@ -65,15 +65,15 @@
                 <p><strong>MeshCore</strong> is a radio-networking project that lets compatible devices exchange small messages without relying on the internet. KAM works alongside that network: it supplies computer-side storage and automation, while the connected radio handles sending and receiving over the air.</p>
                 <p>For example, a local radio group could run KAM on an always-on computer to keep a record of channel messages heard by its radio. Later, the operator could install a script that replies to a specific test message. Neither task requires a cloud database.</p>
                 <h3>Purpose and longer-term direction</h3>
-                <p>KAM's design is motivated by community communication when internet or mobile service is unavailable. Its longer-term direction includes operational bulletins, weather information, network-health reporting, and a shared message board. Those goals explain the architecture; they are not all available features.</p>
+                <p>KAM's design is motivated by community communication when internet or mobile service is unavailable. Its longer-term direction includes operational bulletins, deeper analytics, and network-health reporting; those goals explain the architecture, and they are not all available features. Some earlier plans are already reachable with scripts: a timer script that fetches a weather API over HTTPS and posts one line into a room is a bundled example, not a built-in weather service.</p>
                 <table>
                     <thead><tr><th>Capability</th><th>Current status</th></tr></thead>
                     <tbody>
                         <tr><td>Decode device announcements and configured-channel messages; save records locally</td><td>Implemented</td></tr>
-                        <tr><td>Run installed Starlark scripts: react to channel messages, run on a timer, and post to rooms or trusted HTTP(S) services</td><td>Implemented; scripts must be installed and enabled</td></tr>
+                        <tr><td>Run installed Starlark scripts: react to channel messages, run on a timer, and post to rooms or trusted HTTP(S) services</td><td>Implemented; scripts must be installed and enabled. The bundled weather-poster example uses all of this: a timer, one HTTPS weather fetch, and one room post</td></tr>
                         <tr><td>Configure and query a KISS radio modem</td><td>Implemented in code; real-radio smoke tests and timing measurements remain pending</td></tr>
                         <tr><td>Host MeshCore room servers (message boards that MeshCore apps log in to)</td><td>Implemented and tested in software; real-radio verification pending. Optional and off until you add a <code>rooms:</code> list</td></tr>
-                        <tr><td>Weather lookup capability and an operator analytics dashboard</td><td>Planned, not available</td></tr>
+                        <tr><td>Weather lookup by a script: a timer script fetches a weather API over HTTPS and posts one line into a room</td><td>Implemented as a capability and a bundled example. KAM has no built-in weather service and keeps none of the returned data; there is no operator analytics dashboard</td></tr>
                     </tbody>
                 </table>
                 <p>KAM is not a chat application, a replacement for radio firmware, or a repeater. Its saved history is not automatically a message board that other radios can retrieve.</p>
@@ -115,7 +115,7 @@
                 <h3>One owner for a constrained radio</h3>
                 <p>KAM's radio manager is the only part that uses the serial connection. It coordinates commands and outgoing messages so scripts and other components cannot independently overwhelm the modem. This matters because the modem has limited space for pending work and cannot attach a unique request number to every response.</p>
                 <h3>Make optional behavior replaceable</h3>
-                <p><strong>Starlark</strong> is a small Python-like scripting language. An operator can install a script to react to a decoded channel message or to run on a timer (for example, posting the current weather into a room every 15 minutes) without rebuilding KAM. Scripts run with restricted capabilities: they can reply through KAM, write into KAM's own rooms, and fetch one HTTP(S) URL they name, but do not have general access to files, the internet, or operating-system commands.</p>
+                <p><strong>Starlark</strong> is a small Python-like scripting language. An operator can install a script to react to a decoded channel message or to run on a timer (for example, posting the current weather into a room every 15 minutes) without rebuilding KAM. Scripts run with restricted capabilities: they can reply through KAM, write into KAM's own rooms, and fetch HTTP(S) URLs they name with <code>rest_get</code>, but do not have general access to files, the internet, or operating-system commands.</p>
                 <p>A script runs with fresh state for each event or timer fire. A timeout limits how long it can run; a script that exceeds its limit is marked <code>FROZEN</code> and needs operator attention. Optional automation is kept separate from the core job of receiving and storing traffic.</p>
                 <h3>Give settings and records clear homes</h3>
                 <p><strong>YAML</strong> is the readable, indentation-based format used by <code>kam.yml</code>. This file holds node, radio, and channel settings. SQLite holds received records and installed scripts. Keeping that distinction clear makes it easier to understand what to edit and what to back up.</p>
@@ -240,7 +240,7 @@ find /dev -name 'ttyUSB*' -o -name 'ttyACM*'</code></pre>
                 <h3>Receive first, automate second</h3>
                 <p>Start with receiving and saving messages before installing scripts. The bundled ECHO example, which replies when mentioned, is not enabled automatically on a fresh installation. Follow the <a href="FeatureStarlark.html#quickstart">Starlark quick start</a> when you are ready to add a responder. Use narrowly targeted triggers so replies do not create unnecessary radio traffic.</p>
                 <p>An <strong>API</strong>, or application programming interface, is a way for another program to ask KAM to perform a task. KAM serves <strong>one local REST API</strong> for everyday tasks: it manages scripts and provides status, recent packet events, channel history and read-only room data at <code>127.0.0.1:8766</code>. This address is loopback: it points back to the same computer, not to every computer on your network. It is not a browser-based management dashboard.</p>
-                <p>Modem control and room-client removal remain planned. KAMmon is one possible local client; KAM keeps working independently. The <a href="FeatureMonitorApi.html">backend API manual</a> explains configuration, endpoints, history and the separation between room passwords and web logins. Managing scripts is covered in the <a href="FeatureStarlark.html">Starlark manual</a>.</p>
+                <p>The API also covers modem monitoring and radio-setting changes, so a local client can read, query and adjust the connected radio. Room-client removal and script dry runs remain planned. KAMmon is one possible local client; KAM keeps working independently. The <a href="FeatureMonitorApi.html">backend API manual</a> explains configuration, endpoints, history and the separation between room passwords and web logins. Managing scripts is covered in the <a href="FeatureStarlark.html">Starlark manual</a>.</p>
                 <h3>Change settings deliberately</h3>
                 <p>KAM watches the configuration file and applies valid channel changes while running. Invalid changes are rejected, leaving the last valid channel set active. Changes to radio settings, node name, or database path require a restart. When using the channel command, pass the same configuration file as the running process.</p>
                 <h3>Stop cleanly and back up</h3>
@@ -263,7 +263,7 @@ find /dev -name 'ttyUSB*' -o -name 'ttyACM*'</code></pre>
                     <li><strong>A saved record is not a delivery receipt.</strong> KAM only records supported traffic its radio receives and successfully decodes. Interference, incompatible settings, unavailable keys, and full queues can leave gaps.</li>
                     <li><strong>Plan for maintenance.</strong> The connected radio and computer both need power; database files grow with traffic. KAM does not currently provide an automatic reconnect after a lost serial connection.</li>
                 </ul>
-                <p>The <a href="FeatureRoomServer.html">room-server manual</a> explains how radios can log in to a message board hosted by KAM. It does not share this database over the mesh: only posts made in a room are stored there, separately from the channel history. Room passwords are plain text in <code>kam.yml</code>, like channel keys. Weather lookups and the future authenticated Remote API are outside the current release.</p>
+                <p>The <a href="FeatureRoomServer.html">room-server manual</a> explains how radios can log in to a message board hosted by KAM. It does not share this database over the mesh: only posts made in a room are stored there, separately from the channel history. Room passwords are plain text in <code>kam.yml</code>, like channel keys. Weather lookups are not built in: a script fetches the weather itself over HTTPS with <code>rest_get</code>, described in the <a href="FeatureStarlark.html#periodic">Starlark manual</a>. The API remains unauthenticated and loopback-only, so publishing it beyond this computer is still outside the current release.</p>
             </section>
 
             <section id="troubleshooting">

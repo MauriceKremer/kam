@@ -88,6 +88,7 @@
                         <tr><td>Up to 10 rooms on one radio</td><td><span class="badge badge-green">Implemented</span></td><td>Each room has its own key, clients, posts and passwords.</td></tr>
                         <tr><td>Airtime cap for pushes and adverts</td><td><span class="badge badge-green">Implemented</span></td><td>Based on an estimate of airtime, not a modem measurement.</td></tr>
                         <tr><td><code>kam room show</code> command</td><td><span class="badge badge-green">Implemented</span></td><td>Prints each room's public key, contact link and signed advert.</td></tr>
+                        <tr><td>A Starlark script posts into a room</td><td><span class="badge badge-green">Implemented</span></td><td>The post is authored by the room's own identity and reaches clients like a client post; see the <a href="FeatureStarlark.html#capabilities">Starlark manual</a>. A script event for received posts remains planned.</td></tr>
                         <tr><td>Status, telemetry and access-list requests</td><td><span class="badge badge-slate">Not implemented</span></td><td>KAM sends no reply, so an app that asks for a room's status times out.</td></tr>
                         <tr><td>Management API (clients, roles, posts, forced advert)</td><td><span class="badge badge-slate">Planned</span></td><td>Until then roles change only by logging in with another password.</td></tr>
                         <tr><td>Over-the-air admin commands</td><td><span class="badge badge-slate">Not planned for v1</span></td><td>KAM acknowledges nothing and answers nothing for them.</td></tr>
@@ -531,7 +532,7 @@ rooms:
                             <li><strong>Login and sessions:</strong> <span class="badge badge-green">Implemented</span> anonymous request to response or path return, client table and roles, replay rules, path learning, rate limit.</li>
                             <li><strong>Posts and push:</strong> <span class="badge badge-green">Implemented</span> post store, ACK after commit, push engine, keep-alive, backlog window, session persistence.</li>
                             <li><strong>Operations:</strong> <span class="badge badge-amber">Partly</span> airtime cap, retention and start-up validation are done; the status reply, counter export and management API endpoints are open.</li>
-                            <li><strong>Optional:</strong> <span class="badge badge-slate">Planned</span> a Starlark room event and a post host function, channel bridging, an over-the-air CLI subset.</li>
+                            <li><strong>Optional:</strong> <span class="badge badge-amber">Partly</span> the post host function is delivered: scripts call <code>room_post</code> (see the <a href="FeatureStarlark.html#capabilities">Starlark manual</a>). A Starlark room event, channel bridging and an over-the-air CLI subset remain planned.</li>
                         </ol>
                     </div>
                 </details>
@@ -541,7 +542,7 @@ rooms:
         </article>
 
         <footer class="mt-24 pt-8 border-t border-slate-200 text-center text-slate-500 text-sm">
-            &copy; 2026 KAM Project Manuals. Written for beginner to intermediate readers. Checked against the source on 2026-10-10.
+            &copy; 2026 KAM Project Manuals. Written for beginner to intermediate readers. Checked against the source on 2026-11-07.
         </footer>
     </main>
 </body>
