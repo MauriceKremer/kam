@@ -84,7 +84,7 @@ func (m *Manager) routeLoop(ctx context.Context) {
 			case CMD_DATA:
 				// Packet payload must be at least 2 bytes to read the header safely
 				if len(payload) < 2 {
-					slog.Info("[Router] Warning: Received malformed packet with insufficient payload length")
+					slog.Debug("[Router] Warning: Received malformed packet with insufficient payload length")
 					continue
 				}
 
@@ -108,11 +108,11 @@ func (m *Manager) routePacket(raw []byte) {
 	}
 	if pkt.Version() != PAYLOAD_VERSION_V1 {
 		m.observeRX(pkt, len(raw), false)
-		slog.Info("[Router] Warning: Received unsupported packet version", "version", pkt.Version())
+		slog.Debug("[Router] Warning: Received unsupported packet version", "version", pkt.Version())
 		return
 	}
 
-	slog.Info("[Router] Decoded packet header...", "routeType", RouteType(pkt.RouteType()), "payloadType", PayloadType(pkt.PayloadType()), "version", PayloadVersion(pkt.Version()))
+	slog.Debug("[Router] Decoded packet header...", "routeType", RouteType(pkt.RouteType()), "payloadType", PayloadType(pkt.PayloadType()), "version", PayloadVersion(pkt.Version()))
 
 	// Capture the per-hop path hashes (relay node identity hashes) so handlers
 	// and persistence can report which stations relayed the packet.
@@ -130,11 +130,11 @@ func (m *Manager) routePacket(raw []byte) {
 	duplicate := m.dedup.Check(pkt.PayloadType(), appPayload)
 	m.observeRX(pkt, len(raw), duplicate)
 	if duplicate {
-		slog.Info("[Router] Dropping duplicate packet")
+		slog.Debug("[Router] Dropping duplicate packet")
 		return
 	}
 
-	slog.Info("[Router] Dispatching packet...", "payload", hex.EncodeToString(appPayload))
+	slog.Debug("[Router] Dispatching packet...", "payload", hex.EncodeToString(appPayload))
 
 	switch pkt.PayloadType() {
 	case PAYLOAD_TYPE_ADVERT:
@@ -158,7 +158,7 @@ func (m *Manager) routePacket(raw []byte) {
 	case PAYLOAD_TYPE_REQ, PAYLOAD_TYPE_TXT_MSG, PAYLOAD_TYPE_ACK, PAYLOAD_TYPE_ANON_REQ, PAYLOAD_TYPE_PATH, PAYLOAD_TYPE_MULTIPART:
 		m.dispatchPacket(RxPacket{Packet: pkt, ReceivedAt: time.Now()})
 	default:
-		slog.Info("[Router] Warning: Received unhandled payload type", "payloadType", PayloadType(pkt.PayloadType()))
+		slog.Debug("[Router] Warning: Received unhandled payload type", "payloadType", PayloadType(pkt.PayloadType()))
 	}
 }
 

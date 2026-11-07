@@ -365,7 +365,7 @@ func macThenDecrypt(secret32, src []byte) []byte {
 
 // ParseGroupText decrypts and decodes a MeshCore group text payload.
 func ParseGroupText(payload []byte) (GroupTextMessage, bool) {
-	slog.Info("[Group Text] Received packet", "payload_len", len(payload))
+	slog.Debug("[Group Text] Received packet", "payload_len", len(payload))
 
 	// Minimum: 1 (channel_hash) + 2 (MAC) + 16 (one AES block) = 19 bytes
 	if len(payload) < 19 {
@@ -398,7 +398,7 @@ func ParseGroupText(payload []byte) (GroupTextMessage, bool) {
 	}
 	registryMutex.RUnlock()
 
-	slog.Info("[Group Text] Decryption attempt finished", "channel_matched", matchedChannelName != "")
+	slog.Debug("[Group Text] Decryption attempt finished", "channel_matched", matchedChannelName != "")
 
 	if len(decryptedPlaintext) < 5 {
 		slog.Warn("[Group Text] Dropping packet: decryption failed or plaintext too short")
@@ -446,7 +446,7 @@ func ParseGroupText(payload []byte) (GroupTextMessage, bool) {
 		TimeDriftSeconds: int64(time.Since(txTime).Abs().Seconds()),
 	}
 
-	slog.Info("[Group Text] Broadcast Message Received",
+	slog.Debug("[Group Text] Broadcast Message Received",
 		"channel", successMsgPacket.ChannelName,
 		"time", successMsgPacket.Timestamp.Format("15:04:05"),
 		"txt_type", successMsgPacket.TxtType,

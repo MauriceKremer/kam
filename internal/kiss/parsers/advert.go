@@ -120,7 +120,7 @@ func ParseAdvert(payload []byte) AdvertPacket {
 		}
 	}
 
-	slog.Info("[Parse Advert] Processed and Authenticated",
+	slog.Debug("[Parse Advert] Processed and Authenticated",
 		"name", advert.Nickname,
 		"node_type", advertNodeTypeString(advert),
 		"has_gps", advert.HasLocation,
@@ -129,7 +129,7 @@ func ParseAdvert(payload []byte) AdvertPacket {
 	)
 
 	if advert.HasLocation {
-		slog.Info("[Parse Advert] Location Data",
+		slog.Debug("[Parse Advert] Location Data",
 			"latitude", advert.Latitude,
 			"longitude", advert.Longitude,
 		)

@@ -170,7 +170,7 @@ func (m *Manager) writeFrame(frame []byte) error {
 			m.Fail(err)
 		}
 	} else {
-		slog.Info("Frame sent", "frame", framedData)
+		slog.Debug("Frame sent", "frame", framedData)
 	}
 	return err
 }
