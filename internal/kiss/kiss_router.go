@@ -121,7 +121,7 @@ func (m *Manager) routePacket(raw []byte) {
 	if numHops > 0 {
 		hashSize := pkt.HashSize()
 		pathStations = make([][]byte, 0, numHops)
-		for i := 0; i < numHops; i++ {
+		for i := range numHops {
 			pathStations = append(pathStations, append([]byte(nil), pkt.Path[i*hashSize:(i+1)*hashSize]...))
 		}
 	}

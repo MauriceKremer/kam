@@ -6,6 +6,7 @@ func (m *Manager) readLoop() {
 
 	var frameBuffer []byte
 	inEscape := false
+	discarding := false // overflow: drop bytes until the next FEND
 	readBuffer := make([]byte, 256)
 
 	for {
@@ -23,7 +24,7 @@ func (m *Manager) readLoop() {
 
 		slog.Debug("Read bytes from serial port", "n", n, "data", readBuffer[:n])
 
-		for i := 0; i < n; i++ {
+		for i := range n {
 			b := readBuffer[i]
 			switch b {
 			case FEND:
@@ -32,12 +33,25 @@ func (m *Manager) readLoop() {
 					frameCopy := make([]byte, len(frameBuffer))
 					copy(frameCopy, frameBuffer)
 					m.rxChan <- frameCopy
-					frameBuffer = frameBuffer[:0] // Reset the buffer
 					slog.Debug("KissReader - Frame received", "frame", frameCopy)
 				}
+				frameBuffer = frameBuffer[:0] // Reset the buffer
+				discarding = false
 			case FESC:
-				inEscape = true
+				if !discarding {
+					inEscape = true
+				}
 			default:
+				if !discarding && len(frameBuffer) >= KISSMaxFrameSize {
+					discarding = true
+					inEscape = false
+					frameBuffer = frameBuffer[:0]
+					slog.Warn("[KissReader] oversized frame discarded; waiting for FEND",
+						"limit", KISSMaxFrameSize)
+				}
+				if discarding {
+					break
+				}
 				if inEscape {
 					switch b {
 					case TFEND:
