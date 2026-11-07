@@ -46,6 +46,7 @@ type Node struct {
 	monitorServer        *http.Server
 	unsubscribe          func()
 	configPath           string
+	dbPath               string
 	modem                *modemController
 	radioState           *radioRuntime
 }
@@ -197,6 +198,7 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 		unsubscribePackets:   unsubscribePackets,
 		unsubscribe:          unsubscribe,
 		configPath:           configPath,
+		dbPath:               dbPath,
 		radioState:           radioState,
 	}
 	node.startMonitor(cfg, persistence, len(roomConfigs), probes.signalReport)

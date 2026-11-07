@@ -194,17 +194,57 @@ type Status struct {
 	Rooms       RoomStatus             `json:"rooms"`
 	Automation  AutomationStatus       `json:"automation"`
 	EventRing   RingStatus             `json:"event_ring"`
+	System      *SystemStatus          `json:"system,omitempty"`
+}
+
+// SystemStatus is the opt-in host snapshot served when a status request asks
+// for it via ?system=true. Collection and its throttling live in
+// internal/systemstats; the system seam hands in the one snapshot function.
+type SystemStatus struct {
+	CollectedAt time.Time     `json:"collected_at"`
+	Memory      *SystemMemory `json:"memory"`
+	CPU         *SystemCPU    `json:"cpu"`
+	Disk        *SystemDisk   `json:"disk"`
+	Database    *SystemDB     `json:"database"`
+}
+type SystemMemory struct {
+	TotalBytes     uint64  `json:"total_bytes"`
+	AvailableBytes uint64  `json:"available_bytes"`
+	UsedBytes      uint64  `json:"used_bytes"`
+	UsedPercent    float64 `json:"used_percent"`
+}
+type SystemCPU struct {
+	Model   *string  `json:"model"`
+	Cores   int      `json:"cores"`
+	Load1m  *float64 `json:"load_1m"`
+	Load5m  *float64 `json:"load_5m"`
+	Load15m *float64 `json:"load_15m"`
+}
+type SystemDisk struct {
+	Path           string  `json:"path"`
+	TotalBytes     uint64  `json:"total_bytes"`
+	AvailableBytes uint64  `json:"available_bytes"`
+	UsedBytes      uint64  `json:"used_bytes"`
+	UsedPercent    float64 `json:"used_percent"`
+}
+type SystemDB struct {
+	Path         string  `json:"path"`
+	SizeBytes    uint64  `json:"size_bytes"`
+	WalSizeBytes *uint64 `json:"wal_size_bytes"`
 }
 
 func NewHandler(ring EventsSource, status func() Status) http.Handler {
-	return NewHandlerWithResources(ring, status, nil, nil, nil, nil)
+	return NewHandlerWithResources(ring, status, nil, nil, nil, nil, nil)
 }
 
 func NewHandlerWithChannels(ring EventsSource, status func() Status, channels ChannelReader) http.Handler {
-	return NewHandlerWithResources(ring, status, nil, channels, nil, nil)
+	return NewHandlerWithResources(ring, status, nil, channels, nil, nil, nil)
 }
 
-func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomReader, modem ModemSource) http.Handler {
+// NewHandlerWithResources composes the whole listener. system hands in the
+// throttled host-snapshot collector; nil hides the system section even when a
+// request asks for it.
+func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomReader, modem ModemSource, system func() *SystemStatus) http.Handler {
 	mux := http.NewServeMux()
 	registerScriptRoutes(mux, scripts)
 	registerModemRoutes(mux, modem)
@@ -234,10 +274,22 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 		writeJSON(w, 200, page)
 	})
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, request *http.Request) {
+		query := request.URL.Query()
 		value := status()
 		stats := ring.Stats()
 		value.APIVersion, value.Epoch, value.Now = 1, stats.Epoch, time.Now().UTC().Truncate(time.Millisecond)
 		value.EventRing = RingStatus{Capacity: stats.Capacity, FirstSeq: stats.FirstSeq, LastSeq: stats.LastSeq}
+		if query.Has("system") {
+			switch query.Get("system") {
+			case "true", "1":
+				if system != nil {
+					value.System = system()
+				}
+			default:
+				writeJSON(w, 400, map[string]string{"error": "system must be 1 or true"})
+				return
+			}
+		}
 		writeJSON(w, 200, value)
 	})
 	if channels != nil {
@@ -379,7 +431,7 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 	})
 	indexHandler := func(w http.ResponseWriter, request *http.Request) {
 		endpoints := []apiEndpoint{
-			{Method: "GET", Path: "/v1/status", Purpose: "one snapshot of the running node"},
+			{Method: "GET", Path: "/v1/status", Purpose: "one snapshot of the running node; add ?system=true for machine memory, cpu, disk and database size"},
 			{Method: "GET", Path: "/v1/events", Purpose: "event ring; poll with after, epoch, limit"},
 		}
 		if channels != nil {

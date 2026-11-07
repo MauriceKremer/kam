@@ -119,11 +119,16 @@ monitor:
   enabled: true
   listen: "127.0.0.1:8766"
   event_ring: 8192
+  system_interval_sec: 5
 ```
 
 These are the defaults when the block is omitted. `enabled: false` closes the
 listener and turns the event recorder off; automation scripts keep running, but
-they can no longer be managed or observed until the listener is back. Invalid
+they can no longer be managed or observed until the listener is back.
+`GET /v1/status` serves an extra `system` section (machine memory, CPU load,
+disk and database size) when a client asks with `?system=true`; the section is
+collected at most once every `system_interval_sec` seconds (`0` disables the
+throttle). Invalid
 `monitor` settings or a busy port are
 logged without stopping radio ingestion. Changes to this block require a restart.
 The API has no authentication and serves loopback hosts only; KAMmon, the

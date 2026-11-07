@@ -83,7 +83,7 @@ func (f *scriptFake) Validate(_ context.Context, id, source string, timeoutMS in
 }
 
 func scriptHandler(scripts Scripts) http.Handler {
-	return NewHandlerWithResources(newRingSource(8), func() Status { return Status{} }, scripts, nil, nil, nil)
+	return NewHandlerWithResources(newRingSource(8), func() Status { return Status{} }, scripts, nil, nil, nil, nil)
 }
 
 func scriptRequest(handler http.Handler, method, target, body, contentType string) *httptest.ResponseRecorder {

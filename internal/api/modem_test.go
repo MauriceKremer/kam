@@ -65,7 +65,7 @@ func (m *fakeModemSource) sleep(ctx context.Context) {
 // modemHandler builds a handler with a modem source (nil for the disabled
 // routes).
 func modemHandler(modem ModemSource) http.Handler {
-	return NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, nil, nil, modem)
+	return NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, nil, nil, modem, nil)
 }
 
 func postJSON(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {

@@ -90,6 +90,7 @@
                         <tr><td>Radio, channel storage and room service</td><td>Implemented</td><td>Existing KAM functionality, independent of KAMmon.</td></tr>
                         <tr><td>Script management on the same listener (8766)</td><td>Implemented</td><td>List, validate, create, update, enable, disable, recover and delete scripts.</td></tr>
                         <tr><td>Monitor listener on 8766</td><td>Phases 1-3 implemented</td><td>Status, RX/TX/room events, channel history, room reads and the modem routes; automated race tests pass. Real-radio verification is pending.</td></tr>
+                        <tr><td>Optional system section on the status route</td><td>Implemented</td><td><code>GET /v1/status?system=true</code> adds machine memory, CPU model, core count and load averages, disk space and database size, collected at most once per <code>monitor.system_interval_sec</code> seconds. macOS and Linux report every field; Windows reports the database size only.</td></tr>
                         <tr><td>Channel and room history endpoints</td><td>Implemented</td><td>Configured channels and messages, room summaries, clients and retained posts.</td></tr>
                         <tr><td>REST modem control</td><td>Implemented</td><td>Read diagnostics, query in one command, preview changes, apply and save with recovery. Hardware verification is pending.</td></tr>
                         <tr><td>Room-client removal</td><td>Planned</td><td>Forget a session; existing radio login rules remain unchanged.</td></tr>
@@ -110,16 +111,19 @@
                 <pre><code class="language-yaml">monitor:
   enabled: true
   listen: "127.0.0.1:8766"
-  event_ring: 8192</code></pre>
+  event_ring: 8192
+  system_interval_sec: 5</code></pre>
                 <p><strong>Loopback</strong> means a connection within the same computer. The address <code>127.0.0.1</code> is loopback; it is not the computer's address on your home network. The listener accepts only loopback addresses and loopback HTTP Host headers.</p>
                 <table>
                     <thead><tr><th>Address</th><th>Purpose</th><th>Status</th></tr></thead>
                     <tbody>
                         <tr><td><code>monitor.listen</code> (default <code>127.0.0.1:8766</code>)</td><td>The unified local REST API; script management shares the listener instead of the retired port 8765.</td><td>Implemented</td></tr>
+                        <tr><td><code>monitor.system_interval_sec</code> (default <code>5</code>)</td><td>Minimum seconds between machine-statistics collections for <code>GET /v1/status?system=true</code>; <code>0</code> removes the limit. Startup-read only, like the whole block.</td><td>Implemented</td></tr>
                         <tr><td><code>127.0.0.1:8766</code></td><td>Status, events, channels, rooms, scripts and modem routes; later room-client removal and script dry runs.</td><td>Phases 1-3 implemented</td></tr>
                     </tbody>
                 </table>
                 <p>The event-ring capacity may be 256 to 65536 events. It is a <strong>count limit, not a guaranteed duration</strong>. A busy network fills the ring sooner than a quiet network.</p>
+                <p><code>system_interval_sec</code> limits how often KAM reads machine statistics for <code>GET /v1/status?system=true</code>: memory used and available, CPU load, disk space on the database's filesystem and the size of the SQLite database (including its WAL companion file; <strong>WAL</strong>, write-ahead log, is the file SQLite writes changes to before folding them into the main database). A request that asks for the <code>system</code> section inside the window receives the last snapshot with its <code>collected_at</code> time instead of a fresh one. The default is 5 seconds; <code>0</code> allows every request to collect again. Nothing is collected while no request asks for the section.</p>
                 <p>KAMmon uses these local addresses. Browsers connect to KAMmon, not directly to KAM's API. KAMmon owns web authentication and any outward-facing HTTPS setup.</p>
             </section>
 
@@ -210,6 +214,17 @@
                 <p>The listener answers <code>GET /</code> with the routes it serves, with a one-line purpose per route.</p>
                 <h3>Read Status</h3>
                 <pre><code class="language-bash">curl --fail-with-body http://127.0.0.1:8766/v1/status</code></pre>
+                <p>To include the machine snapshot, add <code>?system=true</code> (or <code>?system=1</code>); any other value is rejected with <code>400</code>:</p>
+                <pre><code class="language-bash">curl --fail-with-body 'http://127.0.0.1:8766/v1/status?system=true'</code></pre>
+                <p>The response then carries a <code>system</code> object next to the usual fields. An illustrative extract with rounded numbers:</p>
+                <pre><code class="language-json">"system": {
+  "collected_at": "2026-11-07T11:20:04Z",
+  "memory": { "total_bytes": 25769803776, "available_bytes": 17609365903, "used_bytes": 8160437873, "used_percent": 31.4 },
+  "cpu": { "model": "Apple M4 Pro", "cores": 14, "load_1m": 1.64, "load_5m": 2.1, "load_15m": 2.47 },
+  "disk": { "path": "/Users/maurice/git/kam", "total_bytes": 994662589440, "available_bytes": 407786668032, "used_bytes": 586875921408, "used_percent": 58.9 },
+  "database": { "path": "kam.db", "size_bytes": 1245184, "wal_size_bytes": 8192 }
+}</code></pre>
+                <p>Load averages are the one-minute, five-minute and fifteen-minute figures <code>top</code>'s summary line shows. Sections an operating system does not report (Windows, apart from the database size) come back <code>null</code>. KAM re-reads these numbers at most once every <code>monitor.system_interval_sec</code> seconds; requests in between share the cached snapshot, visible as an unchanged <code>collected_at</code>.</p>
                 <p>List endpoints have a named outer object. A channel-list response with no configured channels is:</p>
                 <pre><code class="language-json">{"channels": []}</code></pre>
                 <h3>Read a Page of Events</h3>
@@ -258,7 +273,7 @@ curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</cod
                         <tr><td>Connection refused on 8766</td><td>The current build lacks this feature, monitoring is off, or the listener failed to start.</td><td>Check implementation status, configuration and KAM's startup log.</td></tr>
                         <tr><td><code>events: []</code></td><td>The client is caught up or no events are available.</td><td>Continue polling; it is not an error.</td></tr>
                         <tr><td><code>reset: true</code></td><td>KAM restarted or the ring replaced unread events.</td><td>Mark the gap and continue with the returned epoch and <code>next_after</code>.</td></tr>
-                        <tr><td><code>400</code> Bad Request</td><td>Malformed JSON, unknown field, invalid cursor or invalid page size.</td><td>Correct the request. Do not retry the same invalid input.</td></tr>
+                        <tr><td><code>400</code> Bad Request</td><td>Malformed JSON, unknown field, invalid cursor, invalid page size or a <code>system</code> filter value other than <code>true</code> or <code>1</code> on the status route.</td><td>Correct the request. Do not retry the same invalid input.</td></tr>
                         <tr><td><code>404</code> Not Found</td><td>Unknown resource or an endpoint missing from an older build.</td><td>Check the room/client/path and the API version.</td></tr>
                         <tr><td><code>409</code> Conflict</td><td>A change/test is already running, a script revision is stale, or configuration changed during apply.</td><td>Read current state before submitting again.</td></tr>
                         <tr><td><code>422</code> Unprocessable Entity</td><td>The request parsed but its values failed validation.</td><td>Fix the named field or script diagnostic.</td></tr>
@@ -278,7 +293,7 @@ curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</cod
                     <thead><tr><th>Method &amp; path</th><th>Purpose</th></tr></thead>
                     <tbody>
                         <tr><td><code>GET /</code></td><td>The routes this listener serves right now.</td></tr>
-                        <tr><td><code>GET /v1/status</code></td><td>Node identity, uptime, link, radio echo, queue/counter summaries and event-ring bounds.</td></tr>
+                        <tr><td><code>GET /v1/status</code></td><td>Node identity, uptime, link, radio echo, queue/counter summaries and event-ring bounds; <code>?system=true</code> adds the machine snapshot (memory, CPU, disk, database size), collected at most once per <code>monitor.system_interval_sec</code>.</td></tr>
                         <tr><td><code>GET /v1/events</code></td><td>Bounded pages of recent packet and room events; script and modem events remain planned.</td></tr>
                         <tr><td><code>GET /scripts</code></td><td>List installed scripts with revisions and runtime states.</td></tr>
                         <tr><td><code>POST /scripts/validate</code></td><td>Compile source without saving it.</td></tr>

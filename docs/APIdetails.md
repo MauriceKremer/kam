@@ -190,6 +190,7 @@ values; it never talks to the modem.
 | `persistence` | Queues for `adverts` and `group_texts`, each with `depth` and `dropped`. |
 | `rooms` | `enabled` when the room subsystem runs, with the configured room `count`. |
 | `automation` | `enabled`, plus `scripts_enabled`, `queue_depth`, `events_dropped`; the last three are `null` when automation is off. |
+| `system` | Only with `?system=true` (or `?system=1`); any other value is a 400 error. Machine snapshot, collected at most once per `monitor.system_interval_sec` (default 5, `0` off): `memory` (`total`, `available`, `used`, `used_percent`), `cpu` (`model`, `cores`, `load_1m`/`load_5m`/`load_15m`, the summary numbers `top` shows), `disk` (`path`, `total`, `available`, `used`, `used_percent` for the filesystem holding the database), `database` (`path`, `size_bytes`, `wal_size_bytes`). Fields the OS does not expose (Windows, apart from `database`) are `null`; each snapshot carries `collected_at`. |
 
 ### GET /v1/events
 

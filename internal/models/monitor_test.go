@@ -12,21 +12,45 @@ func TestMonitorConfigurationDefaultsAndDisabled(t *testing.T) {
 		enabled  bool
 		listen   string
 		capacity int
+		interval int
 	}{
-		{"{}", true, "127.0.0.1:8766", 8192},
-		{"monitor: {enabled: false}", false, "127.0.0.1:8766", 8192},
-		{"monitor: {listen: '[::1]:0', event_ring: 256}", true, "[::1]:0", 256},
+		{"{}", true, "127.0.0.1:8766", 8192, 5},
+		{"monitor: {enabled: false}", false, "127.0.0.1:8766", 8192, 5},
+		{"monitor: {listen: '[::1]:0', event_ring: 256, system_interval_sec: 0}", true, "[::1]:0", 256, 0},
 	} {
 		var cfg KamConfig
 		if err := yaml.Unmarshal([]byte(test.yaml), &cfg); err != nil {
 			t.Fatal(err)
 		}
 		resolved := cfg.MonitorSettings()
-		if resolved.Enabled != test.enabled || resolved.Listen != test.listen || resolved.EventRing != test.capacity {
+		if resolved.Enabled != test.enabled || resolved.Listen != test.listen || resolved.EventRing != test.capacity || resolved.SystemIntervalSec != test.interval {
 			t.Fatalf("%s: %+v", test.yaml, resolved)
 		}
 		if err := resolved.Validate(); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestMonitorConfigurationIntervalValidation(t *testing.T) {
+	for _, test := range []struct {
+		yaml    string
+		errCode string
+	}{
+		{"monitor: {system_interval_sec: 86400}", ""},
+		{"monitor: {system_interval_sec: -1}", "monitor.system_interval_sec must be between 0 and 86400"},
+		{"monitor: {system_interval_sec: 86401}", "monitor.system_interval_sec must be between 0 and 86400"},
+	} {
+		var cfg KamConfig
+		if err := yaml.Unmarshal([]byte(test.yaml), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		err := cfg.MonitorSettings().Validate()
+		if test.errCode == "" && err != nil {
+			t.Fatalf("%s: %v", test.yaml, err)
+		}
+		if test.errCode != "" && (err == nil || err.Error() != test.errCode) {
+			t.Fatalf("%s: %v", test.yaml, err)
 		}
 	}
 }

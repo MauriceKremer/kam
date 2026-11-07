@@ -10,13 +10,14 @@ import (
 )
 
 type MonitorConfig struct {
-	Enabled   bool   `yaml:"enabled"`
-	Listen    string `yaml:"listen"`
-	EventRing int    `yaml:"event_ring"`
+	Enabled           bool   `yaml:"enabled"`
+	Listen            string `yaml:"listen"`
+	EventRing         int    `yaml:"event_ring"`
+	SystemIntervalSec int    `yaml:"system_interval_sec"`
 }
 
 func DefaultMonitorConfig() MonitorConfig {
-	return MonitorConfig{Enabled: true, Listen: "127.0.0.1:8766", EventRing: 8192}
+	return MonitorConfig{Enabled: true, Listen: "127.0.0.1:8766", EventRing: 8192, SystemIntervalSec: 5}
 }
 
 func (c *MonitorConfig) UnmarshalYAML(node *yaml.Node) error {
@@ -50,6 +51,9 @@ func (c MonitorConfig) Validate() error {
 	}
 	if c.EventRing < 256 || c.EventRing > 65536 {
 		return fmt.Errorf("monitor.event_ring must be between 256 and 65536")
+	}
+	if c.SystemIntervalSec < 0 || c.SystemIntervalSec > 86400 {
+		return fmt.Errorf("monitor.system_interval_sec must be between 0 and 86400")
 	}
 	return nil
 }

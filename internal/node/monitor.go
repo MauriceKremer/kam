@@ -13,6 +13,7 @@ import (
 	"kam.bytecoder.nl/internal/events"
 	"kam.bytecoder.nl/internal/models"
 	"kam.bytecoder.nl/internal/room"
+	"kam.bytecoder.nl/internal/systemstats"
 )
 
 // apiEvents adapts the ring to the transport API's EventsSource seam, mapping
@@ -30,6 +31,25 @@ func (s apiEvents) Page(after uint64, epoch string, limit int) (api.EventsRespon
 func (s apiEvents) Stats() api.RingStats {
 	stats := s.ring.Stats()
 	return api.RingStats{Epoch: stats.Epoch, Capacity: stats.Capacity, FirstSeq: stats.FirstSeq, LastSeq: stats.LastSeq}
+}
+
+// systemToWire maps a systemstats snapshot into the API's wire shape; nil
+// groups on the snapshot stay nil on the wire.
+func systemToWire(snapshot systemstats.Snapshot) *api.SystemStatus {
+	value := &api.SystemStatus{CollectedAt: snapshot.CollectedAt}
+	if snapshot.Memory != nil {
+		value.Memory = &api.SystemMemory{TotalBytes: snapshot.Memory.TotalBytes, AvailableBytes: snapshot.Memory.AvailableBytes, UsedBytes: snapshot.Memory.UsedBytes, UsedPercent: snapshot.Memory.UsedPercent}
+	}
+	if snapshot.CPU != nil {
+		value.CPU = &api.SystemCPU{Model: snapshot.CPU.Model, Cores: snapshot.CPU.Cores, Load1m: snapshot.CPU.Load1m, Load5m: snapshot.CPU.Load5m, Load15m: snapshot.CPU.Load15m}
+	}
+	if snapshot.Disk != nil {
+		value.Disk = &api.SystemDisk{Path: snapshot.Disk.Path, TotalBytes: snapshot.Disk.TotalBytes, AvailableBytes: snapshot.Disk.AvailableBytes, UsedBytes: snapshot.Disk.UsedBytes, UsedPercent: snapshot.Disk.UsedPercent}
+	}
+	if snapshot.DB != nil {
+		value.Database = &api.SystemDB{Path: snapshot.DB.Path, SizeBytes: snapshot.DB.SizeBytes, WalSizeBytes: snapshot.DB.WalSizeBytes}
+	}
+	return value
 }
 
 type apiChannels struct {
@@ -224,7 +244,14 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 		modemSource = controller
 		n.modem = controller
 	}
-	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomReader, modemSource))
+	var systemSource func() *api.SystemStatus
+	interval := time.Duration(settings.SystemIntervalSec) * time.Second
+	collector := systemstats.NewThrottled(systemstats.Collect, interval, n.dbPath)
+	systemSource = func() *api.SystemStatus {
+		snapshot := collector.Collect()
+		return systemToWire(snapshot)
+	}
+	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomReader, modemSource, systemSource))
 	if err != nil {
 		slog.Error("local API listener unavailable", "address", settings.Listen, "error", err)
 		if n.modem != nil {

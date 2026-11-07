@@ -36,7 +36,7 @@ func scriptServer(t *testing.T) (*httptest.Server, *automation.Runtime) {
 		t.Fatal(err)
 	}
 	t.Cleanup(runtime.Stop)
-	handler := api.NewHandlerWithResources(apiEvents{events.NewRing(16)}, func() api.Status { return api.Status{} }, apiScripts{runtime: runtime}, nil, nil, nil)
+	handler := api.NewHandlerWithResources(apiEvents{events.NewRing(16)}, func() api.Status { return api.Status{} }, apiScripts{runtime: runtime}, nil, nil, nil, nil)
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	return server, runtime

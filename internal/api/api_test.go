@@ -128,7 +128,7 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 		t.Fatalf("index lists channels without a channel reader: %+v", base)
 	}
 
-	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomReader{}, nil)))
+	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomReader{}, nil, nil)))
 	for _, want := range []string{"GET /v1/channels", "GET /v1/channels/{name}/messages"} {
 		if !full[want] {
 			t.Fatalf("index missing %s: %+v", want, full)
@@ -212,7 +212,7 @@ func TestRoomReadEndpoints(t *testing.T) {
 		clients: []RoomClient{},
 		posts:   []RoomPost{{ID: 7, Body: "hello"}},
 	}
-	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader, nil)
+	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader, nil, nil)
 	request := func(path string, code int) string {
 		t.Helper()
 		response := httptest.NewRecorder()
