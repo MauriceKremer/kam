@@ -233,23 +233,23 @@ rooms:
                         <g><rect class="box box-optional" x="620" y="10" width="240" height="50" rx="8"/><text class="name mid" x="740" y="28">Room server</text><text class="path mid" x="740" y="45">internal/room</text></g>
 
 <!-- 1 advert -->
-                        <path class="link link-soft" d="M740 110H200"/>
+                        <path class="link link-soft" d="M740 110H226"/>
                         <circle class="step" cx="216" cy="110" r="9"/><text class="step-text mid" x="216" y="114">1</text>
                         <text class="note" x="234" y="102">ROOM advert (signed): name, public key</text>
 
 <!-- 2 login request -->
-                        <path class="link" d="M200 165H740"/>
+                        <path class="link" d="M226 165H740"/>
                         <circle class="step" cx="216" cy="165" r="9"/><text class="step-text mid" x="216" y="169">2</text>
                         <text class="note" x="234" y="157">Login request: clock, sync cursor, password</text>
 
 <!-- 3 login response -->
-                        <path class="link link-soft" d="M740 220H200"/>
+                        <path class="link link-soft" d="M740 220H226"/>
                         <circle class="step" cx="216" cy="220" r="9"/><text class="step-text mid" x="216" y="224">3</text>
                         <text class="note" x="234" y="212">Login response: server time, role, permissions</text>
                         <text class="caption" x="234" y="230">about 300 ms after the request</text>
 
 <!-- 4 post -->
-                        <path class="link" d="M200 275H740"/>
+                        <path class="link" d="M226 275H740"/>
                         <circle class="step" cx="216" cy="275" r="9"/><text class="step-text mid" x="216" y="279">4</text>
                         <text class="note" x="234" y="267">Post message: text, at most 150 bytes</text>
 
@@ -260,17 +260,17 @@ rooms:
                         <text class="note" x="592" y="332">(commit before acknowledge).</text>
                         <text class="note" x="592" y="348">A failed write sends no answer;</text>
                         <text class="note" x="592" y="364">the client retries.</text>
-                        <path class="link link-soft" d="M740 395H200"/>
+                        <path class="link link-soft" d="M740 395H226"/>
                         <circle class="step" cx="216" cy="395" r="9"/><text class="step-text mid" x="216" y="399">6</text>
                         <text class="note" x="234" y="387">Post ACK, about 200 ms after the post</text>
 
 <!-- 7 push -->
-                        <path class="link" d="M740 450H200"/>
+                        <path class="link" d="M740 450H226"/>
                         <circle class="step" cx="216" cy="450" r="9"/><text class="step-text mid" x="216" y="454">7</text>
                         <text class="note" x="234" y="442">Push a stored post the client has not seen</text>
 
 <!-- 8 push ack -->
-                        <path class="link link-soft" d="M200 505H740"/>
+                        <path class="link link-soft" d="M226 505H740"/>
                         <circle class="step" cx="216" cy="505" r="9"/><text class="step-text mid" x="216" y="509">8</text>
                         <text class="note" x="234" y="497">Push ACK: the client's cursor moves forward</text>
 
