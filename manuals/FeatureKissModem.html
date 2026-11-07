@@ -4,21 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KISS Modem Manual</title>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({ startOnLoad: true, theme: 'base', themeVariables: {
-            darkMode: true, background: '#101012', primaryColor: '#222225',
-            primaryTextColor: '#F5F5F7', primaryBorderColor: '#A1A1A8',
-            lineColor: '#A1A1A8', secondaryColor: '#18181B', tertiaryColor: '#2C2C30',
-            textColor: '#F5F5F7', edgeLabelBackground: '#18181B',
-            actorBkg: '#222225', actorBorder: '#A1A1A8', actorTextColor: '#F5F5F7',
-            signalColor: '#C5C5CA', signalTextColor: '#F5F5F7',
-            labelBoxBkgColor: '#18181B', labelBoxBorderColor: '#A1A1A8',
-            labelTextColor: '#F5F5F7', loopTextColor: '#F5F5F7',
-            noteBkgColor: '#2C2C30', noteTextColor: '#F5F5F7', noteBorderColor: '#A1A1A8',
-            fontFamily: '-apple-system, BlinkMacSystemFont, Helvetica Neue, Segoe UI, sans-serif'
-        } });
-    </script>
     <link href="manuals.css" rel="stylesheet">
     <script src="manuals.js" defer></script>
 </head>
@@ -116,19 +101,59 @@
                     <li><strong>Sender:</strong> builds group-text packets (used by Starlark <code>reply</code>) and queues them for the writer.</li>
                 </ul>
 
-                <div class="mermaid">
-                    graph LR
-                        Modem["KISS modem"] -->|"serial bytes"| Reader["Reader"]
-                        Reader -->|"frames"| Router["Router"]
-                        Router -->|"radio packets and RxMeta"| Parsers["Parsers and consumers"]
-                        Router -->|"responses and errors"| Slot["Request slot"]
-                        Slot --> Client["Radio client"]
-                        Client -->|"control"| ControlQ["Prioritized control queue"]
-                        Sender["Sender"] -->|"data"| DataQ["TX gate"]
-                        ControlQ --> Writer["Writer"]
-                        DataQ --> Writer
-                        Writer -->|"framed bytes"| Modem
+                <div class="mermaid arch-diagram" id="kiss-flow">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" role="img" aria-labelledby="kiss-flow-title kiss-flow-desc">
+                        <title id="kiss-flow-title">How bytes flow through the KISS modem pieces</title>
+                        <desc id="kiss-flow-desc">The modem is drawn twice so each direction reads left to right. Bytes enter through the reader, which hands KISS frames to the router. The router gives radio packets and RxMeta to the parsers and consumers, and responses and errors to the request slot that the radio client waits on. The radio client queues control frames in a prioritized control queue; the sender queues data frames on the TX gate. The writer takes from both queues, always sending control frames first and one data frame at a time, and writes framed bytes back to the modem.</desc>
+                        <defs>
+                            <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+                        </defs>
+
+<!-- Bands -->
+                        <rect class="band" x="16" y="76" width="928" height="128" rx="8"/>
+                        <rect class="band" x="16" y="220" width="928" height="128" rx="8"/>
+                        <rect class="band" x="16" y="364" width="928" height="128" rx="8"/>
+                        <text class="layer-name" x="24" y="100">Receiving</text><text class="note" x="24" y="116">serial bytes in</text>
+                        <text class="layer-name" x="24" y="244">Commands</text><text class="note" x="24" y="260">one at a time</text>
+                        <text class="layer-name" x="24" y="388">Sending</text><text class="note" x="24" y="404">outgoing</text>
+
+<!-- Modem above -->
+                        <g><rect class="box box-outside" x="104" y="10" width="200" height="56" rx="8"/><text class="name mid" x="204" y="28">KISS modem</text><text class="note mid" x="204" y="45">radio chip on USB serial</text></g>
+
+<!-- Receiving row -->
+                        <g><rect class="box" x="104" y="102" width="160" height="76" rx="8"/><text class="name mid" x="184" y="122">Reader</text><text class="note mid" x="184" y="139">undo KISS escaping,</text><text class="note mid" x="184" y="153">hand whole frames on</text><text class="path mid" x="184" y="169">kiss_reader.go</text></g>
+                        <g><rect class="box" x="400" y="102" width="160" height="76" rx="8"/><text class="name mid" x="480" y="122">Router</text><text class="note mid" x="480" y="139">parse, classify,</text><text class="note mid" x="480" y="153">drop duplicates</text><text class="path mid" x="480" y="169">kiss_router.go</text></g>
+                        <g><rect class="box" x="676" y="102" width="200" height="76" rx="8"/><text class="name mid" x="776" y="122">Parsers and consumers</text><text class="note mid" x="776" y="139">adverts, group texts,</text><text class="note mid" x="776" y="153">events, database</text></g>
+
+<!-- Commands row -->
+                        <g><rect class="box" x="104" y="246" width="160" height="76" rx="8"/><text class="name mid" x="184" y="266">Request slot</text><text class="note mid" x="184" y="283">one request at a time,</text><text class="note mid" x="184" y="297">Ping barrier after</text><text class="note mid" x="184" y="311">a timeout</text></g>
+                        <g><rect class="box" x="400" y="246" width="160" height="76" rx="8"/><text class="name mid" x="480" y="266">Radio client</text><text class="note mid" x="480" y="283">typed Go methods for</text><text class="note mid" x="480" y="297">Tier 1 commands</text><text class="path mid" x="480" y="313">cmd_radio.go</text></g>
+                        <g><rect class="box" x="676" y="246" width="200" height="76" rx="8"/><text class="name mid" x="776" y="266">Control queue</text><text class="note mid" x="776" y="283">priority: control frames</text><text class="note mid" x="776" y="297">always go first</text></g>
+
+<!-- Sending row -->
+                        <g><rect class="box" x="104" y="390" width="160" height="76" rx="8"/><text class="name mid" x="184" y="410">Sender</text><text class="note mid" x="184" y="427">builds group texts for</text><text class="note mid" x="184" y="441">Starlark reply</text><text class="path mid" x="184" y="457">kiss/send</text></g>
+                        <g><rect class="box" x="400" y="390" width="160" height="76" rx="8"/><text class="name mid" x="480" y="410">TX gate</text><text class="note mid" x="480" y="427">one data frame in</text><text class="note mid" x="480" y="441">flight until TxDone</text></g>
+                        <g><rect class="box" x="676" y="390" width="200" height="76" rx="8"/><text class="name mid" x="776" y="410">Writer</text><text class="note mid" x="776" y="427">control first, then one</text><text class="note mid" x="776" y="441">data frame at a time</text><text class="path mid" x="776" y="457">kiss_writer.go</text></g>
+
+<!-- Modem below -->
+                        <g><rect class="box box-outside" x="676" y="524" width="200" height="56" rx="8"/><text class="name mid" x="776" y="542">KISS modem</text><text class="note mid" x="776" y="559">framed bytes out</text></g>
+
+<!-- Arrows -->
+                        <path class="link" d="M204 66V102"/>
+                        <text class="caption" x="212" y="86">serial bytes</text>
+                        <path class="link" d="M264 140H400"/><text class="note" x="282" y="132">frames</text>
+                        <path class="link" d="M560 140H676"/><text class="note mid" x="618" y="130">packets, RxMeta</text>
+                        <path class="link" d="M480 178V214H184V246"/><text class="note" x="488" y="198">responses and errors</text>
+                        <path class="link" d="M264 284H400"/>
+                        <path class="link" d="M560 284H676"/><text class="note" x="585" y="276">control</text>
+                        <path class="link" d="M264 428H400"/><text class="note" x="282" y="420">data</text>
+                        <path class="link" d="M560 428H676"/>
+                        <path class="link" d="M776 322V390"/>
+                        <path class="link" d="M776 466V524"/>
+                        <text class="caption" x="784" y="500">framed bytes</text>
+                    </svg>
                 </div>
+                <p class="text-sm">Figure 1. The pieces between the serial port and the radio. The modem is drawn twice so each direction reads left to right; the writer drains the control queue as well as the TX gate.</p>
 
                 <p>The modem has no request IDs. Several commands share <code>OK</code> (<code>0xF0</code>), so KAM allows one request at a time. If a request times out, the next one must pass a <code>Ping</code> barrier before it is sent.</p>
             </section>

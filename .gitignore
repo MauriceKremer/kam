@@ -11,3 +11,4 @@ kam.bytecoder.nl
 
 /.agents/skills
 /skills-lock.json
+.playwright-cli

@@ -4,21 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Room Server Manual</title>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({ startOnLoad: true, theme: 'base', themeVariables: {
-            darkMode: true, background: '#101012', primaryColor: '#222225',
-            primaryTextColor: '#F5F5F7', primaryBorderColor: '#A1A1A8',
-            lineColor: '#A1A1A8', secondaryColor: '#18181B', tertiaryColor: '#2C2C30',
-            textColor: '#F5F5F7', edgeLabelBackground: '#18181B',
-            actorBkg: '#222225', actorBorder: '#A1A1A8', actorTextColor: '#F5F5F7',
-            signalColor: '#C5C5CA', signalTextColor: '#F5F5F7',
-            labelBoxBkgColor: '#18181B', labelBoxBorderColor: '#A1A1A8',
-            labelTextColor: '#F5F5F7', loopTextColor: '#F5F5F7',
-            noteBkgColor: '#2C2C30', noteTextColor: '#F5F5F7', noteBorderColor: '#A1A1A8',
-            fontFamily: '-apple-system, BlinkMacSystemFont, Helvetica Neue, Segoe UI, sans-serif'
-        } });
-    </script>
     <link href="manuals.css" rel="stylesheet">
     <script src="manuals.js" defer></script>
 </head>
@@ -232,31 +217,104 @@ rooms:
                 <h3>4. Receiving pushes (catching up)</h3>
                 <p>The server walks through its clients in turn. For a client that is due, it pushes the oldest post newer than the client's cursor (never the client's own posts, and only if the post is at least 6 seconds old). The client must acknowledge each push before the server sends the next to that client, which keeps the radio link from being flooded. A matching ACK moves the cursor forward. A missing ACK counts as a failure; after 3 failures the server stops pushing to that client until the client shows activity again.</p>
 
-                <div class="mermaid">
-                    sequenceDiagram
-                        participant C as Client
-                        participant S as Room Server
-                        S-->>C: ROOM advert (signed)
-                        C->>S: 1. Login request (password, sync cursor)
-                        S-->>C: 2. Login response (role)
-                        C->>S: 3. Post message
-                        S-->>C: 4. Post ACK (after the post is stored)
-                        S->>C: 5. Push a stored post
-                        C-->>S: 6. Push ACK (cursor advances)
-                </div>
+                <h3>The conversation at a glance</h3>
+                <div class="mermaid arch-diagram" id="room-conversation">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 648" role="img" aria-labelledby="room-seq-title room-seq-desc">
+                        <title id="room-seq-title">Messages between a MeshCore client and the room server</title>
+                        <desc id="room-seq-desc">Eight numbered steps. The server announces itself with a signed ROOM advert. The client sends a login request with its password and sync cursor; about 300 ms later the server answers with a login response naming the role. The client posts a message; only after the post is stored in SQLite does the server send the confirmation about 200 ms later. Later, the server pushes a stored post to the client and the client answers with a push acknowledgement that advances its cursor.</desc>
+                        <defs>
+                            <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+                        </defs>
 
-                <h3>Push state for one client</h3>
-                <div class="mermaid">
-                    stateDiagram-v2
-                        [*] --> Idle: login OK
-                        Idle --> AwaitingAck: unsynced post at least 6 s old and the client has its turn
-                        AwaitingAck --> Idle: matching ACK and the cursor advances
-                        AwaitingAck --> Idle: ACK timeout and failures plus 1
-                        Idle --> Starved: 3 failures
-                        Starved --> Idle: client activity such as login or text
-                </div>
+<line class="life" x1="200" y1="70" x2="200" y2="640"/>
+                        <line class="life" x1="740" y1="70" x2="740" y2="640"/>
 
-                <h3>Routes and paths</h3>
+<g><rect class="box box-outside" x="90" y="10" width="220" height="50" rx="8"/><text class="name mid" x="200" y="28">MeshCore client</text><text class="note mid" x="200" y="45">a phone app or radio</text></g>
+                        <g><rect class="box box-optional" x="620" y="10" width="240" height="50" rx="8"/><text class="name mid" x="740" y="28">Room server</text><text class="path mid" x="740" y="45">internal/room</text></g>
+
+<!-- 1 advert -->
+                        <path class="link link-soft" d="M740 110H200"/>
+                        <circle class="step" cx="216" cy="110" r="9"/><text class="step-text mid" x="216" y="114">1</text>
+                        <text class="note" x="234" y="102">ROOM advert (signed): name, public key</text>
+
+<!-- 2 login request -->
+                        <path class="link" d="M200 165H740"/>
+                        <circle class="step" cx="216" cy="165" r="9"/><text class="step-text mid" x="216" y="169">2</text>
+                        <text class="note" x="234" y="157">Login request: clock, sync cursor, password</text>
+
+<!-- 3 login response -->
+                        <path class="link link-soft" d="M740 220H200"/>
+                        <circle class="step" cx="216" cy="220" r="9"/><text class="step-text mid" x="216" y="224">3</text>
+                        <text class="note" x="234" y="212">Login response: server time, role, permissions</text>
+                        <text class="caption" x="234" y="230">about 300 ms after the request</text>
+
+<!-- 4 post -->
+                        <path class="link" d="M200 275H740"/>
+                        <circle class="step" cx="216" cy="275" r="9"/><text class="step-text mid" x="216" y="279">4</text>
+                        <text class="note" x="234" y="267">Post message: text, at most 150 bytes</text>
+
+<!-- 5 store + ack -->
+                        <rect class="seq-note" x="560" y="296" width="320" height="76" rx="8"/>
+                        <circle class="step" cx="576" cy="296" r="9"/><text class="step-text mid" x="576" y="300">5</text>
+                        <text class="note" x="592" y="316">Store the post in SQLite first</text>
+                        <text class="note" x="592" y="332">(commit before acknowledge).</text>
+                        <text class="note" x="592" y="348">A failed write sends no answer;</text>
+                        <text class="note" x="592" y="364">the client retries.</text>
+                        <path class="link link-soft" d="M740 395H200"/>
+                        <circle class="step" cx="216" cy="395" r="9"/><text class="step-text mid" x="216" y="399">6</text>
+                        <text class="note" x="234" y="387">Post ACK, about 200 ms after the post</text>
+
+<!-- 7 push -->
+                        <path class="link" d="M740 450H200"/>
+                        <circle class="step" cx="216" cy="450" r="9"/><text class="step-text mid" x="216" y="454">7</text>
+                        <text class="note" x="234" y="442">Push a stored post the client has not seen</text>
+
+<!-- 8 push ack -->
+                        <path class="link link-soft" d="M200 505H740"/>
+                        <circle class="step" cx="216" cy="505" r="9"/><text class="step-text mid" x="216" y="509">8</text>
+                        <text class="note" x="234" y="497">Push ACK: the client's cursor moves forward</text>
+
+<g><text class="caption" x="214" y="570">solid arrow: a request flying to the server</text>
+                        <text class="caption" x="214" y="592">dashed arrow: an answer coming back</text>
+                        <text class="caption end" x="764" y="570">wrong password, replay or rate limit:</text>
+                        <text class="caption end" x="764" y="592">no answer at all; the client times out</text>
+                        <text class="caption end" x="764" y="614">a GUEST post is also ignored</text></g>
+                    </svg>
+                </div>
+                <p class="text-sm">Figure 1. The messages between a client and the room server. Steps 2–6 are described under <a href="#workflow">Login</a> and <a href="#workflow">Posting a message</a> above; steps 7 and 8 under <a href="#workflow">Receiving pushes</a>.</p>
+
+<h3>Push state for one client</h3>
+                <div class="mermaid arch-diagram" id="room-push-state">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 380" role="img" aria-labelledby="push-state-title push-state-desc">
+                        <title id="push-state-title">Push states of one client</title>
+                        <desc id="push-state-desc">Three states: Idle, AwaitingAck and Starved. A successful login puts a client in Idle. When an unsynced post is at least 6 seconds old and the client has its turn, it goes to AwaitingAck and the server pushes one post. A matching acknowledgement returns it to Idle with the cursor advanced; a timeout counts one failure and also returns to Idle. After three failures the client is Starved and receives nothing. Client activity such as a new login, a post, a keep-alive or a text returns it to Idle.</desc>
+                        <defs>
+                            <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+                        </defs>
+
+<path class="link" d="M56 150H108"/>
+                        <circle class="step" cx="56" cy="150" r="5"/>
+                        <text class="caption" x="56" y="138">login OK</text>
+                        <g><rect class="box" x="110" y="110" width="180" height="56" rx="8"/><text class="name mid" x="200" y="131">Idle</text><text class="note mid" x="200" y="150">nothing owed, cursor up to date</text></g>
+                        <path class="link" d="M290 130H420"/>
+                        <text class="note" x="300" y="88">unsynced post at least 6 s old,</text>
+                        <text class="note" x="300" y="104">the client has its turn</text>
+                        <g><rect class="box box-optional" x="420" y="110" width="220" height="56" rx="8"/><text class="name mid" x="530" y="131">AwaitingAck</text><text class="note mid" x="530" y="150">one push sent, at most 1 in flight</text></g>
+                        <path class="link link-soft" d="M420 152H292"/>
+                        <text class="note mid" x="356" y="192">matching ACK: cursor moves forward</text>
+                        <text class="note mid" x="356" y="208">ACK timeout: failures plus 1</text>
+
+<g><rect class="box box-optional" x="420" y="280" width="220" height="56" rx="8"/><text class="name mid" x="530" y="301">Starved</text><text class="note mid" x="530" y="320">three failures; pushes paused</text></g>
+                        <path class="link" d="M530 166V280"/>
+                        <text class="note" x="544" y="216">3 failures</text>
+                        <path class="link" d="M420 308H202V166"/>
+                        <text class="note mid" x="310" y="330">client activity: new login, post,</text>
+                        <text class="note mid" x="310" y="346">keep-alive or text</text>
+                    </svg>
+                </div>
+                <p class="text-sm">Figure 2. Push states of one client. A stopped client costs the room nothing: a Starved client receives nothing until it speaks again.</p>
+
+<h3>Routes and paths</h3>
                 <p>Replies travel either <em>direct</em> along a stored out path or as a <em>flood</em>. When a client receives a flooded packet from the server, it sends back a short <strong>PATH</strong> packet that carries the route it saw, and the server remembers that route as the client's out path. A flooded login or request is answered with a path return so the client learns the route; the server never sends a reciprocal path back. After three failed pushes KAM also forgets the route, so the next exchange finds a fresh one.</p>
 
                 <h3>Keep-alive and other requests</h3>

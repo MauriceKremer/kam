@@ -4,21 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Starlark Automation Manual</title>
-    <script type="module">
-        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({ startOnLoad: true, theme: 'base', themeVariables: {
-            darkMode: true, background: '#101012', primaryColor: '#222225',
-            primaryTextColor: '#F5F5F7', primaryBorderColor: '#A1A1A8',
-            lineColor: '#A1A1A8', secondaryColor: '#18181B', tertiaryColor: '#2C2C30',
-            textColor: '#F5F5F7', edgeLabelBackground: '#18181B',
-            actorBkg: '#222225', actorBorder: '#A1A1A8', actorTextColor: '#F5F5F7',
-            signalColor: '#C5C5CA', signalTextColor: '#F5F5F7',
-            labelBoxBkgColor: '#18181B', labelBoxBorderColor: '#A1A1A8',
-            labelTextColor: '#F5F5F7', loopTextColor: '#F5F5F7',
-            noteBkgColor: '#2C2C30', noteTextColor: '#F5F5F7', noteBorderColor: '#A1A1A8',
-            fontFamily: '-apple-system, BlinkMacSystemFont, Helvetica Neue, Segoe UI, sans-serif'
-        } });
-    </script>
     <link href="manuals.css" rel="stylesheet">
     <script src="manuals.js" defer></script>
 </head>
@@ -80,17 +65,49 @@
 
                 <p>Scripts are stored in the SQLite database (table <code>automation_scripts</code>), not in <code>kam.yml</code>. The former built-in ECHO responder is now just an example script (<code>docs/examples/echo.star</code>); a fresh install has no ECHO until you install it.</p>
 
-                <div class="mermaid">
-                    graph LR
-                        Radio["Radio"] --> Router["KAM router"]
-                        Router -->|"decoded group text"| Queue["Event queue (128)"]
-                        Timer["Timer loop<br/>(one per KAM)"] -->|"timer fire"| Queue
-                        Queue --> Worker["Automation worker"]
-                        Worker --> Script["Your scripts, one at a time"]
-                        Script -->|"reply / room_post<br/>rest_get"| Out["Sender, rooms,<br/>HTTP(S) URLs"]
-                        Operator["Operator"] -->|"Local Management API"| DB[("SQLite scripts")]
-                        DB --> Worker
+                                <div class="mermaid arch-diagram">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 360" role="img" aria-labelledby="overview-title overview-desc">
+                        <title id="overview-title">How scripts receive events and send</title>
+                        <desc id="overview-desc">Group texts decoded by KAM and timer fires join one 128-slot event queue. One automation worker runs your installed scripts one at a time; it loads them from the SQLite scripts table, which the operator manages through the local management API. A script's reply goes to a group channel, its room_post goes to a room server, and rest_get fetches an HTTPS URL.</desc>
+                        <defs>
+                            <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+                        </defs>
+
+<!-- Actors and frame -->
+                        <text class="caption" x="166" y="54">Inside KAM: one Go program</text>
+                        <rect class="frame" x="166" y="60" width="700" height="184" rx="12"/>
+                        <g><rect class="box box-outside" x="6" y="76" width="132" height="56" rx="8"/><text class="name mid" x="72" y="96">MeshCore radio</text><text class="note mid" x="72" y="114">over the air</text></g>
+                        <g><rect class="box" x="166" y="76" width="170" height="56" rx="8"/><text class="name mid" x="251" y="96">Packet router</text><text class="note mid" x="251" y="114">taps decoded group texts</text></g>
+                        <g><rect class="box" x="426" y="76" width="160" height="56" rx="8"/><text class="name mid" x="506" y="96">Event queue (128)</text><text class="note mid" x="506" y="112">group texts and</text><text class="note mid" x="506" y="126">timer fires share it</text></g>
+                        <g><rect class="box" x="646" y="76" width="180" height="56" rx="8"/><text class="name mid" x="736" y="96">Timer loop</text><text class="note mid" x="736" y="112">one loop for all</text><text class="note mid" x="736" y="126">scripts, steady pace</text></g>
+                        <g><rect class="box" x="426" y="170" width="160" height="56" rx="8"/><text class="name mid" x="506" y="190">Automation worker</text><text class="note mid" x="506" y="206">runs scripts one</text><text class="note mid" x="506" y="220">at a time, in id order</text></g>
+                        <g><rect class="box box-optional" x="636" y="170" width="190" height="56" rx="8"/><text class="name mid" x="731" y="190">Your scripts</text><text class="note mid" x="731" y="206">each run starts</text><text class="note mid" x="731" y="220">with fresh state</text></g>
+
+<!-- Outside, below -->
+                        <g><rect class="box box-outside" x="6" y="270" width="120" height="56" rx="8"/><text class="name mid" x="66" y="290">Operator</text><text class="note mid" x="66" y="308">curl, kam CLI</text></g>
+                        <g><rect class="box box-outside" x="166" y="270" width="150" height="56" rx="8"/><text class="name mid" x="241" y="290">SQLite scripts</text><text class="note mid" x="241" y="306">source, status,</text><text class="note mid" x="241" y="320">revisions</text></g>
+                        <g><rect class="box box-outside" x="366" y="270" width="170" height="56" rx="8"/><text class="name mid" x="451" y="290">Group channels</text><text class="note mid" x="451" y="308">reply() floods out</text></g>
+                        <g><rect class="box box-outside" x="566" y="270" width="150" height="56" rx="8"/><text class="name mid" x="641" y="290">Room servers</text><text class="note mid" x="641" y="308">room_post() posts</text></g>
+                        <g><rect class="box box-outside" x="746" y="270" width="200" height="56" rx="8"/><text class="name mid" x="846" y="290">HTTP(S) APIs</text><text class="note mid" x="846" y="308">rest_get(), one GET</text></g>
+
+<!-- Arrows -->
+                        <path class="link" d="M138 104H166"/>
+                        <path class="link" d="M336 104H426"/>
+                        <text class="caption mid" x="381" y="96">group text</text>
+                        <path class="link" d="M646 104H586"/>
+                        <text class="caption mid" x="616" y="96">timer fire</text>
+                        <path class="link" d="M456 132V170"/>
+                        <path class="link" d="M586 198H636"/>
+                        <path class="link" d="M241 270V198H426"/>
+                        <text class="caption" x="249" y="216">compiled scripts</text>
+                        <path class="link" d="M126 298H166"/>
+                        <text class="caption mid" x="146" y="344">Local Management API</text>
+                        <path class="link" d="M646 226V248H451V270"/>
+                        <path class="link" d="M686 226V258H641V270"/>
+                        <path class="link" d="M726 226V238H846V270"/>
+                    </svg>
                 </div>
+                <p class="text-sm">Figure 1. The path from radio and timers to your scripts. Grey boxes are outside KAM, and the dashed box holds scripts you install through the API. Group texts and timer fires share one bounded queue, and a single worker runs scripts one at a time.</p>
             </section>
 
             <!-- Quick start -->
@@ -126,21 +143,62 @@
                     <li><strong class="text-amber-600">FROZEN:</strong> A run exceeded the script's <code>timeout_ms</code> (default 500). KAM stopped dispatching to it, saved the error and waits for an operator to recover it.</li>
                 </ul>
 
-                <div class="mermaid">
-                    graph TD
-                        A["Save via API"] --> B{"Compiles and has on_group_text, on_timer, or both?"}
-                        B -->|"No"| R["Rejected with 422, nothing changes"]
-                        B -->|"Yes"| D["READY"]
-                        S["KAM startup: load stored script"] --> C{"Compiles?"}
-                        C -->|"No"| BR["BROKEN"]
-                        C -->|"Yes"| D
-                        D --> E["Event or timer fire received"]
-                        E --> F{"Over timeout_ms?"}
-                        F -->|"Yes"| G["FROZEN"]
-                        F -->|"No"| D
-                        G -->|"recover, or save new source"| D
-                        BR -->|"recover, or save fixed source"| D
+                <div class="mermaid arch-diagram">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" role="img" aria-labelledby="lifecycle-title lifecycle-desc">
+                        <title id="lifecycle-title">A script's status lifecycle</title>
+                        <desc id="lifecycle-desc">A script saved through the API is compiled with its entry points checked; success makes it READY, failure rejects the request with 422 and changes nothing. A stored script recompiled at startup follows the same check; success makes it READY, failure marks it BROKEN. A READY script runs for each event and timer fire; a run exceeding timeout_ms freezes it, and runs within the limit simply return. FROZEN and BROKEN scripts return to READY only through recover or a new save.</desc>
+                        <defs>
+                            <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+                        </defs>
+
+<!-- Entries -->
+                        <g><rect class="box" x="196" y="8" width="200" height="56" rx="8"/><text class="name mid" x="296" y="28">Save via API</text><text class="note mid" x="296" y="46">local management API</text></g>
+                        <g><rect class="box" x="564" y="8" width="200" height="56" rx="8"/><text class="name mid" x="664" y="28">KAM startup</text><text class="note mid" x="664" y="46">loads stored scripts</text></g>
+
+<!-- Compile checks -->
+                        <g><rect class="box" x="196" y="120" width="200" height="64" rx="8"/><text class="name mid" x="296" y="142">Valid script?</text><text class="note mid" x="296" y="162">compiles + entry points</text></g>
+                        <g><rect class="box" x="564" y="120" width="200" height="64" rx="8"/><text class="name mid" x="664" y="142">Valid script?</text><text class="note mid" x="664" y="162">recompiled from storage</text></g>
+
+<!-- Outcomes -->
+                        <g><rect class="box" x="36" y="240" width="200" height="64" rx="8"/><text class="name mid" x="136" y="264">Rejected (422)</text><text class="note mid" x="136" y="284">nothing changes</text></g>
+                        <g><rect class="box" x="386" y="240" width="188" height="80" rx="8"/><text class="name mid" x="480" y="264">READY</text><text class="note mid" x="480" y="286">enabled, and runs for</text><text class="note mid" x="480" y="302">each event or timer fire</text></g>
+                        <g><rect class="box" x="724" y="240" width="200" height="64" rx="8"/><text class="name mid" x="824" y="264">BROKEN</text><text class="note mid" x="824" y="284">did not compile at startup</text></g>
+
+<!-- Runtime -->
+                        <g><rect class="box" x="386" y="380" width="188" height="64" rx="8"/><text class="name mid" x="480" y="404">Event or timer fire</text><text class="note mid" x="480" y="424">from the event queue</text></g>
+                        <g><rect class="box" x="624" y="380" width="200" height="64" rx="8"/><text class="name mid" x="724" y="404">Over timeout_ms?</text><text class="note mid" x="724" y="424">one run's wall clock</text></g>
+                        <g><rect class="box" x="624" y="500" width="200" height="64" rx="8"/><text class="name mid" x="724" y="524">FROZEN</text><text class="note mid" x="724" y="544">stopped until you recover</text></g>
+
+<!-- Arrows: entries to checks -->
+                        <path class="link" d="M296 64V120"/>
+                        <path class="link" d="M664 64V120"/>
+
+<!-- Arrows: check outcomes -->
+                        <path class="link" d="M236 184V212H136V240"/>
+                        <text class="caption" x="186" y="206">no</text>
+                        <path class="link" d="M296 184V212H420V240"/>
+                        <text class="caption" x="358" y="206">yes</text>
+                        <path class="link" d="M724 184V212H824V240"/>
+                        <text class="caption" x="774" y="206">no</text>
+                        <path class="link" d="M664 184V212H540V240"/>
+                        <text class="caption" x="602" y="206">yes</text>
+
+<!-- Arrows: runtime loop -->
+                        <path class="link" d="M480 320V380"/>
+                        <path class="link" d="M574 412H624"/>
+                        <path class="link" d="M824 412H930V332H480V320"/>
+                        <text class="caption" x="700" y="344">runs finish within the limit</text>
+                        <path class="link" d="M724 444V500"/>
+                        <text class="caption" x="732" y="478">over the limit</text>
+
+<!-- Arrows: recover paths -->
+                        <path class="link link-soft" d="M624 532H592V352H420V320"/>
+                        <text class="caption" x="500" y="368">recover</text>
+                        <path class="link link-soft" d="M724 272H574"/>
+                        <text class="caption" x="649" y="264">recover</text>
+                    </svg>
                 </div>
+                <p class="text-sm">Figure 2. What happens to a script's status. Solid arrows are normal paths; dashed arrows are the operator's recover paths. A save that does not compile is rejected with <code>422</code> and changes nothing; a stored script that fails at startup is <code>BROKEN</code>. <code>FROZEN</code> and <code>BROKEN</code> return to <code>READY</code> only through <code>recover</code> or a new save.</p>
 
                 <h3>What changes the status</h3>
                 <table>
@@ -469,7 +527,7 @@ updated_at     INTEGER               -- Unix seconds</code></pre>
         </article>
 
         <footer class="mt-24 pt-8 border-t border-slate-200 text-center text-slate-500 text-sm">
-            &copy; 2026 KAM Project Manuals. Written for beginner to intermediate readers. Checked against the source on 2026-11-06.
+            &copy; 2026 KAM Project Manuals. Written for beginner to intermediate readers. Checked against the source on 2026-11-07.
         </footer>
     </main>
 </body>
