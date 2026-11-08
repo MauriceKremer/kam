@@ -1,0 +1,25 @@
+#!/bin/sh
+# pre-push — refuse direct pushes to main.
+#
+# GitHub can enforce this on the server ("branch protection"), but that
+# needs a paid plan or a public repo. This local copy of the same rule
+# makes `git push origin main` fail, so changes reach main only through
+# pull requests: push your branch, then open a PR on GitHub.
+#
+# Pull-request merges are made by GitHub itself and never run this hook,
+# and every other branch still pushes freely.
+
+set -u
+
+fail=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+    refs/heads/main)
+        echo >&2 "push to main refused by scripts/git-hooks/pre-push"
+        echo >&2 "push your branch and open a pull request instead:"
+        echo >&2 "    git push -u origin HEAD && gh pr create"
+        fail=1
+        ;;
+    esac
+done
+exit $fail

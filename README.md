@@ -86,6 +86,14 @@ gofmt -l .                  # should print nothing
 go vet ./...
 ```
 
+### Git hooks
+
+Git does not version hooks, so a fresh clone has none. Run
+`./scripts/install-git-hooks.sh` once after cloning (or after pulling a new
+hook) to install the hooks from `scripts/git-hooks/` into `.git/hooks/`. KAM
+ships a `pre-push` hook that refuses direct pushes to `main`: push your branch
+and open a pull request instead (GitHub enforces the same rule on the server).
+
 ### Flags
 
 | Flag      | Default     | Description |
