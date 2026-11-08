@@ -38,17 +38,19 @@ func (f *fakeStream) Read(p []byte) (int, error) {
 }
 
 // Unused by readLoop; serial.Port requires them.
-func (f *fakeStream) SetMode(*serial.Mode) error                           { return nil }
-func (f *fakeStream) Write(p []byte) (int, error)                          { return len(p), nil }
-func (f *fakeStream) Drain() error                                         { return nil }
-func (f *fakeStream) SetDTR(bool) error                                    { return nil }
-func (f *fakeStream) Close() error                                         { return nil }
-func (f *fakeStream) ResetInputBuffer() error                              { return nil }
-func (f *fakeStream) ResetOutputBuffer() error                             { return nil }
-func (f *fakeStream) SetRTS(bool) error                                    { return nil }
-func (f *fakeStream) GetModemStatusBits() (*serial.ModemStatusBits, error) { return &serial.ModemStatusBits{}, nil }
-func (f *fakeStream) SetReadTimeout(time.Duration) error                   { return nil }
-func (f *fakeStream) Break(time.Duration) error                            { return nil }
+func (f *fakeStream) SetMode(*serial.Mode) error  { return nil }
+func (f *fakeStream) Write(p []byte) (int, error) { return len(p), nil }
+func (f *fakeStream) Drain() error                { return nil }
+func (f *fakeStream) SetDTR(bool) error           { return nil }
+func (f *fakeStream) Close() error                { return nil }
+func (f *fakeStream) ResetInputBuffer() error     { return nil }
+func (f *fakeStream) ResetOutputBuffer() error    { return nil }
+func (f *fakeStream) SetRTS(bool) error           { return nil }
+func (f *fakeStream) GetModemStatusBits() (*serial.ModemStatusBits, error) {
+	return &serial.ModemStatusBits{}, nil
+}
+func (f *fakeStream) SetReadTimeout(time.Duration) error { return nil }
+func (f *fakeStream) Break(time.Duration) error          { return nil }
 
 // runReader starts the read loop on a scripted stream and stops it on cleanup.
 func runReader(t *testing.T, stream *fakeStream) *Manager {
