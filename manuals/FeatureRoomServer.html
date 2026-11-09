@@ -90,7 +90,8 @@
                         <tr><td><code>kam room show</code> command</td><td><span class="badge badge-green">Implemented</span></td><td>Prints each room's public key, contact link and signed advert.</td></tr>
                         <tr><td>A Starlark script posts into a room</td><td><span class="badge badge-green">Implemented</span></td><td>The post is authored by the room's own identity and reaches clients like a client post; see the <a href="FeatureStarlark.html#capabilities">Starlark manual</a>. A script event for received posts remains planned.</td></tr>
                         <tr><td>Status, telemetry and access-list requests</td><td><span class="badge badge-slate">Not implemented</span></td><td>KAM sends no reply, so an app that asks for a room's status times out.</td></tr>
-                        <tr><td>Management API (clients, roles, posts, forced advert)</td><td><span class="badge badge-slate">Planned</span></td><td>Until then roles change only by logging in with another password.</td></tr>
+                        <tr><td>Room data and client removal over the local API</td><td><span class="badge badge-green">Implemented</span></td><td>List rooms, their clients and posts, and make a room forget one client; see the <a href="FeatureMonitorApi.html#reference">backend API manual</a>. Removal is not a ban: the radio can log in again.</td></tr>
+                        <tr><td>Changing roles, creating or deleting posts, forcing an advert</td><td><span class="badge badge-slate">Not implemented</span></td><td>The local API has no endpoint for these. Roles change only by logging in with another password.</td></tr>
                         <tr><td>Over-the-air admin commands</td><td><span class="badge badge-slate">Not planned for v1</span></td><td>KAM acknowledges nothing and answers nothing for them.</td></tr>
                         <tr><td>Test with real radios and apps</td><td><span class="badge badge-amber">Pending</span></td><td>Needed to confirm timing, airtime and the status-reply layout.</td></tr>
                     </tbody>
@@ -339,7 +340,7 @@ rooms:
             <!-- Roles -->
             <section id="roles">
                 <h2>Roles &amp; Permissions</h2>
-                <p>Once logged in, a client has a role. Login itself only hands out three of the four roles: the admin password gives <code>ADMIN</code>, the guest password gives <code>READ_WRITE</code>, and <code>allow_read_only</code> gives <code>GUEST</code>. <code>READ_ONLY</code> exists in the protocol but cannot be assigned by logging in; today KAM has no way to assign it, because role changes need the management API.</p>
+                <p>Once logged in, a client has a role. Login itself only hands out three of the four roles: the admin password gives <code>ADMIN</code>, the guest password gives <code>READ_WRITE</code>, and <code>allow_read_only</code> gives <code>GUEST</code>. <code>READ_ONLY</code> exists in the protocol but cannot be assigned by logging in; today KAM has no way to assign it, because the local API does not change roles.</p>
                 <table>
                     <thead>
                         <tr>
@@ -435,7 +436,7 @@ rooms:
                     <li><strong>Isolation:</strong> a room failure never stops radio ingestion. A room that cannot start is logged and skipped.</li>
                     <li><strong>Shutdown:</strong> KAM stops listening, then stops automation and the rooms (writing client sessions), then stops transmitting, then stops the modem manager.</li>
                     <li><strong>Backups:</strong> keep <code>kam.db</code> (posts and sessions) and the <code>rooms</code> directory (identities). See the <a href="KAM.html">KAM Guide</a> for how to copy the database safely.</li>
-                    <li><strong>Authentication:</strong> the Local Management API has none, so only loopback access protects it. Management of rooms through that API is planned, not available.</li>
+                    <li><strong>Authentication:</strong> the local API has none, so only loopback access protects it. Through it a local program can read room data and make a room forget a client; see the <a href="FeatureMonitorApi.html#reference">backend API manual</a>.</li>
                 </ul>
             </section>
 
@@ -531,7 +532,7 @@ rooms:
                             <li><strong>Foundations:</strong> <span class="badge badge-green">Implemented</span> packet tap, dedup fix, transmit scheduler, mesh crypto and identity package, config, signed <code>ROOM</code> advert.</li>
                             <li><strong>Login and sessions:</strong> <span class="badge badge-green">Implemented</span> anonymous request to response or path return, client table and roles, replay rules, path learning, rate limit.</li>
                             <li><strong>Posts and push:</strong> <span class="badge badge-green">Implemented</span> post store, ACK after commit, push engine, keep-alive, backlog window, session persistence.</li>
-                            <li><strong>Operations:</strong> <span class="badge badge-amber">Partly</span> airtime cap, retention and start-up validation are done; the status reply, counter export and management API endpoints are open.</li>
+                            <li><strong>Operations:</strong> <span class="badge badge-amber">Partly</span> airtime cap, retention and start-up validation are done; the API endpoints for rooms are partly done (room reads and client removal); the status reply and counter export are open.</li>
                             <li><strong>Optional:</strong> <span class="badge badge-amber">Partly</span> the post host function is delivered: scripts call <code>room_post</code> (see the <a href="FeatureStarlark.html#capabilities">Starlark manual</a>). A Starlark room event, channel bridging and an over-the-air CLI subset remain planned.</li>
                         </ol>
                     </div>

@@ -39,6 +39,13 @@ const (
 	storeTimeout = 10 * time.Second
 )
 
+// The not-found results of RemoveClient; a system post to an unknown room
+// also reports ErrUnknownRoom.
+var (
+	ErrUnknownRoom   = errors.New("unknown room")
+	ErrUnknownClient = errors.New("unknown room client")
+)
+
 // Store is the persistence the service needs; *db.RoomRepository implements it.
 type Store interface {
 	RegisterRoom(ctx context.Context, roomID string, publicKey []byte) (changedFrom []byte, err error)
@@ -158,6 +165,7 @@ type Service struct {
 	in        chan kiss.RxPacket
 	monitor   chan monitorSnapshotRequest
 	systemIn  chan systemPostRequest
+	removeIn  chan removeClientRequest
 	stop      chan struct{}
 	done      chan struct{}
 	started   atomic.Bool
@@ -170,6 +178,14 @@ type Service struct {
 type systemPostRequest struct {
 	roomID string
 	text   string
+	reply  chan error
+}
+
+// removeClientRequest asks the worker to forget one client; reply has capacity
+// one so the worker never blocks delivering its verdict.
+type removeClientRequest struct {
+	roomID string
+	key    [32]byte
 	reply  chan error
 }
 
@@ -195,6 +211,7 @@ func NewService(opts Options) (*Service, error) {
 		in:       make(chan kiss.RxPacket, inboundQueue),
 		monitor:  make(chan monitorSnapshotRequest),
 		systemIn: make(chan systemPostRequest, systemPostQueue),
+		removeIn: make(chan removeClientRequest),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}
@@ -376,6 +393,8 @@ func (s *Service) run() {
 			request.reply <- s.monitorSnapshot()
 		case request := <-s.systemIn:
 			request.reply <- s.addSystemPost(request.roomID, request.text, s.now())
+		case request := <-s.removeIn:
+			request.reply <- s.forgetClient(request.roomID, request.key, s.now())
 		case <-ticker.C:
 			s.tick(s.now())
 		}
@@ -438,6 +457,30 @@ func (s *Service) AddSystemPost(ctx context.Context, roomID, text string) error 
 	}
 }
 
+// RemoveClient forgets one remembered client of a room: its stored record, its
+// session and any push still queued for it. It is not a ban; the client can log
+// in again under the room's password rules. The worker deletes the stored
+// record first, so a failed delete keeps the session and is returned. Unknown
+// rooms and clients report ErrUnknownRoom and ErrUnknownClient. Once the worker
+// has taken the request it finishes it, even if ctx ends first.
+func (s *Service) RemoveClient(ctx context.Context, roomID string, publicKey [32]byte) error {
+	request := removeClientRequest{roomID: roomID, key: publicKey, reply: make(chan error, 1)}
+	select {
+	case s.removeIn <- request:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.done:
+		return errors.New("room service is stopped")
+	}
+	// The worker replies before it can stop, so only ctx can end this wait early.
+	select {
+	case err := <-request.reply:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (s *Service) tick(now time.Time) {
 	for _, r := range s.rooms {
 		r.tick(now)
@@ -448,6 +491,15 @@ func (s *Service) flushAll(now time.Time) {
 	for _, r := range s.rooms {
 		r.flushClients(now, true)
 	}
+}
+
+func (s *Service) roomByID(id string) *roomState {
+	for _, r := range s.rooms {
+		if r.cfg.ID == id {
+			return r
+		}
+	}
+	return nil
 }
 
 // uniqueNow returns the current time in unix seconds, bumped by one when it

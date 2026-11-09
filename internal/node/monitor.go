@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -151,6 +152,16 @@ func (r apiRooms) Posts(ctx context.Context, id string, limit int) ([]api.RoomPo
 	return items, nil
 }
 
+// RemoveClient hands the removal to the room worker and maps the room's
+// unknown-client answer to the API's not-found sentinel.
+func (r apiRooms) RemoveClient(ctx context.Context, roomID string, publicKey [32]byte) error {
+	err := r.service.RemoveClient(ctx, roomID, publicKey)
+	if errors.Is(err, room.ErrUnknownClient) {
+		return fmt.Errorf("%w: %w", api.ErrRoomClientNotFound, err)
+	}
+	return err
+}
+
 func roomRoleName(role uint8) string {
 	switch role {
 	case room.RoleAdmin:
@@ -233,9 +244,9 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 	if persistence != nil {
 		channelReader = apiChannels{persistence: persistence, configured: cfg.Channels}
 	}
-	var roomReader api.RoomReader
+	var roomSource api.RoomSource
 	if n.rooms != nil && n.roomRepository != nil && persistence != nil {
-		roomReader = apiRooms{service: n.rooms, repository: n.roomRepository, persistence: persistence}
+		roomSource = apiRooms{service: n.rooms, repository: n.roomRepository, persistence: persistence}
 	}
 	var modemSource api.ModemSource
 	if n.scheduler != nil && n.radio != nil && n.radioState != nil {
@@ -251,7 +262,7 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 		snapshot := collector.Collect()
 		return systemToWire(snapshot)
 	}
-	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomReader, modemSource, systemSource))
+	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomSource, modemSource, systemSource))
 	if err != nil {
 		slog.Error("local API listener unavailable", "address", settings.Listen, "error", err)
 		if n.modem != nil {

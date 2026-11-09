@@ -100,6 +100,7 @@ type flakyStore struct {
 	Store
 	appendErr error
 	saveErr   error
+	deleteErr error
 	saved     int
 }
 
@@ -116,6 +117,13 @@ func (f *flakyStore) SaveClients(ctx context.Context, roomID string, clients []d
 	}
 	f.saved++
 	return f.Store.SaveClients(ctx, roomID, clients)
+}
+
+func (f *flakyStore) DeleteClient(ctx context.Context, roomID string, publicKey []byte) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	return f.Store.DeleteClient(ctx, roomID, publicKey)
 }
 
 func testContext() context.Context { return context.Background() }

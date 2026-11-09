@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Use KAM's loopback API for status, events, channel history, room monitoring, script management and modem diagnostics; room-client removal and script dry runs remain planned.">
+    <meta name="description" content="Use KAM's loopback API for status, events, channel history, room monitoring and client removal, script management and modem diagnostics; script dry runs remain planned.">
     <title>Backend API Manual</title>
     <link href="manuals.css" rel="stylesheet">
     <script src="manuals.js" defer></script>
@@ -50,15 +50,15 @@
             <span>Architecture &amp; API Manual</span>
             <h1>KAM Backend API</h1>
             <p>How another program can monitor and control KAM without becoming part of its radio service.</p>
-            <p><span class="badge badge-green">Phases 1-3 implemented</span><span>Status, events, channel history, read-only room resources, script management and the modem snapshot, query and radio-apply routes are available. Room-client removal, script dry runs and run information remain planned; real-radio verification is pending.</span></p>
+            <p><span class="badge badge-green">Phases 1-4 implemented</span><span>Status, events, channel history, room resources with client removal, script management and the modem snapshot, query and radio-apply routes are available. Script dry runs and run information remain planned; real-radio verification is pending.</span></p>
         </header>
         <article class="prose">
             <section id="overview">
                 <h2>Overview</h2>
-                <p>An <strong>API</strong>, or application programming interface, lets one program ask another program for information or request a change. Phases 1-3 of KAM's backend API provide status, recent radio and room events, configured channels with message history, read-only room summaries, clients and posts, script management and modem monitoring and radio changes. Any local dashboard or command-line script can use the same API.</p>
+                <p>An <strong>API</strong>, or application programming interface, lets one program ask another program for information or request a change. Phases 1-4 of KAM's backend API provide status, recent radio and room events, configured channels with message history, room summaries, clients and posts, removal of a remembered room client, script management and modem monitoring and radio changes. Any local dashboard or command-line script can use the same API.</p>
                 <p>For example, KAMmon could ask, "Which packets arrived since my last request?" KAM would return a list. KAMmon would draw the chart and decide which of its signed-in web users may see the details.</p>
                 <p><strong>KAM does the radio work. KAMmon provides the web interface.</strong> KAM remains an open system: it starts, receives, stores messages and runs scripts without KAMmon. It does not register KAMmon as a client, check whether KAMmon is alive, or wait for it to consume events.</p>
-                <div class="info-box info-box-blue"><p><strong>Available now:</strong> one loopback listener on port 8766 serving the bounded event ring, status and event reads, channel list/history, room list/client/post reads, script management (the old script API on port 8765 is retired) and modem monitoring with radio changes. Room-client removal and script dry runs are still planned. The listener answers <code>GET /</code> with the routes it serves right now; <a href="../docs/APIdetails.md">APIdetails.md</a> is the full reference.</p></div>
+                <div class="info-box info-box-blue"><p><strong>Available now:</strong> one loopback listener on port 8766 serving the bounded event ring, status and event reads, channel list/history, room list/client/post reads, room-client removal, script management (the old script API on port 8765 is retired) and modem monitoring with radio changes. Script dry runs are still planned. The listener answers <code>GET /</code> with the routes it serves right now; <a href="../docs/APIdetails.md">APIdetails.md</a> is the full reference.</p></div>
             </section>
 
             <section id="concepts">
@@ -89,11 +89,11 @@
                     <tbody>
                         <tr><td>Radio, channel storage and room service</td><td>Implemented</td><td>Existing KAM functionality, independent of KAMmon.</td></tr>
                         <tr><td>Script management on the same listener (8766)</td><td>Implemented</td><td>List, validate, create, update, enable, disable, recover and delete scripts.</td></tr>
-                        <tr><td>Monitor listener on 8766</td><td>Phases 1-3 implemented</td><td>Status, RX/TX/room events, channel history, room reads and the modem routes; automated race tests pass. Real-radio verification is pending.</td></tr>
+                        <tr><td>Monitor listener on 8766</td><td>Phases 1-4 implemented</td><td>Status, RX/TX/room events, channel history, room reads, room-client removal and the modem routes; automated race tests pass. Real-radio verification is pending.</td></tr>
                         <tr><td>Optional system section on the status route</td><td>Implemented</td><td><code>GET /v1/status?system=true</code> adds machine memory, CPU model, core count and load averages, disk space and database size, collected at most once per <code>monitor.system_interval_sec</code> seconds. macOS and Linux report every field; Windows reports the database size only.</td></tr>
                         <tr><td>Channel and room history endpoints</td><td>Implemented</td><td>Configured channels and messages, room summaries, clients and retained posts.</td></tr>
                         <tr><td>REST modem control</td><td>Implemented</td><td>Read diagnostics, query in one command, preview changes, apply and save with recovery. Hardware verification is pending.</td></tr>
-                        <tr><td>Room-client removal</td><td>Planned</td><td>Forget a session; existing radio login rules remain unchanged.</td></tr>
+                        <tr><td>Room-client removal</td><td>Implemented</td><td>Forget one remembered client and cancel its pending pushes. It is not a ban: the radio can log in again under the existing room rules.</td></tr>
                         <tr><td>Script dry runs and run information</td><td>Planned</td><td>Test without transmitting; in-memory execution statistics.</td></tr>
                     </tbody>
                 </table>
@@ -119,7 +119,7 @@
                     <tbody>
                         <tr><td><code>monitor.listen</code> (default <code>127.0.0.1:8766</code>)</td><td>The unified local REST API; script management shares the listener instead of the retired port 8765.</td><td>Implemented</td></tr>
                         <tr><td><code>monitor.system_interval_sec</code> (default <code>5</code>)</td><td>Minimum seconds between machine-statistics collections for <code>GET /v1/status?system=true</code>; <code>0</code> removes the limit. Startup-read only, like the whole block.</td><td>Implemented</td></tr>
-                        <tr><td><code>127.0.0.1:8766</code></td><td>Status, events, channels, rooms, scripts and modem routes; later room-client removal and script dry runs.</td><td>Phases 1-3 implemented</td></tr>
+                        <tr><td><code>127.0.0.1:8766</code></td><td>Status, events, channels, rooms (including client removal), scripts and modem routes; later script dry runs.</td><td>Phases 1-4 implemented</td></tr>
                     </tbody>
                 </table>
                 <p>The event-ring capacity may be 256 to 65536 events. It is a <strong>count limit, not a guaranteed duration</strong>. A busy network fills the ring sooner than a quiet network.</p>
@@ -251,6 +251,11 @@ curl --fail-with-body "http://127.0.0.1:8766/v1/events?epoch=$EPOCH&amp;after=$A
 curl --fail-with-body http://127.0.0.1:8766/v1/rooms/lobby/clients
 curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</code></pre>
                 <p>Room lists include per-room counters and remembered-client totals. Client roles describe the existing radio login; they are not REST permissions. The room subsystem returns <code>503</code> when disabled.</p>
+                <h3>Remove a Room Client</h3>
+                <p>A room remembers every radio that has logged in. To make it forget one, copy that radio's <code>public_key</code> from the clients list above: 64 hexadecimal characters (the digits 0-9 and the letters a-f). Put the key at the end of the path and send a <code>DELETE</code> request. Replace the placeholder with the key you copied:</p>
+                <pre><code class="language-bash">KEY='replace-with-the-public_key-from-the-clients-list'
+curl --fail-with-body -X DELETE "http://127.0.0.1:8766/v1/rooms/lobby/clients/$KEY"</code></pre>
+                <p>On success KAM answers <code>204</code> with no body, so the command prints nothing. Running it again prints <code>{"error":"client not found"}</code>, because the room has already forgotten that radio. Removal is not a ban: the radio can log in again under the existing room rules.</p>
                 <h3>Query a Signal Reading</h3>
                 <pre><code class="language-bash">curl --fail-with-body -X POST http://127.0.0.1:8766/v1/modem/query \
   -H 'Content-Type: application/json' \
@@ -288,7 +293,7 @@ curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</cod
 
             <section id="reference">
                 <h2>Endpoint Reference</h2>
-                <p>Status, event, channel, room, script and modem endpoints on port 8766 are implemented. Room-client removal, script dry runs and run information remain planned. The listener answers <code>GET /</code> with the routes it serves, implemented ones only. <code>GET</code> reads data, <code>POST</code> requests an action, <code>PUT</code> applies a setting and <code>DELETE</code> removes a record. Paths beginning with <code>/v1</code> identify version 1 of the contract; script routes sit under <code>/scripts</code>.</p>
+                <p>Status, event, channel, room (including client removal), script and modem endpoints on port 8766 are implemented. Script dry runs and run information remain planned. The listener answers <code>GET /</code> with the routes it serves, implemented ones only. <code>GET</code> reads data, <code>POST</code> requests an action, <code>PUT</code> applies a setting and <code>DELETE</code> removes a record. Paths beginning with <code>/v1</code> identify version 1 of the contract; script routes sit under <code>/scripts</code>.</p>
                 <table>
                     <thead><tr><th>Method &amp; path</th><th>Purpose</th></tr></thead>
                     <tbody>
@@ -309,16 +314,16 @@ curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</cod
                         <tr><td><code>GET /v1/rooms</code></td><td>Active rooms, public identities, remembered clients, activity and counters.</td></tr>
                         <tr><td><code>GET /v1/rooms/{id}/clients</code></td><td>Radio-client keys, existing protocol roles, last activity, push state and optional advert labels.</td></tr>
                         <tr><td><code>GET /v1/rooms/{id}/posts</code></td><td>Newest retained posts and authors.</td></tr>
-                        <tr><td><code>DELETE /v1/rooms/{id}/clients/{key}</code></td><td>Forget a session and cancel its pending pushes. This does not ban the radio.</td></tr>
+                        <tr><td><code>DELETE /v1/rooms/{id}/clients/{key}</code></td><td>Forget a remembered client and cancel its pending pushes; returns 204. This does not ban the radio.</td></tr>
                         <tr><td><code>GET /v1/modem</code></td><td>Cached diagnostics; does not send a modem command on each read.</td></tr>
                         <tr><td><code>POST /v1/modem/query</code></td><td>One typed read-only modem command.</td></tr>
                         <tr><td><code>PUT /v1/modem/radio?preview=true</code></td><td>Validate and list intended commands without sending or saving.</td></tr>
                         <tr><td><code>PUT /v1/modem/radio</code></td><td>Apply, check echo, save and recover on failure.</td></tr>
                     </tbody>
                 </table>
-                <p>Use actual ids and public keys in paths, not the braces shown in the table. Room keys are 64 lowercase hexadecimal characters. Times use RFC 3339 UTC timestamps. Unknown measurements are <code>null</code>; empty lists are <code>[]</code>.</p>
-                <p>Removing a room client deletes its session, not its credentials. It may log in again under the existing room rules. No endpoint in this feature changes a radio client's role or edits KAMmon's web users.</p>
-                <p>One caution: draft versions of this manual also listed <code>DELETE /v1/rooms/{id}/clients/{key}</code> above. That endpoint remains planned, so today the reply is the standard <code>404</code> for an unknown path. <code>GET /v1/modem</code> and the other modem rows below are served; see <a href="#modem">Modem Changes</a>.</p>
+                <p>Use actual ids and public keys in paths, not the braces shown in the table. Room keys are 64 hexadecimal characters; KAM lists them in lowercase and accepts either case in a path. Times use RFC 3339 UTC timestamps. Unknown measurements are <code>null</code>; empty lists are <code>[]</code>.</p>
+                <p>Removing a room client deletes its session, not its credentials. Until the radio logs in again, the room ignores its posts and requests and pushes nothing to it. A login with a blank password no longer resumes the old session; it is checked like any new login, so it only gets in where the room accepts a blank password (<code>open_room</code> or <code>allow_read_only</code>). No endpoint in this feature changes a radio client's role or edits KAMmon's web users.</p>
+                <p>The removal answers <code>204</code> when the room forgot the client, <code>400</code> when the key is not 64 hexadecimal characters, <code>404</code> for an unknown room or a client the room does not remember, <code>500</code> when the database delete failed (the client is kept unchanged, so you can retry) and <code>503</code> when rooms are disabled. Each removal adds a <code>client_removed</code> room event to the event history.</p>
             </section>
 
             <section id="modem">
@@ -370,7 +375,7 @@ curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</cod
                 </ul>
             </section>
         </article>
-        <footer>Backend API manual. Updated 7 November 2026. Phases 1-3 are implemented; room-client removal, script dry runs and real-radio acceptance remain pending.</footer>
+        <footer>Backend API manual. Updated 9 November 2026. Phases 1-4 are implemented; script dry runs and real-radio acceptance remain pending.</footer>
     </main>
 </body>
 </html>

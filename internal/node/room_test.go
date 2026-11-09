@@ -3,12 +3,17 @@ package node
 import (
 	"context"
 	crand "crypto/rand"
+	"encoding/hex"
+	"errors"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"kam.bytecoder.nl/internal/api"
 	"kam.bytecoder.nl/internal/db"
+	"kam.bytecoder.nl/internal/events"
 	"kam.bytecoder.nl/internal/kiss"
 	"kam.bytecoder.nl/internal/mesh"
 	"kam.bytecoder.nl/internal/models"
@@ -153,5 +158,71 @@ func TestRoomLoginThroughTheRadioPipeline(t *testing.T) {
 	}
 	if stats := service.Stats(); stats.LoginsOK != 1 {
 		t.Fatalf("stats: %+v", stats)
+	}
+}
+
+// A DELETE through the API reaches the room worker via the adapter: the stored
+// record and the session go, and a second removal is the API's 404.
+func TestRoomClientRemovalThroughTheAPI(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "kam.db")
+	repository, err := db.OpenRoomRepository(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	notReserved := func(byte) bool { return false }
+	roomID, err := mesh.GenerateIdentity(crand.Reader, notReserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := mesh.GenerateIdentity(crand.Reader, notReserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := client.PublicKey()
+	if err := repository.SaveClients(ctx, "lobby", []db.RoomClient{{PublicKey: key[:], Role: room.RoleReadWrite}}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := room.NewService(room.Options{
+		Rooms:       []room.Spec{{Config: testRoomConfig(), Identity: roomID}},
+		Mesh:        models.DefaultMeshConfig(),
+		Store:       repository,
+		Transmitter: discardingTransmitter{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Start()
+	t.Cleanup(service.Stop)
+
+	source := apiRooms{service: service, repository: repository}
+	handler := api.NewHandlerWithResources(apiEvents{events.NewRing(16)}, func() api.Status { return api.Status{} }, nil, nil, source, nil, nil)
+	remove := func(code int) string {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest("DELETE", "http://127.0.0.1/v1/rooms/lobby/clients/"+hex.EncodeToString(key[:]), nil))
+		if response.Code != code {
+			t.Fatalf("got %d: %s", response.Code, response.Body)
+		}
+		return response.Body.String()
+	}
+	if rooms, err := source.Rooms(ctx); err != nil || rooms[0].ClientsRemembered != 1 {
+		t.Fatalf("setup: the stored client was not loaded: %+v, %v", rooms, err)
+	}
+
+	remove(204)
+	if stored, err := repository.LoadClients(ctx, "lobby"); err != nil || len(stored) != 0 {
+		t.Fatalf("stored clients after removal: %+v, %v", stored, err)
+	}
+	if rooms, err := source.Rooms(ctx); err != nil || rooms[0].ClientsRemembered != 0 {
+		t.Fatalf("rooms after removal: %+v, %v", rooms, err)
+	}
+	if body := remove(404); body != `{"error":"client not found"}` {
+		t.Fatalf("second removal: %s", body)
+	}
+	if err := source.RemoveClient(ctx, "lobby", key); !errors.Is(err, api.ErrRoomClientNotFound) {
+		t.Fatalf("adapter error for an unknown client: %v", err)
 	}
 }

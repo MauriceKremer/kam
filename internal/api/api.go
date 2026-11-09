@@ -7,13 +7,15 @@
 // The package is transport only: it implements no KAM capability and imports
 // nothing from this repository except internal/models (shared data types).
 // Capabilities are handed in through the seams below — a scripts source, an
-// events source, a status function, and the channel/room readers — and are
-// composed in internal/node. See docs/FeatureUnifiedApi.md.
+// events source, a status function, a channel reader and a room source — and
+// are composed in internal/node. See docs/FeatureUnifiedApi.md.
 package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"mime"
 	"net"
@@ -127,11 +129,20 @@ type RoomPost struct {
 	Body      string    `json:"body"`
 }
 
-type RoomReader interface {
+// RoomSource is the rooms seam: three reads and the removal of one remembered
+// client.
+type RoomSource interface {
 	Rooms(context.Context) ([]Room, error)
 	Clients(context.Context, string) ([]RoomClient, error)
 	Posts(context.Context, string, int) ([]RoomPost, error)
+	// RemoveClient forgets one client of a room. It returns an error that
+	// wraps ErrRoomClientNotFound when the room has no such client.
+	RemoveClient(ctx context.Context, roomID string, publicKey [32]byte) error
 }
+
+// ErrRoomClientNotFound is the RoomSource answer for a client the room does
+// not remember; the handler turns it into 404.
+var ErrRoomClientNotFound = errors.New("room client not found")
 
 type RadioStatus struct {
 	FrequencyHz     uint32 `json:"frequency_hz"`
@@ -244,7 +255,7 @@ func NewHandlerWithChannels(ring EventsSource, status func() Status, channels Ch
 // NewHandlerWithResources composes the whole listener. system hands in the
 // throttled host-snapshot collector; nil hides the system section even when a
 // request asks for it.
-func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomReader, modem ModemSource, system func() *SystemStatus) http.Handler {
+func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomSource, modem ModemSource, system func() *SystemStatus) http.Handler {
 	mux := http.NewServeMux()
 	registerScriptRoutes(mux, scripts)
 	registerModemRoutes(mux, modem)
@@ -429,6 +440,37 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 		}
 		writeJSON(w, 200, map[string]any{"room": id, "posts": posts})
 	})
+	mux.HandleFunc("DELETE /v1/rooms/{id}/clients/{key}", func(w http.ResponseWriter, request *http.Request) {
+		if rooms == nil {
+			writeJSON(w, 503, map[string]string{"error": "rooms are disabled"})
+			return
+		}
+		id := request.PathValue("id")
+		known, err := roomExists(request.Context(), rooms, id)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "could not read rooms"})
+			return
+		}
+		if !known {
+			writeJSON(w, 404, map[string]string{"error": "room not found"})
+			return
+		}
+		key, ok := parsePublicKey(request.PathValue("key"))
+		if !ok {
+			writeJSON(w, 400, map[string]string{"error": "key must be a 64-character hex public key"})
+			return
+		}
+		err = rooms.RemoveClient(request.Context(), id, key)
+		if errors.Is(err, ErrRoomClientNotFound) {
+			writeJSON(w, 404, map[string]string{"error": "client not found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "could not remove room client"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	indexHandler := func(w http.ResponseWriter, request *http.Request) {
 		endpoints := []apiEndpoint{
 			{Method: "GET", Path: "/v1/status", Purpose: "one snapshot of the running node; add ?system=true for machine memory, cpu, disk and database size"},
@@ -444,6 +486,7 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 			apiEndpoint{Method: "GET", Path: "/v1/rooms", Purpose: "rooms with counters; 503 when rooms are disabled"},
 			apiEndpoint{Method: "GET", Path: "/v1/rooms/{id}/clients", Purpose: "remembered clients of one room"},
 			apiEndpoint{Method: "GET", Path: "/v1/rooms/{id}/posts", Purpose: "retained posts, newest first"},
+			apiEndpoint{Method: "DELETE", Path: "/v1/rooms/{id}/clients/{key}", Purpose: "forget one client's session and pending pushes; not a ban"},
 			apiEndpoint{Method: "GET", Path: "/scripts", Purpose: "list all scripts"},
 			apiEndpoint{Method: "POST", Path: "/scripts", Purpose: "create a script (expected_revision 0)"},
 			apiEndpoint{Method: "GET", Path: "/scripts/{id}", Purpose: "read one script"},
@@ -521,8 +564,19 @@ func loopbackHost(hostport string) bool {
 	return err == nil && address.IsLoopback()
 }
 
-func roomExists(ctx context.Context, reader RoomReader, id string) (bool, error) {
-	rooms, err := reader.Rooms(ctx)
+// parsePublicKey decodes a path key of exactly 64 hex characters, in either
+// letter case.
+func parsePublicKey(text string) ([32]byte, bool) {
+	var key [32]byte
+	if len(text) != hex.EncodedLen(len(key)) {
+		return key, false
+	}
+	_, err := hex.Decode(key[:], []byte(text))
+	return key, err == nil
+}
+
+func roomExists(ctx context.Context, source RoomSource, id string) (bool, error) {
+	rooms, err := source.Rooms(ctx)
 	if err != nil {
 		return false, err
 	}
