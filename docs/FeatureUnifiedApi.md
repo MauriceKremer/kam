@@ -48,7 +48,7 @@ Plain words for terms used below:
 
 **Non-goals**
 
-- New endpoints. Room-client removal and script dry runs/run info remain planned ([FeatureKamApi.md §7 and §10](FeatureKamApi.md)); the modem snapshot/apply routes that §7 lists landed directly on this unified listener when their phase shipped. This feature moved wiring, not features.
+- New endpoints. Script dry runs/run info remain planned ([FeatureKamApi.md §7 and §10](FeatureKamApi.md)); the modem snapshot/apply routes and the room-client removal that §7 lists landed directly on this unified listener when their phases shipped. This feature moved wiring, not features.
 - Authentication, TLS, CORS, WebSockets, or any change to the loopback-only posture (FeatureKamApi D12, kept).
 - A new configuration schema. `monitor.enabled`, `monitor.listen` and `monitor.event_ring` keep working exactly as today (§4.5, D2).
 - Any change to existing response shapes. Script JSON and monitor JSON stay byte-identical apart from the unifications §4.5 states once (rows 5, 6 and 8); no resource gains or loses a field.
@@ -109,7 +109,7 @@ The line, applied to today's code: the handler defaulting `timeout_ms` to 500 ([
 | Status | `func() api.Status` (plain function, as today) | Existing status closure in `node.startMonitor` ([NODE]) | `node.startMonitor` |
 | Events | `api.EventsSource`: `Page` returns the wire shape (`EventsResponse`), `Stats` the ring snapshot | The `internal/events` ring behind a small field-copy adapter in `internal/node` (D5) | `node.startMonitor` |
 | Channels | `api.ChannelReader` (exists as `monitor.ChannelReader`, moved unchanged) | Existing `monitorChannels` adapter in [NODE] | `node.startMonitor` |
-| Rooms | `api.RoomReader` (exists as `monitor.RoomReader`, moved unchanged) | Existing `monitorRooms` adapter in [NODE] | `node.startMonitor` |
+| Rooms | `api.RoomReader` (exists as `monitor.RoomReader`, moved unchanged). Renamed `api.RoomSource` when [FeatureKamApi.md](FeatureKamApi.md) phase 4 added `RemoveClient`; its not-found answer is the API's own `ErrRoomClientNotFound`, wrapped by the adapter. | Existing `monitorRooms` adapter in [NODE] | `node.startMonitor` |
 
 The ring's seam exists for the dependency rule, not for polymorphism (D5): it has no alternative implementation worth one, the monitor tests exercise the real ring through the same adapter shape node uses, and [FeatureKamApi.md API-EV-10](FeatureKamApi.md) concerns its locking, not its interface. The plan first handed the concrete `*events.Ring` to the handler, but that parameter forces an `internal/events` import into `internal/api` — the guard test (UA-T-1/D10) failed on its first run and the seam won by the exact mechanism this feature built to enforce its own rule. The same logic settled how script errors cross the seam (D8's refinement): the handler can never apply `errors.Is` against `automation.ErrScriptNotFound` without importing `automation`, so the `Scripts` errors are classified at the seam — node's adapter wraps the capability's sentinels into `*api.ScriptError` (class + the capability's own message), and the handler maps class → status. `MonitorStats` stays on the runtime rather than the seam: the status snapshot is composition-root code, which may name the capability it composes.
 

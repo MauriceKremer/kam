@@ -376,7 +376,7 @@ Status as of 2026-10-10. **Done** means implemented and covered by tests (see §
 | RS-CFG-1, RS-CFG-3 | Done | `rooms:` and `mesh:` blocks; an invalid room stays disabled (`KamConfig.ResolveRooms`). `txdelay` stays under `radio.csma` ([FeatureKissModem.md](FeatureKissModem.md)). |
 | RS-CFG-2 | Done | Passwords are plain text in `kam.yml`, like channel keys (D11). The generated identity key is its own file. |
 | RS-OPS-1 | Partly | Counters in `room.Stats` and `TxScheduler.Stats`; room statistics are logged at shutdown; no export. |
-| RS-OPS-2 | Deferred | D17. |
+| RS-OPS-2 | Partly | The KAM API lists rooms (public key, counters), clients and posts, and removes a client ([FeatureKamApi.md](FeatureKamApi.md) §7.3). Role setting is withdrawn there (FeatureKamApi D11). Creating or deleting posts, forcing an advert and showing the advert have no endpoint yet (D17). |
 | RS-OPS-3, RS-OPS-4, RS-OPS-5 | Done | Intake, then automation, rooms, scheduler, manager; a room that cannot start never stops ingestion; a start-up warning when the host clock is earlier than the newest stored post. |
 | RS-MULTI-1 .. RS-MULTI-5 | Done | Up to 10 rooms (D13). Regeneration avoids hash collisions at creation; keys that already collide are used and logged, and the first MAC that verifies wins. |
 
@@ -527,7 +527,7 @@ No time estimates. Each phase ends with an observable exit criterion.
 
 - Phase 0: paused (2026-10-18) — the captures from a real room server are not possible at the moment: the login/push/status capture (golden files and the `ServerStats` layout, R6) needs a second device running MeshCore room-server firmware. Interoperability is validated instead by the operator subscribing to KAM while it runs, against the §12 scenarios, with the hosted rooms advertised at start-up (RS-ADV-6). The modem-side measurements ran 2026-10-18 ([FeatureKissModem.md](FeatureKissModem.md) §11): TXDELAY adds 0.3-0.6 s per transmission at the 500 ms default, and the modem's `airtime(255)` reading of 848 ms scales to roughly 0.55 s for a 166-byte post, consistent with the R3 estimate; the duty-cycle ledger still needs confirmation against real catch-up traffic.
 - Phases 1-3: done (§6.14).
-- Phase 4: the duty-cycle cap, retention pruning, counters and start-up validation are done; the status reply, counter export, and KAM API endpoints are open; operator documentation is in the README and the manual.
+- Phase 4: the duty-cycle cap, retention pruning, counters and start-up validation are done; the status reply and counter export are open; the KAM API endpoints are partly done (2026-11-09: room reads and client removal, see RS-OPS-2); operator documentation is in the README and the manual.
 - Phase 5: open.
 
 ## 12. Verification
@@ -553,4 +553,4 @@ Not covered by automated tests: a real radio or MeshCore client — validated by
 
 - Whether KAM should also act as a **client** of other room servers (for example to fetch their status for the operator metrics surface in [SYSTEM_DESIGN.md §8](SYSTEM_DESIGN.md)). It reuses the same crypto and envelope but is a separate feature.
 - `docs/qr_codes.md` was read: a contact is shared as `meshcore://contact/add?name=...&public_key=<64 hex>&type=3` (`kam room show` prints it). `docs/number_allocations.md` was not read; check it if registered data types matter.
-- Deferred from this round: status/telemetry/access-list replies, the KAM API endpoints for rooms, system posts, the over-the-air CLI, `GetAirtime` accounting, and a Go fuzz target for the parsers.
+- Deferred from this round: status/telemetry/access-list replies, the remaining KAM API endpoints for rooms (RS-OPS-2), system posts, the over-the-air CLI, `GetAirtime` accounting, and a Go fuzz target for the parsers.

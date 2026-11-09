@@ -2,13 +2,14 @@
 
 This is the reference for the REST endpoints KAM serves **today**. It lists only
 implemented endpoints, with their parameters and responses. Planned endpoints
-(room-client removal, script dry runs and run info) live in
+(script dry runs and run info) live in
 [FeatureKamApi.md](FeatureKamApi.md) §7 and §10; they are not described here.
 
 KAM serves one small REST API, loopback-only and without authentication, at
-`monitor.listen` (default `127.0.0.1:8766`). It hosts the read-only data
-surfaces (status, events, channels, rooms), Starlark
-script management, and the modem snapshot/query/radio routes. The separate
+`monitor.listen` (default `127.0.0.1:8766`). It hosts the data surfaces
+(status, events, channels, rooms), Starlark script management, and the
+modem snapshot/query/radio routes. The data surfaces only read, except for one
+route that removes a remembered room client. The separate
 script listener on port `8765` is retired; scripts live
 on the address above since the two APIs merged.
 
@@ -22,7 +23,7 @@ curl -s http://127.0.0.1:8766/scripts
 `monitor.enabled: false` in `kam.yml` closes the listener and turns the event
 recorder off: nothing answers on the port, and scripts keep running but can no
 longer be managed or observed. If the automation database cannot be opened,
-automation stays off: the read-only surfaces work, every script route answers
+automation stays off: the data surfaces work, every script route answers
 `503 {"error":"automation is disabled"}`, and KAM logs the reason.
 
 ## Rules
@@ -82,7 +83,7 @@ matches the endpoints documented here.
 
 ## Scripts (Starlark automation)
 
-Script routes share the listener with the read-only data surfaces below and use the
+Script routes share the listener with the data surfaces below and use the
 same rules. With the defaults they are at `127.0.0.1:8766`.
 
 ### The script object
@@ -225,7 +226,7 @@ useless (epoch changed, or events were dropped from the ring); start over with
 | `advert_role` | Advert role, when the packet carried one. |
 | `ok` | `tx` only: the modem acknowledged the send. |
 | `origin` | `tx` only: who produced the frame — `advert`, `room`, or `other`. |
-| `event`, `client`, `role` | `room` only: one of `login_ok`, `login_failed`, `login_rate_limited`, `post`, `post_rejected`, `push_sent`, `push_acked`, `push_timeout`, the client's public key, and its role. |
+| `event`, `client`, `role` | `room` only: one of `login_ok`, `login_failed`, `login_rate_limited`, `post`, `post_rejected`, `push_sent`, `push_acked`, `push_timeout`, `client_removed`, the client's public key, and its role. |
 
 Example, abridged:
 
@@ -286,7 +287,7 @@ curl -s 'http://127.0.0.1:8766/v1/channels/%23emmen/messages?limit=10'
 ### GET /v1/rooms
 
 All configured rooms with their live counters. When the room subsystem is off,
-this (and the two room endpoints below) return `503 {"error": "rooms are
+this and the other room endpoints below return `503 {"error": "rooms are
 disabled"}`. Counter totals reset when KAM starts.
 
 | Field | Meaning |
@@ -323,6 +324,35 @@ timestamp, `created_at`, `author_key`, `body`).
 
 ```sh
 curl -s 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=5'
+```
+
+### DELETE /v1/rooms/{id}/clients/{key}
+
+Makes the room forget one client. KAM deletes the client's stored record, drops
+its session and withdraws any post still waiting to be pushed to it. `key` is
+the client's `public_key` from `GET /v1/rooms/{id}/clients`: 64 hex
+characters, upper or lower case. There is no request body.
+
+This is **not a ban**. The client can log in again under the room's usual
+rules and then starts as a new client. Until then the room ignores its posts
+and requests and pushes nothing to it. A login with a blank password no longer
+resumes the old session: it is checked like any new login, so it only gets in
+where a blank password is accepted (`open_room` or `allow_read_only`).
+
+| Status | When |
+|---|---|
+| `204` | Removed; the response has no body. |
+| `400` | `key` is not 64 hex characters. |
+| `404` | Unknown room (`room not found`) or the room does not remember this client (`client not found`). |
+| `500` | The database delete failed. The client is kept exactly as it was, so you can simply retry. |
+| `503` | The room subsystem is off (`rooms are disabled`). |
+
+A removal adds a `client_removed` room event to `GET /v1/events`.
+
+```sh
+# Prints 204 when the client was removed.
+curl -s -X DELETE -w '%{http_code}\n' \
+  http://127.0.0.1:8766/v1/rooms/lobby/clients/ed8342bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ```
 
 ## Modem monitoring and radio changes — /v1/modem
@@ -456,7 +486,7 @@ capability gets `503`.
 
 ## What is deliberately not here
 
-Room client removal, script run info and dry runs, and per-script event streams
-are planned but not implemented yet; see [FeatureKamApi.md](FeatureKamApi.md)
-§7 and §10 until they ship.
+Script run info and dry runs, and per-script event streams are planned but not
+implemented yet; see [FeatureKamApi.md](FeatureKamApi.md) §7 and §10 until
+they ship.
 When an endpoint ships, it moves into this document.

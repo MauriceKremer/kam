@@ -112,14 +112,16 @@ KAM serves one loopback REST API — the **KAM API** — on `127.0.0.1:8766`. It
 hosts the read-only data surfaces — `GET /v1/status` and `GET /v1/events`,
 channel history (`GET /v1/channels`, `GET /v1/channels/{name}/messages`) and
 room data (`GET /v1/rooms`, `GET /v1/rooms/{id}/clients`,
-`GET /v1/rooms/{id}/posts`) — plus, on the same listener, script management
+`GET /v1/rooms/{id}/posts`) — and `DELETE /v1/rooms/{id}/clients/{key}`,
+which makes a room forget one client (not a ban: it can log in again). The
+same listener also serves script management
 ([Automation](#automation-starlark-scripts)) and modem monitoring and radio
 control: `GET /v1/modem` (a cached snapshot refreshed every 10 s),
 `POST /v1/modem/query` (one read-only command) and `PUT /v1/modem/radio`
 (validate, apply, check the echo, save `radio:` to `kam.yml`; `?preview=true`
 lists the steps without sending). The listener answers `GET /` with the routes
 it serves. No dashboard is required: KAM continues its radio work without API
-clients. Room-client removal and dry-run endpoints remain planned; parameters
+clients. Script dry-run endpoints remain planned; parameters
 and responses are documented in [`docs/APIdetails.md`](docs/APIdetails.md).
 
 ```yaml

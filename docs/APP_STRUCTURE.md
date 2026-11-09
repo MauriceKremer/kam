@@ -166,7 +166,7 @@ Room servers are implemented for plan phases 1-3; the requirements, decisions an
 - Each room has its own Ed25519 identity, stored as a hex seed in `<database directory>/rooms/<id>.key` (mode `0600`). The public key is the room's address.
 - `kam room show` prints each room's public key, a `meshcore://contact/add` URI and the signed advert as hex, creating a missing identity file first.
 - An invalid room is reported and stays disabled; other rooms and radio ingestion are unaffected.
-- The loopback local REST API exposes read-only room summaries, clients, and posts. Client removal remains planned with the KAM API phase 4. Status, telemetry and access-list requests (no reply), the over-the-air CLI, and the post-v1 items in FeatureRoomServer §11 are not implemented.
+- The loopback local REST API exposes room summaries, clients, and posts, and can make a room forget one client (`DELETE /v1/rooms/{id}/clients/{key}`; not a ban). Status, telemetry and access-list requests (no reply), the over-the-air CLI, and the post-v1 items in FeatureRoomServer §11 are not implemented.
 
 ## Source Map
 
