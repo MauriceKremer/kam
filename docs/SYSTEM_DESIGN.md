@@ -119,7 +119,7 @@ send.Sender  --> kiss.TxScheduler (legacy TxChan adapter, queued as group text)
 | Package | Role |
 |---|---|
 | `main` | Flag parse, slog setup, load `kam.yml`, build `Node`, block on SIGINT/SIGTERM. Also the short-lived `channel upsert` and `room show` commands. |
-| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*kiss.TxScheduler`, `*send.Sender`, the optional `*automation.Runtime` and the optional `*room.Service` with its repository. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg, creates the scheduler, then (best effort) starts the rooms and the automation runtime. `startMonitor` builds the unified local API handler from capability adapters and owns its HTTP server; when the API is enabled it also runs the modem refresh loop (`internal/node/modem.go`) behind the `/v1/modem` routes, and `node.Run` starts the 500 ms config watcher and the 30 s radio health probe. `Run` blocks until ctx cancelled or the modem link is lost, then shuts down in the order of §6. |
+| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*kiss.TxScheduler`, `*send.Sender`, the optional `*automation.Runtime` and the optional `*room.Service` with its repository. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg, creates the scheduler, then (best effort) starts the rooms and the automation runtime. `startAPI` in `internal/node/api.go` composes capability adapters and owns the unified local HTTP server; status assembly is in `status.go`, with events, channels, and rooms adapters in their own files. When the API is enabled, the node also runs the modem refresh loop (`internal/node/modem.go`) behind the `/v1/modem` routes, and `node.Run` starts the 500 ms config watcher and 30 s radio health probe. `Run` blocks until ctx cancelled or the modem link is lost, then shuts down in the order of §6. |
 | `internal/config` | `LoadKamConfig` (YAML + normalize/validate), `BootstrapChannels` (load `#public` + enabled channels from the config into parser topic registry), `UpsertRuntimeChannelAndApply` (write a runtime channel back into the YAML file + apply live), `ResolveDBPath`. |
 | `internal/models` | Pure config + record structs. Validation lives here, including `MeshConfig`, `RoomConfig` and `KamConfig.ResolveRooms` (an invalid room is disabled, never fatal). |
 | `internal/mesh` | MeshCore wire primitives with no transport dependency: `Packet` parse/encode, `EncryptThenMAC`/`MACThenDecrypt`, `Identity` (Ed25519 + X25519 via `math/big` and `crypto/ecdh`), signed advert payloads, region keys and transport codes, ACK hashes. |
@@ -173,10 +173,10 @@ main goroutine
   |        automation.NewRuntime -> manager.SubscribeGroupText(runtime.Handle)
   |                              -> [automation worker goroutine]   (internal/automation)
   |                              -> [timer loop goroutine]  (one timer, re-armed per wake)
-  |   |- node.startMonitor -> [local API server goroutine on 127.0.0.1:8766]  (internal/api)
-  |   |- node.startMonitor -> [modem event loop]  (kiss_manager.go: routes modem
+  |   |- node.startAPI -> [local API server goroutine on 127.0.0.1:8766]  (internal/api)
+  |   |- node.startAPI -> [modem event loop]  (kiss_manager.go: routes modem
   |   |                              events, incl. link_lost/link_restored, to subscribers)
-  |   |- node.startMonitor -> [modem refresh loop, one batch of reading commands
+  |   |- node.startAPI -> [modem refresh loop, one batch of reading commands
   |   |                      at most every 10 s]                        (internal/node/modem.go)
   |   |- Run also starts a config watcher (polls the YAML every 500 ms, applies
   |   |    runtime channel changes) and a radio health probe (Ping + GetRadio
@@ -210,10 +210,10 @@ main goroutine
 | 5 | advert `writerLoop` | `db.AdvertQueue` | `NewAdvertQueue`→`Stop` | recv `ch`, batch insert into SQLite |
 | 6 | group-text `writerLoop` | `db.GroupTextQueue` | `NewGroupTextQueue`→`Stop` | recv `ch`, batch insert into SQLite |
 | 7 | automation `worker` | `automation.Runtime` | `NewRuntime`→`Stop` | recv bounded `queue`, runs scripts sequentially, `reply` sends via `send.Sender` |
-| 7a | Local API server | `node.startMonitor` / `api.Listen` | node startup→HTTP shutdown | loopback HTTP on `monitor.listen` (default 8766), with at most 8 admitted requests; bounded event pages, script management, SQLite channel/post reads, and worker-owned room snapshots |
+| 7a | Local API server | `node.startAPI` / `api.Listen` | node startup→HTTP shutdown | loopback HTTP on `monitor.listen` (default 8766), with at most 8 admitted requests; bounded event pages, script management, SQLite channel/post reads, and worker-owned room snapshots |
 | 7b | tx scheduler | `kiss.TxScheduler` | `Start`→`Stop` | recv legacy `TxChan` frames, a timer, and `TxDone`/`TxAbandoned` modem events; sends one frame at a time to `Manager.txChan`; a `Pause` during a radio change holds dispatches back without discarding the queue |
 | 7c | room worker | `room.Service` | `Start`→`Stop` | recv a bounded packet queue (64) and a 50 ms tick; owns every room's state; writes `RoomRepository`, submits to the scheduler |
-| 7d | modem refresh loop | `node.startMonitor` (the `modemController`) | monitor start→`modemController.Stop` | a ticker (10 s) plus an immediate-refresh signal; sends a bounded batch of reading commands through `RadioClient`, writes the cache the `/v1/modem` snapshot serves; skips while a radio change runs and yields to it mid-batch |
+| 7d | modem refresh loop | `node.startAPI` (the `modemController`) | API start→`modemController.Stop` | a ticker (10 s) plus an immediate-refresh signal; sends a bounded batch of reading commands through `RadioClient`, writes the cache the `/v1/modem` snapshot serves; skips while a radio change runs and yields to it mid-batch |
 | 8 | (planned) analytics/metrics aggregator | future package | subscribe via `SubscribeGroupText` | same tap pattern as the automation runtime |
 | * | radio request | caller (e.g. `main`/`New`) | per `Get`/`Set` call | take the `requestGate` slot, push `txChan`, block on the pending-request result channel |
 

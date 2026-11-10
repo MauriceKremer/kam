@@ -134,7 +134,7 @@ Findings this plan relies on:
 | AUTO | `internal/automation/runtime.go` (pinned by `git log -1` on implementation day) |
 | DB | `internal/db/automation.go`, `internal/db/rooms.go` |
 | ROOM | `internal/room/room.go`, `internal/room/service.go`, `internal/room/push.go`, `internal/room/send.go` |
-| ADAPT | `internal/node/node.go`, `internal/node/scripts.go`, `internal/node/monitor.go` |
+| ADAPT | `internal/node/node.go`, `internal/node/scripts.go`, `internal/node/api.go`, `internal/node/status.go` |
 | API | `internal/api/api.go`, `internal/api/scripts.go` |
 | MODELS | `internal/models/rooms.go`, `internal/models/monitor.go` |
 | LIB | `go.starlark.net v0.0.0-20261005163335-bcb1a1a55bf9` (`lib/json`, `lib/time`, `starlarkstruct`, `syntax`) |
