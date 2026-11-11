@@ -16,7 +16,7 @@ import (
 	"kam.bytecoder.nl/internal/models"
 )
 
-func TestMonitorDisabledOrBindFailureKeepsManagerAlive(t *testing.T) {
+func TestAPIDisabledOrBindFailureKeepsManagerAlive(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -30,9 +30,9 @@ func TestMonitorDisabledOrBindFailureKeepsManagerAlive(t *testing.T) {
 		manager := &kiss.Manager{}
 		manager.TestInit()
 		node := &Node{manager: manager}
-		node.startMonitor(&models.KamConfig{Monitor: &settings}, nil, 0, nil)
-		if node.monitorServer != nil || manager.Err() != nil {
-			t.Fatal("monitor failure affected radio lifecycle")
+		node.startAPI(&models.KamConfig{Monitor: &settings}, nil, 0, nil)
+		if node.apiServer != nil || manager.Err() != nil {
+			t.Fatal("API failure affected radio lifecycle")
 		}
 		select {
 		case <-manager.Done():
@@ -43,7 +43,7 @@ func TestMonitorDisabledOrBindFailureKeepsManagerAlive(t *testing.T) {
 	}
 }
 
-func TestMonitorStatusWithoutAutomation(t *testing.T) {
+func TestAPIStatusWithoutAutomation(t *testing.T) {
 	manager := &kiss.Manager{}
 	manager.TestInit()
 	scheduler := kiss.NewTxScheduler(manager, kiss.TxSchedulerConfig{})
@@ -52,12 +52,12 @@ func TestMonitorStatusWithoutAutomation(t *testing.T) {
 	settings := models.DefaultMonitorConfig()
 	settings.Listen = "127.0.0.1:0"
 	node := &Node{manager: manager, scheduler: scheduler, radio: kiss.NewRadioClient(manager), radioState: &radioRuntime{echo: &kiss.RadioConfig{Frequency: 868000000, Bandwidth: 125000, SpreadingFactor: 8, CodingRate: 5}}}
-	node.startMonitor(&models.KamConfig{NodeName: "test", Monitor: &settings, Channels: []models.ChannelConfig{{Name: "#private", KeyHex: "secret-key"}}, Rooms: []models.RoomConfig{{AdminPassword: "secret-password"}}}, nil, 0, nil)
-	if node.monitorServer == nil {
-		t.Fatal("monitor did not start independently")
+	node.startAPI(&models.KamConfig{NodeName: "test", Monitor: &settings, Channels: []models.ChannelConfig{{Name: "#private", KeyHex: "secret-key"}}, Rooms: []models.RoomConfig{{AdminPassword: "secret-password"}}}, nil, 0, nil)
+	if node.apiServer == nil {
+		t.Fatal("API did not start independently")
 	}
-	defer node.monitorServer.Close()
-	response, err := http.Get("http://" + node.monitorServer.Addr + "/v1/status")
+	defer node.apiServer.Close()
+	response, err := http.Get("http://" + node.apiServer.Addr + "/v1/status")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestMonitorStatusWithoutAutomation(t *testing.T) {
 	}
 }
 
-func TestMonitorStatusSystemSection(t *testing.T) {
+func TestAPIStatusSystemSection(t *testing.T) {
 	manager := &kiss.Manager{}
 	manager.TestInit()
 	scheduler := kiss.NewTxScheduler(manager, kiss.TxSchedulerConfig{})
@@ -95,12 +95,12 @@ func TestMonitorStatusSystemSection(t *testing.T) {
 	settings := models.DefaultMonitorConfig()
 	settings.Listen = "127.0.0.1:0"
 	node := &Node{manager: manager, scheduler: scheduler, radio: kiss.NewRadioClient(manager), radioState: &radioRuntime{}, dbPath: dbPath}
-	node.startMonitor(&models.KamConfig{NodeName: "test", Monitor: &settings}, nil, 0, nil)
-	if node.monitorServer == nil {
-		t.Fatal("monitor did not start")
+	node.startAPI(&models.KamConfig{NodeName: "test", Monitor: &settings}, nil, 0, nil)
+	if node.apiServer == nil {
+		t.Fatal("API did not start")
 	}
-	defer node.monitorServer.Close()
-	response, err := http.Get("http://" + node.monitorServer.Addr + "/v1/status?system=true")
+	defer node.apiServer.Close()
+	response, err := http.Get("http://" + node.apiServer.Addr + "/v1/status?system=true")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestMonitorStatusSystemSection(t *testing.T) {
 	if system.CollectedAt.After(time.Now()) {
 		t.Fatalf("collected_at must be a real timestamp: %v", system.CollectedAt)
 	}
-	cached, err := http.Get("http://" + node.monitorServer.Addr + "/v1/status?system=true")
+	cached, err := http.Get("http://" + node.apiServer.Addr + "/v1/status?system=true")
 	if err != nil {
 		t.Fatal(err)
 	}

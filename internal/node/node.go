@@ -43,7 +43,7 @@ type Node struct {
 	rooms                *room.Service
 	roomRepository       *db.RoomRepository
 	unsubscribePackets   func()
-	monitorServer        *http.Server
+	apiServer            *http.Server
 	unsubscribe          func()
 	configPath           string
 	dbPath               string
@@ -201,7 +201,7 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 		dbPath:               dbPath,
 		radioState:           radioState,
 	}
-	node.startMonitor(cfg, persistence, len(roomConfigs), probes.signalReport)
+	node.startAPI(cfg, persistence, len(roomConfigs), probes.signalReport)
 	return node, nil
 }
 
@@ -425,10 +425,10 @@ func (n *Node) Run(ctx context.Context) error {
 	stopHealth()
 	stopWatcher()
 	<-watchDone
-	if n.monitorServer != nil {
+	if n.apiServer != nil {
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := n.monitorServer.Shutdown(shutdown); err != nil {
-			_ = n.monitorServer.Close()
+		if err := n.apiServer.Shutdown(shutdown); err != nil {
+			_ = n.apiServer.Close()
 		}
 		cancel()
 		if n.modem != nil {

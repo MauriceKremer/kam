@@ -66,7 +66,7 @@ Sources are KAM's own code and docs; this feature has no external protocol surfa
 | `API-A-T` | [internal/automation/runtime_test.go](../internal/automation/runtime_test.go) | Current script-API test style: real runtime + real SQLite (`openTestRepository`) |
 | `API-M` | `internal/monitor/api.go` (pre-cutover; dissolved into `internal/api`, see §4.4) | Monitor routes, ring, middlewares, index, `ChannelReader`/`RoomReader` seams |
 | `API-M-T` | `internal/monitor/api_test.go` (pre-cutover; split into `internal/api` and `internal/events` tests) | Fake-reader test precedent (`testChannelReader`, `testRoomReader`); ring lock test (`TestSlowReaderDoesNotHoldRingLock`); concurrency limit test |
-| `NODE` | [internal/node/node.go](../internal/node/node.go), [internal/node/monitor.go](../internal/node/monitor.go) | Composition root today: startup flags, shutdown order, `monitorChannels`/`monitorRooms` adapters, status closure |
+| `NODE` | [internal/node/node.go](../internal/node/node.go), [internal/node/api.go](../internal/node/api.go), [internal/node/status.go](../internal/node/status.go) | Composition root today: startup, shutdown, API adapters, status assembly |
 | `MODELS` | [internal/models/monitor.go](../internal/models/monitor.go) | `MonitorConfig` (defaults, validation), `MonitorSink { Record(MonitorEvent) }`, `MonitorEvent` wire shape |
 | `AGENTS` | [AGENTS.md](../AGENTS.md) | Philosophy, and the rule that API docs and the `endpoints` slices must change together |
 | `APS` | [docs/APP_STRUCTURE.md](APP_STRUCTURE.md) | Package responsibilities, the `MonitorSink` separation sentence, the automation row that teaches the wrong home |
@@ -105,11 +105,11 @@ The line, applied to today's code: the handler defaulting `timeout_ms` to 500 ([
 
 | Seam | Shape | Implementation | Wired in |
 |---|---|---|---|
-| Scripts | `api.Scripts` interface: `List`, `Get`, `Save`, `Delete`, `SetEnabled`, `Recover`, `Validate` | Adapter in `internal/node` over `automation.Runtime` (maps `db.AutomationScript` ↔ `api.Script`; D6) | `node.startMonitor` |
-| Status | `func() api.Status` (plain function, as today) | Existing status closure in `node.startMonitor` ([NODE]) | `node.startMonitor` |
-| Events | `api.EventsSource`: `Page` returns the wire shape (`EventsResponse`), `Stats` the ring snapshot | The `internal/events` ring behind a small field-copy adapter in `internal/node` (D5) | `node.startMonitor` |
-| Channels | `api.ChannelReader` (exists as `monitor.ChannelReader`, moved unchanged) | Existing `monitorChannels` adapter in [NODE] | `node.startMonitor` |
-| Rooms | `api.RoomReader` (exists as `monitor.RoomReader`, moved unchanged). Renamed `api.RoomSource` when [FeatureKamApi.md](FeatureKamApi.md) phase 4 added `RemoveClient`; its not-found answer is the API's own `ErrRoomClientNotFound`, wrapped by the adapter. | Existing `monitorRooms` adapter in [NODE] | `node.startMonitor` |
+| Scripts | `api.Scripts` interface: `List`, `Get`, `Save`, `Delete`, `SetEnabled`, `Recover`, `Validate` | Adapter in `internal/node/scripts.go` over `automation.Runtime` (maps `db.AutomationScript` ↔ `api.Script`; D6) | `node.startAPI` |
+| Status | `func() api.Status` (plain function) | Status provider assembled in `internal/node/status.go` | `node.startAPI` |
+| Events | `api.EventsSource`: `Page` returns the wire shape (`EventsResponse`), `Stats` the ring snapshot | The `internal/events` ring behind a small field-copy adapter in `internal/node/events.go` (D5) | `node.startAPI` |
+| Channels | `api.ChannelReader` (exists as `monitor.ChannelReader`, moved unchanged) | Adapter in `internal/node/channels.go` | `node.startAPI` |
+| Rooms | `api.RoomReader` (exists as `monitor.RoomReader`, moved unchanged). Renamed `api.RoomSource` when [FeatureKamApi.md](FeatureKamApi.md) phase 4 added `RemoveClient`; its not-found answer is the API's own `ErrRoomClientNotFound`, wrapped by the adapter. | Adapter in `internal/node/rooms.go` | `node.startAPI` |
 
 The ring's seam exists for the dependency rule, not for polymorphism (D5): it has no alternative implementation worth one, the monitor tests exercise the real ring through the same adapter shape node uses, and [FeatureKamApi.md API-EV-10](FeatureKamApi.md) concerns its locking, not its interface. The plan first handed the concrete `*events.Ring` to the handler, but that parameter forces an `internal/events` import into `internal/api` — the guard test (UA-T-1/D10) failed on its first run and the seam won by the exact mechanism this feature built to enforce its own rule. The same logic settled how script errors cross the seam (D8's refinement): the handler can never apply `errors.Is` against `automation.ErrScriptNotFound` without importing `automation`, so the `Scripts` errors are classified at the seam — node's adapter wraps the capability's sentinels into `*api.ScriptError` (class + the capability's own message), and the handler maps class → status. `MonitorStats` stays on the runtime rather than the seam: the status snapshot is composition-root code, which may name the capability it composes.
 

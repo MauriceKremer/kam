@@ -19,7 +19,7 @@ identity and disabled automation measurements may be null. Room-post/script-even
 streams and the remaining resource endpoints are not part of this delivery.
 
 Tests are in `internal/api/api_test.go`, `internal/kiss/monitor_test.go`,
-`internal/models/monitor_test.go` and `internal/node/monitor_test.go`. No new
+`internal/models/monitor_test.go` and `internal/node/api_test.go`. No new
 dependency, client registry, event database or event-processing worker is added.
 
 ### Phase 2 Delivery
