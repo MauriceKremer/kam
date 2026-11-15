@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,6 +120,7 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 	base := paths(readIndex(NewHandler(newRingSource(4), func() Status { return Status{} })))
 	for _, want := range []string{
 		"GET /v1/status", "GET /v1/events", "GET /v1/rooms", "GET /v1/rooms/{id}/clients", "GET /v1/rooms/{id}/posts",
+		"DELETE /v1/rooms/{id}/clients/{key}",
 		"GET /scripts", "POST /scripts", "GET /scripts/{id}", "PUT /scripts/{id}", "DELETE /scripts/{id}?revision=N",
 		"POST /scripts/validate", "POST /scripts/{id}/enable", "POST /scripts/{id}/disable", "POST /scripts/{id}/recover",
 	} {
@@ -130,7 +132,7 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 		t.Fatalf("index lists channels without a channel reader: %+v", base)
 	}
 
-	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomReader{}, &testRoomAdmin{}, nil, nil)))
+	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomSource{}, nil, nil)))
 	for _, want := range []string{"GET /v1/channels", "GET /v1/channels/{name}/messages",
 		"DELETE /v1/rooms/{id}/clients/{key}", "DELETE /v1/rooms/{id}/posts/{post}", "POST /v1/rooms/{id}/advert"} {
 		if !full[want] {
@@ -149,20 +151,44 @@ type testChannelReader struct {
 	}
 }
 
-type testRoomReader struct {
-	rooms   []Room
-	clients []RoomClient
-	posts   []RoomPost
-	limit   int
+type testRoomSource struct {
+	rooms     []Room
+	clients   []RoomClient
+	posts     []RoomPost
+	limit     int
+	removed   []string // "room/key" per RemoveClient call
+	removeErr error
+	admin     *testRoomAdmin
 }
 
-func (r *testRoomReader) Rooms(context.Context) ([]Room, error) { return r.rooms, nil }
-func (r *testRoomReader) Clients(context.Context, string) ([]RoomClient, error) {
+func (r *testRoomSource) Rooms(context.Context) ([]Room, error) { return r.rooms, nil }
+func (r *testRoomSource) Clients(context.Context, string) ([]RoomClient, error) {
 	return r.clients, nil
 }
-func (r *testRoomReader) Posts(_ context.Context, _ string, limit int) ([]RoomPost, error) {
+func (r *testRoomSource) Posts(_ context.Context, _ string, limit int) ([]RoomPost, error) {
 	r.limit = limit
 	return r.posts, nil
+}
+func (r *testRoomSource) RemoveClient(ctx context.Context, roomID string, publicKey [32]byte) error {
+	r.removed = append(r.removed, roomID+"/"+hex.EncodeToString(publicKey[:]))
+	if r.admin != nil {
+		return r.admin.RemoveClient(ctx, roomID, hex.EncodeToString(publicKey[:]))
+	}
+	return r.removeErr
+}
+
+func (r *testRoomSource) DeletePost(ctx context.Context, id string, postID uint32) error {
+	if r.admin != nil {
+		return r.admin.DeletePost(ctx, id, postID)
+	}
+	return nil
+}
+
+func (r *testRoomSource) ForceAdvert(ctx context.Context, id string) error {
+	if r.admin != nil {
+		return r.admin.ForceAdvert(ctx, id)
+	}
+	return nil
 }
 
 func (r *testChannelReader) Channels(_ context.Context) ([]Channel, error) {
@@ -194,8 +220,8 @@ func (a *testRoomAdmin) ForceAdvert(_ context.Context, id string) error {
 
 func TestRoomManagementEndpoints(t *testing.T) {
 	admin := &testRoomAdmin{}
-	reader := &testRoomReader{rooms: []Room{{ID: "lobby"}}}
-	handler := NewHandlerWithResources(newRingSource(64), func() Status { return Status{} }, nil, nil, reader, admin, nil, nil)
+	reader := &testRoomSource{rooms: []Room{{ID: "lobby"}}, admin: admin}
+	handler := NewHandlerWithResources(newRingSource(64), func() Status { return Status{} }, nil, nil, reader, nil, nil)
 	do := func(method, path string) *httptest.ResponseRecorder {
 		t.Helper()
 		request := httptest.NewRequest(method, "http://127.0.0.1"+path, nil)
@@ -226,11 +252,19 @@ func TestRoomManagementEndpoints(t *testing.T) {
 	if response := do("DELETE", "/v1/rooms/lobby/clients/"+key); response.Code != 404 {
 		t.Fatalf("not found: %d %s", response.Code, response.Body)
 	}
+	admin.err = fmt.Errorf("wrapped: %w", ErrRoomPostNotFound)
+	if response := do("DELETE", "/v1/rooms/lobby/posts/1"); response.Code != 404 {
+		t.Fatalf("post not found: %d %s", response.Code, response.Body)
+	}
+	admin.err = fmt.Errorf("wrapped: %w", ErrRoomNotFound)
+	if response := do("POST", "/v1/rooms/unknown/advert"); response.Code != 404 {
+		t.Fatalf("room not found: %d %s", response.Code, response.Body)
+	}
 	admin.err = errors.New("database on fire")
 	if response := do("POST", "/v1/rooms/lobby/advert"); response.Code != 500 {
 		t.Fatalf("capability failure: %d %s", response.Code, response.Body)
 	}
-	disabled := NewHandlerWithResources(newRingSource(64), func() Status { return Status{} }, nil, nil, nil, admin, nil, nil)
+	disabled := NewHandlerWithResources(newRingSource(64), func() Status { return Status{} }, nil, nil, nil, nil, nil)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest("POST", "http://127.0.0.1/v1/rooms/lobby/advert", nil)
 	request.Header.Set("Content-Type", "application/json")
@@ -281,12 +315,12 @@ func TestChannelEndpointsAndValidation(t *testing.T) {
 }
 
 func TestRoomReadEndpoints(t *testing.T) {
-	reader := &testRoomReader{
+	reader := &testRoomSource{
 		rooms:   []Room{{ID: "lobby", Name: "Lobby", Enabled: true, ClientsRemembered: 1}},
 		clients: []RoomClient{},
 		posts:   []RoomPost{{ID: 7, Body: "hello"}},
 	}
-	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader, nil, nil, nil)
+	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader, nil, nil)
 	request := func(path string, code int) string {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -312,6 +346,57 @@ func TestRoomReadEndpoints(t *testing.T) {
 	disabled.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1/v1/rooms", nil))
 	if response.Code != 503 {
 		t.Fatalf("disabled rooms status %d", response.Code)
+	}
+}
+
+func TestRoomClientRemoval(t *testing.T) {
+	source := &testRoomSource{rooms: []Room{{ID: "lobby", Name: "Lobby", Enabled: true}}}
+	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, source, nil, nil)
+	send := func(handler http.Handler, method, path string, code int) string {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, "http://127.0.0.1"+path, nil))
+		if response.Code != code {
+			t.Fatalf("%s %s: got %d: %s", method, path, response.Code, response.Body)
+		}
+		return response.Body.String()
+	}
+	key := strings.Repeat("ab", 31) + "0c"
+
+	if body := send(handler, "DELETE", "/v1/rooms/lobby/clients/"+key, 204); body != "" {
+		t.Fatalf("204 with a body: %q", body)
+	}
+	send(handler, "DELETE", "/v1/rooms/lobby/clients/"+strings.ToUpper(key), 204)
+	if want := "lobby/" + key; len(source.removed) != 2 || source.removed[0] != want || source.removed[1] != want {
+		t.Fatalf("source calls: %q", source.removed)
+	}
+
+	source.removed = nil
+	if body := send(handler, "DELETE", "/v1/rooms/annex/clients/"+key, 404); body != `{"error":"room not found"}` {
+		t.Fatalf("unknown room: %s", body)
+	}
+	for _, bad := range []string{"abc", strings.Repeat("zz", 32), strings.Repeat("ab", 33)} {
+		if body := send(handler, "DELETE", "/v1/rooms/lobby/clients/"+bad, 400); body != `{"error":"key must be a 64-character hex public key"}` {
+			t.Fatalf("bad key %q: %s", bad, body)
+		}
+	}
+	if len(source.removed) != 0 {
+		t.Fatalf("a rejected request reached the source: %q", source.removed)
+	}
+
+	source.removeErr = fmt.Errorf("lobby: %w", ErrRoomClientNotFound)
+	if body := send(handler, "DELETE", "/v1/rooms/lobby/clients/"+key, 404); body != `{"error":"client not found"}` {
+		t.Fatalf("unknown client: %s", body)
+	}
+	source.removeErr = errors.New("database is locked")
+	if body := send(handler, "DELETE", "/v1/rooms/lobby/clients/"+key, 500); body != `{"error":"could not remove room client"}` {
+		t.Fatalf("failed removal: %s", body)
+	}
+
+	send(handler, "GET", "/v1/rooms/lobby/clients/"+key, 405)
+	disabled := NewHandler(newRingSource(256), func() Status { return Status{} })
+	if body := send(disabled, "DELETE", "/v1/rooms/lobby/clients/"+key, 503); body != `{"error":"rooms are disabled"}` {
+		t.Fatalf("disabled rooms: %s", body)
 	}
 }
 

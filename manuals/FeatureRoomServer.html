@@ -339,7 +339,7 @@ rooms:
             <!-- Roles -->
             <section id="roles">
                 <h2>Roles &amp; Permissions</h2>
-                <p>Once logged in, a client has a role. Login itself only hands out three of the four roles: the admin password gives <code>ADMIN</code>, the guest password gives <code>READ_WRITE</code>, and <code>allow_read_only</code> gives <code>GUEST</code>. <code>READ_ONLY</code> exists in the protocol but cannot be assigned by logging in; today KAM has no way to assign it, because role changes need the management API.</p>
+                <p>Once logged in, a client has a role. Login itself only hands out three of the four roles: the admin password gives <code>ADMIN</code>, the guest password gives <code>READ_WRITE</code>, and <code>allow_read_only</code> gives <code>GUEST</code>. <code>READ_ONLY</code> exists in the protocol but cannot be assigned by logging in; today KAM has no way to assign it, because the local API does not change roles.</p>
                 <table>
                     <thead>
                         <tr>
@@ -531,7 +531,7 @@ rooms:
                             <li><strong>Foundations:</strong> <span class="badge badge-green">Implemented</span> packet tap, dedup fix, transmit scheduler, mesh crypto and identity package, config, signed <code>ROOM</code> advert.</li>
                             <li><strong>Login and sessions:</strong> <span class="badge badge-green">Implemented</span> anonymous request to response or path return, client table and roles, replay rules, path learning, rate limit.</li>
                             <li><strong>Posts and push:</strong> <span class="badge badge-green">Implemented</span> post store, ACK after commit, push engine, keep-alive, backlog window, session persistence.</li>
-                            <li><strong>Operations:</strong> <span class="badge badge-amber">Partly</span> airtime cap, retention and start-up validation are done; the status reply, counter export and management API endpoints are open.</li>
+                            <li><strong>Operations:</strong> <span class="badge badge-amber">Partly</span> airtime cap, retention and start-up validation are done; the API endpoints for rooms are partly done (room reads and client removal); the status reply and counter export are open.</li>
                             <li><strong>Optional:</strong> <span class="badge badge-amber">Partly</span> the post host function is delivered: scripts call <code>room_post</code> (see the <a href="FeatureStarlark.html#capabilities">Starlark manual</a>). A Starlark room event, channel bridging and an over-the-air CLI subset remain planned.</li>
                         </ol>
                     </div>

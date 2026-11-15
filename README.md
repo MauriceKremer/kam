@@ -121,7 +121,7 @@ control: `GET /v1/modem` (a cached snapshot refreshed every 10 s),
 (validate, apply, check the echo, save `radio:` to `kam.yml`; `?preview=true`
 lists the steps without sending). The listener answers `GET /` with the routes
 it serves. No dashboard is required: KAM continues its radio work without API
-clients. Room-client removal and dry-run endpoints remain planned; parameters
+clients. Script dry-run endpoints remain planned; parameters
 and responses are documented in [`docs/APIdetails.md`](docs/APIdetails.md).
 
 ```yaml

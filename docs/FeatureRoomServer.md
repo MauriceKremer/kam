@@ -554,4 +554,4 @@ Not covered by automated tests: a real radio or MeshCore client — validated by
 
 - Whether KAM should also act as a **client** of other room servers (for example to fetch their status for the operator metrics surface in [SYSTEM_DESIGN.md §8](SYSTEM_DESIGN.md)). It reuses the same crypto and envelope but is a separate feature.
 - `docs/qr_codes.md` was read: a contact is shared as `meshcore://contact/add?name=...&public_key=<64 hex>&type=3` (`kam room show` prints it). `docs/number_allocations.md` was not read; check it if registered data types matter.
-- Deferred from this round: status/telemetry/access-list replies, the KAM API endpoints for rooms, system posts, the over-the-air CLI, `GetAirtime` accounting, and a Go fuzz target for the parsers.
+- Deferred from this round: status/telemetry/access-list replies, the remaining KAM API endpoints for rooms (RS-OPS-2), system posts, the over-the-air CLI, `GetAirtime` accounting, and a Go fuzz target for the parsers.

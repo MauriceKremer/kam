@@ -1,9 +1,7 @@
 package room
 
 import (
-	"bytes"
 	"context"
-	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
@@ -29,7 +27,7 @@ func TestRemoveClientForgetsTheSession(t *testing.T) {
 	client := h.loggedIn(1, "guest-pass")
 	ctx := adminContext(t)
 
-	if err := h.svc.RemoveClient(ctx, "lobby", hex.EncodeToString(client.pubSlice())); err != nil {
+	if err := h.svc.RemoveClient(ctx, "lobby", client.pub()); err != nil {
 		t.Fatalf("RemoveClient: %v", err)
 	}
 	if h.room.byKey[client.pub()] != nil || len(h.room.clients) != 0 || h.svc.Stats().Clients != 0 {
@@ -44,14 +42,13 @@ func TestRemoveClientForgetsTheSession(t *testing.T) {
 	if h.room.byKey[client.pub()] == nil {
 		t.Fatal("client could not log in again after removal")
 	}
-	// A key the room does not know, a key that is not a key, an unknown room.
-	if err := h.svc.RemoveClient(ctx, "lobby", hex.EncodeToString(bytes.Repeat([]byte{0xAA}, 32))); !errors.Is(err, ErrClientNotFound) {
+	// A key the room does not know and an unknown room.
+	var unknown [32]byte
+	unknown[0] = 0xaa
+	if err := h.svc.RemoveClient(ctx, "lobby", unknown); !errors.Is(err, ErrUnknownClient) {
 		t.Fatalf("unknown client: %v", err)
 	}
-	if err := h.svc.RemoveClient(ctx, "lobby", "abcd"); err == nil || errors.Is(err, ErrClientNotFound) {
-		t.Fatalf("malformed key: %v", err)
-	}
-	if err := h.svc.RemoveClient(ctx, "nowhere", hex.EncodeToString(client.pubSlice())); !errors.Is(err, ErrRoomNotFound) {
+	if err := h.svc.RemoveClient(ctx, "nowhere", client.pub()); !errors.Is(err, ErrUnknownRoom) {
 		t.Fatalf("unknown room: %v", err)
 	}
 }
@@ -67,7 +64,7 @@ func TestRemoveClientKeepsTheSessionWhenTheDeleteFails(t *testing.T) {
 	h.svc.Start()
 	defer h.svc.Stop()
 	client := h.loggedIn(1, "guest-pass")
-	if err := h.svc.RemoveClient(adminContext(t), "lobby", hex.EncodeToString(client.pubSlice())); err == nil {
+	if err := h.svc.RemoveClient(adminContext(t), "lobby", client.pub()); err == nil {
 		t.Fatal("a failed delete was reported as success")
 	}
 	if h.room.byKey[client.pub()] == nil {

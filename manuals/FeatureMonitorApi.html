@@ -252,7 +252,7 @@ curl --fail-with-body http://127.0.0.1:8766/v1/rooms/lobby/clients
 curl --fail-with-body 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=20'</code></pre>
                 <p>Room lists include per-room counters and remembered-client totals. Client roles describe the existing radio login; they are not REST permissions. The room subsystem returns <code>503</code> when disabled.</p>
                 <h3>Manage a Room</h3>
-                <p>Three write routes exist: forget a client session, delete one post, and send the room's advert now instead of waiting for its interval. Use the client's public key (64 lowercase hexadecimal characters) and the post <code>id</code> from the posts list.</p>
+                <p>Three write routes exist: forget a client session, delete one post, and send the room's advert now instead of waiting for its interval. Use the client's public key (64 hexadecimal characters, in either case) and the post <code>id</code> from the posts list.</p>
                 <pre><code class="language-bash">curl --fail-with-body -X DELETE http://127.0.0.1:8766/v1/rooms/lobby/clients/REPLACE-WITH-CLIENT-KEY
 curl --fail-with-body -X DELETE http://127.0.0.1:8766/v1/rooms/lobby/posts/91
 curl --fail-with-body -X POST -H 'Content-Type: application/json' \
@@ -325,7 +325,7 @@ curl --fail-with-body -X POST -H 'Content-Type: application/json' \
                         <tr><td><code>PUT /v1/modem/radio</code></td><td>Apply, check echo, save and recover on failure.</td></tr>
                     </tbody>
                 </table>
-                <p>Use actual ids and public keys in paths, not the braces shown in the table. Room keys are 64 lowercase hexadecimal characters. Times use RFC 3339 UTC timestamps. Unknown measurements are <code>null</code>; empty lists are <code>[]</code>.</p>
+                <p>Use actual ids and public keys in paths, not the braces shown in the table. Room keys are 64 hexadecimal characters; KAM lists them in lowercase and accepts either case in a path. Times use RFC 3339 UTC timestamps. Unknown measurements are <code>null</code>; empty lists are <code>[]</code>.</p>
                 <p>Removing a room client deletes its session, not its credentials. It may log in again under the existing room rules. No endpoint in this feature changes a radio client's role or edits KAMmon's web users.</p>
                 <p>The room write routes above are served. A client that was forgotten can log in again with the same room password, and a deleted post stays gone unless someone posts it again; see <a href="#modem">Modem Changes</a> for the remaining routes.</p>
             </section>

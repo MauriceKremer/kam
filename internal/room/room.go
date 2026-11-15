@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -321,9 +322,18 @@ func (r *roomState) evictionCandidate() *client {
 	return victim
 }
 
-// dropClient takes a client out of the room's table and cancels its pending
-// pushes without touching storage.
-func (r *roomState) dropClient(c *client) {
+func (r *roomState) removeClient(c *client) {
+	r.detachClient(c)
+	ctx, cancel := storeContext()
+	defer cancel()
+	if err := r.svc.store.DeleteClient(ctx, r.cfg.ID, c.pub[:]); err != nil {
+		slog.Error("[Room] could not delete evicted client", "room", r.cfg.ID, "error", err)
+	}
+}
+
+// detachClient drops a client's runtime state: its table entry, so no later
+// push, ACK match or batch write includes it, and any push still queued for it.
+func (r *roomState) detachClient(c *client) {
 	for i, other := range r.clients {
 		if other == c {
 			r.clients = append(r.clients[:i], r.clients[i+1:]...)
@@ -338,15 +348,28 @@ func (r *roomState) dropClient(c *client) {
 	r.svc.tx.Cancel(r.pushTag(c))
 }
 
-// removeClient drops a client and deletes its stored session; an eviction
-// cannot keep the record, so a failed delete is only logged.
-func (r *roomState) removeClient(c *client) {
-	r.dropClient(c)
+// forgetClient runs on the worker for RemoveClient. The stored record goes
+// first: a failed delete leaves the session untouched, and once the record is
+// gone the client leaves the table before the next batch write can see it.
+func (s *Service) forgetClient(roomID string, key [32]byte, now time.Time) error {
+	r := s.roomByID(roomID)
+	if r == nil {
+		return ErrUnknownRoom
+	}
+	c := r.byKey[key]
+	if c == nil {
+		return ErrUnknownClient
+	}
 	ctx, cancel := storeContext()
 	defer cancel()
-	if err := r.svc.store.DeleteClient(ctx, r.cfg.ID, c.pub[:]); err != nil {
-		slog.Error("[Room] could not delete client session", "room", r.cfg.ID, "error", err)
+	if err := s.store.DeleteClient(ctx, roomID, key[:]); err != nil {
+		slog.Error("[Room] could not delete client; its session is kept", "room", roomID, "key", shortKey(key[:]), "error", err)
+		return fmt.Errorf("delete room client: %w", err)
 	}
+	r.detachClient(c)
+	slog.Info("[Room] client removed", "room", roomID, "key", shortKey(key[:]), "role", roleName(c.role))
+	s.recordRoomEvent(roomID, "client_removed", hex.EncodeToString(key[:]), roleName(c.role), now)
+	return nil
 }
 
 // handleAck matches an ACK against every client's outstanding push.
@@ -667,15 +690,9 @@ func (r *roomState) storePost(author []byte, text string, clientKey []byte, clie
 // itself, so scripts and adverts reach clients through the normal backlog and
 // push paths.
 func (s *Service) addSystemPost(roomID, text string, now time.Time) error {
-	var room *roomState
-	for _, candidate := range s.rooms {
-		if candidate.cfg.ID == roomID {
-			room = candidate
-			break
-		}
-	}
+	room := s.roomByID(roomID)
 	if room == nil {
-		return errors.New("unknown room")
+		return ErrUnknownRoom
 	}
 	if err := room.storePost(room.pub[:], text, nil, 0, now, "", "system"); err != nil {
 		slog.Error("[Room] system post failed", "room", roomID, "error", err)

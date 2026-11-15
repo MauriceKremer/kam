@@ -1,23 +1,17 @@
-// Management calls from the local API (RS-OPS-2): forget a client, delete a
-// post, send an advert now. Each one runs on the worker goroutine, which owns
-// room state, through adminIn.
+// Management calls from the local API (RS-OPS-2): delete a post or send an
+// advert now. Each runs on the worker goroutine through adminIn.
 
 package room
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
-	"fmt"
-
-	"kam.bytecoder.nl/internal/mesh"
 )
 
 // Management verdicts the REST layer maps to a status code.
 var (
-	ErrRoomNotFound   = errors.New("room not found")
-	ErrClientNotFound = errors.New("room client not found")
-	ErrPostNotFound   = errors.New("room post not found")
+	ErrRoomNotFound = errors.New("room not found")
+	ErrPostNotFound = errors.New("room post not found")
 )
 
 // adminRequest is one management mutation; apply runs on the worker goroutine
@@ -57,34 +51,6 @@ func (s *Service) applyAdmin(request adminRequest) error {
 		}
 	}
 	return ErrRoomNotFound
-}
-
-// RemoveClient forgets a client's session: its stored record is deleted, then
-// it leaves the room's table and its pending pushes are cancelled. A failed
-// delete leaves the session intact and is reported. It is not a ban; the
-// client can log in again.
-func (s *Service) RemoveClient(ctx context.Context, roomID, publicKey string) error {
-	raw, err := hex.DecodeString(publicKey)
-	if err != nil || len(raw) != mesh.PubKeySize {
-		return fmt.Errorf("public key must be %d hex characters", mesh.PubKeySize*2)
-	}
-	var pub [32]byte
-	copy(pub[:], raw)
-	return s.admin(ctx, roomID, func(r *roomState) error {
-		c := r.byKey[pub]
-		if c == nil {
-			return ErrClientNotFound
-		}
-		storeCtx, cancel := storeContext()
-		defer cancel()
-		if err := r.svc.store.DeleteClient(storeCtx, r.cfg.ID, c.pub[:]); err != nil {
-			return err
-		}
-		role := roleName(c.role)
-		r.dropClient(c)
-		r.svc.recordRoomEvent(r.cfg.ID, "client_removed", publicKey, role, r.svc.now())
-		return nil
-	})
 }
 
 // DeletePost removes one post from the store and from the cached backlog, so

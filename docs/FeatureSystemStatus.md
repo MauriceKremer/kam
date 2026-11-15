@@ -47,7 +47,7 @@ KAM-internal feature: the authority is KAM's own code and documentation, plus Go
 |---|---|---|
 | API-DOC | [docs/APIdetails.md](APIdetails.md) | status contract, wire rules, field table |
 | API | [internal/api/api.go](../internal/api/api.go) | `GET /v1/status` handler (line 236), `Status` wire shapes, transport policy |
-| NODE | [internal/node/monitor.go](../internal/node/monitor.go) | status closure composition, listener start |
+| NODE | [internal/node/status.go](../internal/node/status.go), [internal/node/api.go](../internal/node/api.go) | status composition, listener start |
 | MODELS | [internal/models/monitor.go](../internal/models/monitor.go) | `MonitorConfig`, defaults, YAML decoding, `Validate` |
 | DBPATH | [internal/config/dbpath.go](../internal/config/dbpath.go) | DB path precedence: `-db` flag > `db_path` > `kam.db` |
 | SR | Go `syscall` package docs (`pkg.go.dev/syscall`) | `Statfs` on Linux and macOS, `SysctlUint32`/`SysctlUint64`/`Sysctl` on macOS |
@@ -199,8 +199,8 @@ monitor:
 
 ### 5.4 Composition in node
 
-- `node.New` already receives `dbPath` ([internal/node/node.go](../internal/node/node.go) line 98) but only stores `configPath`; store `dbPath` on the node the same way. `startMonitor` takes it from there.
-- In `startMonitor`, next to the existing `status` closure, build `systemSnapshot func() api.SystemStatus`: throttle (`monitor.system_interval_sec`) → `systemstats.Collect` → map into `api.SystemStatus`, with `database.path` from the resolved DB path (DBPATH) and `disk.path` from its directory.
+- `node.New` already receives `dbPath` ([internal/node/node.go](../internal/node/node.go) line 98) but only stores `configPath`; store `dbPath` on the node the same way. `startAPI` takes it from there.
+- In `startAPI`, build `systemSnapshot func() api.SystemStatus`: throttle (`monitor.system_interval_sec`) → `systemstats.Collect` → map into `api.SystemStatus`, with `database.path` from the resolved DB path (DBPATH) and `disk.path` from its directory. The status provider itself now lives in `internal/node/status.go`.
 - Pass the closure as the new seam argument; `nil` only when the listener itself is built without node context (none today).
 
 ## 6. Requirements
@@ -250,8 +250,8 @@ None to external sources. Two clarifications worth recording:
 | `internal/api/api.go` | `SystemStatus` struct; `system` seam param on `NewHandlerWithResources`; flag handling in the `/v1/status` handler; index row purpose text |
 | `internal/api/api_test.go` / guard test | flag on/off/invalid cases; section-absent default case; guard test unchanged (passes) |
 | `internal/node/node.go` | store `dbPath` on `Node` |
-| `internal/node/monitor.go` | build the throttled `systemSnapshot` closure, pass the new seam |
-| `internal/node/monitor_test.go` | `/v1/status?system=true` through the real listener |
+| `internal/node/api.go` | build the throttled `systemSnapshot` closure and pass the new seam; `internal/node/status.go` assembles status |
+| `internal/node/api_test.go` | `/v1/status?system=true` through the real listener |
 | `docs/APIdetails.md` | status section: flag, field table, throttle note, example |
 | `README.md` | monitor block + one sentence |
 

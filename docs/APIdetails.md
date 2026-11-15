@@ -6,9 +6,10 @@ implemented endpoints, with their parameters and responses. Planned endpoints
 [FeatureKamApi.md](FeatureKamApi.md) §7 and §10; they are not described here.
 
 KAM serves one small REST API, loopback-only and without authentication, at
-`monitor.listen` (default `127.0.0.1:8766`). It hosts the read-only data
-surfaces (status, events, channels, rooms), Starlark
-script management, and the modem snapshot/query/radio routes. The separate
+`monitor.listen` (default `127.0.0.1:8766`). It hosts the data surfaces
+(status, events, channels, rooms), Starlark script management, and the
+modem snapshot/query/radio routes. The data surfaces only read, except for one
+route that removes a remembered room client. The separate
 script listener on port `8765` is retired; scripts live
 on the address above since the two APIs merged.
 
@@ -22,7 +23,7 @@ curl -s http://127.0.0.1:8766/scripts
 `monitor.enabled: false` in `kam.yml` closes the listener and turns the event
 recorder off: nothing answers on the port, and scripts keep running but can no
 longer be managed or observed. If the automation database cannot be opened,
-automation stays off: the read-only surfaces work, every script route answers
+automation stays off: the data surfaces work, every script route answers
 `503 {"error":"automation is disabled"}`, and KAM logs the reason.
 
 ## Rules
@@ -82,7 +83,7 @@ matches the endpoints documented here.
 
 ## Scripts (Starlark automation)
 
-Script routes share the listener with the read-only data surfaces below and use the
+Script routes share the listener with the data surfaces below and use the
 same rules. With the defaults they are at `127.0.0.1:8766`.
 
 ### The script object
@@ -331,15 +332,17 @@ Forgets one client's session: it leaves the room's client table, its pending
 pushes are cancelled, and its stored record is deleted. Answers `204` with no
 body. A `room` event of kind `client_removed` is recorded.
 
-The path parameter is the client's 32-byte public key in lowercase hex (64
-characters); anything else is `400`. A room without that client, or an unknown
-room id, returns `404`.
+The path parameter is the client's 32-byte public key in hex (64 characters,
+upper or lower case); anything else is `400`. A room without that client, or an
+unknown room id, returns `404`. A failed database delete returns `500` and
+leaves the session intact. When rooms are disabled the route returns `503`.
 
 This is not a ban: the radio can log in again with the same room password, and
-the room's passwords and roles are unchanged.
+the room's passwords and roles are unchanged. A blank-password login is checked
+like any new login, rather than resuming the old session.
 
 ```sh
-curl -s -X DELETE 'http://127.0.0.1:8766/v1/rooms/lobby/clients/ed8342bc…'
+curl -s -X DELETE 'http://127.0.0.1:8766/v1/rooms/lobby/clients/ed8342bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 ```
 
 ### DELETE /v1/rooms/{id}/posts/{post}
@@ -502,7 +505,7 @@ capability gets `503`.
 
 ## What is deliberately not here
 
-Room client removal, script run info and dry runs, and per-script event streams
-are planned but not implemented yet; see [FeatureKamApi.md](FeatureKamApi.md)
-§7 and §10 until they ship.
+Script run info and dry runs, and per-script event streams are planned but not
+implemented yet; see [FeatureKamApi.md](FeatureKamApi.md) §7 and §10 until
+they ship.
 When an endpoint ships, it moves into this document.

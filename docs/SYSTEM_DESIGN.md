@@ -119,7 +119,7 @@ send.Sender  --> kiss.TxScheduler (legacy TxChan adapter, queued as group text)
 | Package | Role |
 |---|---|
 | `main` | Flag parse, slog setup, load `kam.yml`, build `Node`, block on SIGINT/SIGTERM. Also the short-lived `channel upsert` and `room show` commands. |
-| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*kiss.TxScheduler`, `*send.Sender`, the optional `*automation.Runtime` and the optional `*room.Service` with its repository. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg, creates the scheduler, then (best effort) starts the rooms and the automation runtime. `startMonitor` builds the unified local API handler from capability adapters and owns its HTTP server; when the API is enabled it also runs the modem refresh loop (`internal/node/modem.go`) behind the `/v1/modem` routes, and `node.Run` starts the 500 ms config watcher and the 30 s radio health probe. `Run` blocks until ctx cancelled or the modem link is lost, then shuts down in the order of §6. |
+| `internal/node` | `Node` owns `*kiss.Manager`, `*kiss.RadioClient`, `*kiss.TxScheduler`, `*send.Sender`, the optional `*automation.Runtime` and the optional `*room.Service` with its repository. `New` bootstraps channels from YAML, opens serial, pushes+verifies radio cfg, creates the scheduler, then (best effort) starts the rooms and the automation runtime. `startAPI` in `internal/node/api.go` composes capability adapters and owns the unified local HTTP server; status assembly is in `status.go`, with events, channels, and rooms adapters in their own files. When the API is enabled, the node also runs the modem refresh loop (`internal/node/modem.go`) behind the `/v1/modem` routes, and `node.Run` starts the 500 ms config watcher and 30 s radio health probe. `Run` blocks until ctx cancelled or the modem link is lost, then shuts down in the order of §6. |
 | `internal/config` | `LoadKamConfig` (YAML + normalize/validate), `BootstrapChannels` (load `#public` + enabled channels from the config into parser topic registry), `UpsertRuntimeChannelAndApply` (write a runtime channel back into the YAML file + apply live), `ResolveDBPath`. |
 | `internal/models` | Pure config + record structs. Validation lives here, including `MeshConfig`, `RoomConfig` and `KamConfig.ResolveRooms` (an invalid room is disabled, never fatal). |
 | `internal/mesh` | MeshCore wire primitives with no transport dependency: `Packet` parse/encode, `EncryptThenMAC`/`MACThenDecrypt`, `Identity` (Ed25519 + X25519 via `math/big` and `crypto/ecdh`), signed advert payloads, region keys and transport codes, ACK hashes. |
@@ -127,7 +127,7 @@ send.Sender  --> kiss.TxScheduler (legacy TxChan adapter, queued as group text)
 | `internal/kiss/parsers` | Per-payload-type parsers: `ParseAdvert` (Ed25519 verify), `ParseGroupText` (decrypt via channel secret), public-channel secret registry. |
 | `internal/kiss/send` | `Builder` constructs outbound group-text frames; `Sender` queues them on the transmit scheduler. |
 | `internal/room` | `Service`: logins and roles, posts, push sync, keep-alive, adverts, login rate limiting, identity files. One worker goroutine owns all room state. |
-| `internal/api` | The local REST API's transport only: routes, JSON decode with unknown-field rejection, wire shapes, error class → status mapping, loopback Host guard, 8-slot concurrency limit, 5 s deadline, panic recovery, and the `GET /` index. Imports nothing from this repository except `internal/models`; capabilities reach it through consumer-defined seams (`Scripts`, `EventsSource`, `ChannelReader`, `RoomReader`, `RoomAdmin`, the status function), implemented by adapters in `internal/node`. A guard test enforces the import rule. |
+| `internal/api` | The local REST API's transport only: routes, JSON decode with unknown-field rejection, wire shapes, error class → status mapping, loopback Host guard, 8-slot concurrency limit, 5 s deadline, panic recovery, and the `GET /` index. Imports nothing from this repository except `internal/models`; capabilities reach it through consumer-defined seams (`Scripts`, `EventsSource`, `ChannelReader`, `RoomSource`, the status function), implemented by adapters in `internal/node`. A guard test enforces the import rule. |
 | `internal/db` | SQLite handle + WAL. `Persistence` implements `kiss.Persistence`. `AdvertQueue` + `GroupTextQueue` = batched background writers. `AutomationRepository` stores Starlark scripts (`automation_scripts`) on its own single connection. `RoomRepository` stores `rooms`, `room_posts` and `room_clients` on its own single connection with `synchronous=FULL`. Channel config lives in YAML. |
 | `internal/events` | The bounded metadata-only event ring, copied into pages under a short lock; the radio and room paths record through `models.MonitorSink`. Nothing here touches HTTP, SQLite or the modem. |
 | `internal/automation` | `Runtime` loads, compiles, and runs operator-managed Starlark scripts on one bounded-queue worker, for each group text and for each due timer. A timer loop goroutine owns the schedule (a per-script next-fire time recomputed from `timer_interval_minutes`, nudged by save/enable/recover/delete) and only enqueues fires, so invocation stays on the single worker. Host functions are `reply(channel, text)`, `rest_get(url, headers=...)` and `room_post(room_id, text)`; `json` and `time` are predeclared modules. Room posting goes through the consumer-defined `RoomPoster` seam, which `internal/node` fills with the room service. It applies `timeout_ms` defaults and exports its domain sentinels (`ErrScriptNotFound`, `ErrScriptConflict`, `ErrScriptNameTaken`) for the transport's adapters. Examples: `docs/examples/echo.star` and `docs/examples/periodic.star`. See [FeatureStarlark.md](FeatureStarlark.md) and [FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md). |
@@ -173,10 +173,10 @@ main goroutine
   |        automation.NewRuntime -> manager.SubscribeGroupText(runtime.Handle)
   |                              -> [automation worker goroutine]   (internal/automation)
   |                              -> [timer loop goroutine]  (one timer, re-armed per wake)
-  |   |- node.startMonitor -> [local API server goroutine on 127.0.0.1:8766]  (internal/api)
-  |   |- node.startMonitor -> [modem event loop]  (kiss_manager.go: routes modem
+  |   |- node.startAPI -> [local API server goroutine on 127.0.0.1:8766]  (internal/api)
+  |   |- node.startAPI -> [modem event loop]  (kiss_manager.go: routes modem
   |   |                              events, incl. link_lost/link_restored, to subscribers)
-  |   |- node.startMonitor -> [modem refresh loop, one batch of reading commands
+  |   |- node.startAPI -> [modem refresh loop, one batch of reading commands
   |   |                      at most every 10 s]                        (internal/node/modem.go)
   |   |- Run also starts a config watcher (polls the YAML every 500 ms, applies
   |   |    runtime channel changes) and a radio health probe (Ping + GetRadio
@@ -210,10 +210,10 @@ main goroutine
 | 5 | advert `writerLoop` | `db.AdvertQueue` | `NewAdvertQueue`→`Stop` | recv `ch`, batch insert into SQLite |
 | 6 | group-text `writerLoop` | `db.GroupTextQueue` | `NewGroupTextQueue`→`Stop` | recv `ch`, batch insert into SQLite |
 | 7 | automation `worker` | `automation.Runtime` | `NewRuntime`→`Stop` | recv bounded `queue`, runs scripts sequentially, `reply` sends via `send.Sender` |
-| 7a | Local API server | `node.startMonitor` / `api.Listen` | node startup→HTTP shutdown | loopback HTTP on `monitor.listen` (default 8766), with at most 8 admitted requests; bounded event pages, script management, SQLite channel/post reads, and worker-owned room snapshots |
+| 7a | Local API server | `node.startAPI` / `api.Listen` | node startup→HTTP shutdown | loopback HTTP on `monitor.listen` (default 8766), with at most 8 admitted requests; bounded event pages, script management, SQLite channel/post reads, and worker-owned room snapshots |
 | 7b | tx scheduler | `kiss.TxScheduler` | `Start`→`Stop` | recv legacy `TxChan` frames, a timer, and `TxDone`/`TxAbandoned` modem events; sends one frame at a time to `Manager.txChan`; a `Pause` during a radio change holds dispatches back without discarding the queue |
 | 7c | room worker | `room.Service` | `Start`→`Stop` | recv a bounded packet queue (64) and a 50 ms tick; owns every room's state; writes `RoomRepository`, submits to the scheduler |
-| 7d | modem refresh loop | `node.startMonitor` (the `modemController`) | monitor start→`modemController.Stop` | a ticker (10 s) plus an immediate-refresh signal; sends a bounded batch of reading commands through `RadioClient`, writes the cache the `/v1/modem` snapshot serves; skips while a radio change runs and yields to it mid-batch |
+| 7d | modem refresh loop | `node.startAPI` (the `modemController`) | API start→`modemController.Stop` | a ticker (10 s) plus an immediate-refresh signal; sends a bounded batch of reading commands through `RadioClient`, writes the cache the `/v1/modem` snapshot serves; skips while a radio change runs and yields to it mid-batch |
 | 8 | (planned) analytics/metrics aggregator | future package | subscribe via `SubscribeGroupText` | same tap pattern as the automation runtime |
 | * | radio request | caller (e.g. `main`/`New`) | per `Get`/`Set` call | take the `requestGate` slot, push `txChan`, block on the pending-request result channel |
 
@@ -369,6 +369,13 @@ queries SQLite), and the timers for adverts, session flush and retention.
 - **API reads.** Room counters and client/post summaries are copied through a
    request handled by the worker. The API reads retained posts and advert
    labels from SQLite outside the room-state ownership boundary.
+- **Client removal.** `RemoveClient` (`DELETE /v1/rooms/{id}/clients/{key}`)
+  is also a request handled by the worker. It deletes the stored record first;
+  only when that succeeds does the client leave the table, which cancels any
+  push still queued for it. A failed delete keeps the session and returns an
+  error. Batch writes only save clients still in the table, so a removed client
+  is never written back. Removal is not a ban: a new login under the room's
+  usual rules starts a new session.
 - **Failure isolation.** A room that cannot start is logged and skipped; radio
   ingestion continues.
 
@@ -491,6 +498,8 @@ Client                                 KAM room (ADV_TYPE_ROOM, default scope)
 | automation `queue` | channel | Bounded (128); carries both group texts and timer fires, enqueue non-blocking, drops are counted and logged. |
 | automation timer schedule | timer-loop goroutine only (no lock) | The loop owns `next[id]` and recomputes it from the scripts map on every wake. `Save`/`SetEnabled`/`Recover`/`Delete` nudge it through the size-1 `timerChanged` channel; the map read itself is under the `scripts` RLock. |
 | `RoomPoster` (script → room) | none; `systemIn` channel + room worker | `AddSystemPost` hands the request to the room worker's bounded channel (16) and waits for its reply or its own context, so `room_post` shares the script deadline. |
+| room client removal (API → room) | none; `removeIn` channel + room worker | `RemoveClient` hands the request to the worker over an unbuffered channel and waits for its reply or its own context. The worker always replies, so a removal it has taken completes even when the caller stops waiting. |
+| room post deletion and forced adverts (API → room) | none; `adminIn` channel + room worker | The bounded queue holds up to eight requests; callers wait for a reply or their context. The worker completes an accepted request even if its caller stops waiting. |
 | automation `scripts` (compiled programs) | `sync.RWMutex` + `mutationMu` | Worker snapshots under RLock; API mutations and freezes serialize on `mutationMu` and publish a new entry only after the SQLite write commits. Intake (`Save`/`Delete`) serializes on `intakeMu`; the worker's stop and join are sequenced by `waitForInFlightMutation`. |
 | `stopChan` | `close()` | Signal-all for the three Manager loops and the modem event loop. Each queue/service has its own stop signal. |
 | node `radioRuntime` (settings + modem echo, TX-power state) | `sync.Mutex` + `atomic.Bool`s | The single radio truth: written by startup apply and the reset probe's reapply; read by the refresh loop, the monitor snapshot and the scheduler's duty-cycle estimate. |

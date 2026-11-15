@@ -19,7 +19,7 @@ identity and disabled automation measurements may be null. Room-post/script-even
 streams and the remaining resource endpoints are not part of this delivery.
 
 Tests are in `internal/api/api_test.go`, `internal/kiss/monitor_test.go`,
-`internal/models/monitor_test.go` and `internal/node/monitor_test.go`. No new
+`internal/models/monitor_test.go` and `internal/node/api_test.go`. No new
 dependency, client registry, event database or event-processing worker is added.
 
 ### Phase 2 Delivery
@@ -31,6 +31,25 @@ was present. Room snapshots are copied by the room worker, with per-room
 counters; last-heard timestamps are persisted through the existing batched
 client writes. Room activity events feed the same bounded event ring. The API
 remains read-only for these resources; client removal stays in phase 4.
+
+### Phase 4 Delivery
+
+`DELETE /v1/rooms/{id}/clients/{key}` forgets one remembered client (API-RM-5,
+API-RM-7). The handler checks the room and the 64-hex key, then passes the
+removal through the API's room seam, renamed from `RoomReader` to `RoomSource`
+now that it carries a write, to the room worker. The worker deletes the stored
+record first. Only when that succeeds does the client leave the room's table,
+which also cancels any push still queued for it and records a `client_removed`
+room event. A failed delete returns `500` and leaves the session exactly as it
+was. Batch writes only save clients that are still in the table, so a delayed
+or retried write cannot bring a removed client back. Removal is not a ban
+(§7.4): the client can log in again under the room's usual rules. A blank
+password no longer resumes the old session; it is checked like any new login,
+so it only gets in with `open_room` or `allow_read_only`. Protocol roles stay
+read-only.
+
+Tests are in `internal/room/remove_test.go`, `internal/api/api_test.go` and
+`internal/node/room_test.go`; the existing room-login tests pass unchanged.
 
 KAM has a Local Management API on `127.0.0.1:8765` that manages Starlark scripts. Phases 1-2 add status, recent RX/TX/room events and read-only channel/room resources on port 8766. Later phases provide modem control and client removal. Existing adverts and group texts remain in SQLite, and room client activity follows the existing room-service rules; the event ring is not a persistent packet archive.
 

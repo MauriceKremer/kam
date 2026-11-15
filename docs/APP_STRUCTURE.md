@@ -52,7 +52,7 @@ flowchart TD
 | `main.go` | Parses command-line overrides, configures logging, loads configuration, constructs the node, and handles SIGINT/SIGTERM. Also runs the short-lived `channel upsert` and `room show` commands. |
 | `internal/config` | Loads and validates YAML, polls for updates, atomically replaces the in-memory channel registry, upserts channels in YAML, and resolves the database path. |
 | `internal/models` | Defines configuration and persisted packet data types, along with configuration normalization and validation, including the `mesh:` and `rooms:` settings (`ResolveRooms` disables an invalid room instead of failing the whole file). |
-| `internal/node` | Owns component construction and shutdown. It bootstraps channels and persistence, starts the KISS manager, applies and verifies radio settings, creates the transmit scheduler, and (best effort) starts the automation runtime and the room servers. `startMonitor` builds the unified local REST API handler from capability adapters (scripts, events, status, channels, rooms, modem) and starts its one HTTP server; with the API enabled it also runs the modem refresh loop behind `/v1/modem`. `Run` also starts the 500 ms config watcher and the 30 s radio health probe, and joins them first at shutdown. |
+| `internal/node` | Owns component construction and shutdown. It bootstraps channels and persistence, starts the KISS manager, applies and verifies radio settings, creates the transmit scheduler, and (best effort) starts the automation runtime and the room servers. `startAPI` in `api.go` connects the transport seams to capability adapters and starts the one local HTTP server; `status.go` assembles status snapshots, while `events.go`, `channels.go`, `rooms.go`, and `scripts.go` hold the corresponding API adapters. With the API enabled, the node also runs the modem refresh loop behind `/v1/modem`. `Run` starts the 500 ms config watcher and 30 s radio health probe, and joins them first at shutdown. |
 | `internal/kiss` | Owns the serial connection and KISS read/write/route loops, response registry, radio control, time-bounded packet deduplication, the group-text and packet taps, and the `TxScheduler` that owns the radio data path. |
 | `internal/kiss/parsers` | Parses and verifies adverts, decrypts group texts using configured channel secrets, and maintains the in-memory channel registry. |
 | `internal/kiss/send` | Builds encrypted group-text packets and queues them on the transmit scheduler. |
@@ -166,7 +166,7 @@ Room servers are implemented for plan phases 1-3; the requirements, decisions an
 - Each room has its own Ed25519 identity, stored as a hex seed in `<database directory>/rooms/<id>.key` (mode `0600`). The public key is the room's address.
 - `kam room show` prints each room's public key, a `meshcore://contact/add` URI and the signed advert as hex, creating a missing identity file first.
 - An invalid room is reported and stays disabled; other rooms and radio ingestion are unaffected.
-- The loopback local REST API exposes read-only room summaries, clients, and posts. Client removal remains planned with the KAM API phase 4. Status, telemetry and access-list requests (no reply), the over-the-air CLI, and the post-v1 items in FeatureRoomServer §11 are not implemented.
+- The loopback local REST API exposes room summaries, clients, and posts, and can make a room forget one client (`DELETE /v1/rooms/{id}/clients/{key}`; not a ban). Status, telemetry and access-list requests (no reply), the over-the-air CLI, and the post-v1 items in FeatureRoomServer §11 are not implemented.
 
 ## Source Map
 
@@ -183,7 +183,7 @@ Room servers are implemented for plan phases 1-3; the requirements, decisions an
 - SQLite persistence: [`internal/db/persistence.go`](../internal/db/persistence.go), room repository [`internal/db/rooms.go`](../internal/db/rooms.go)
 - Starlark automation: [`internal/automation`](../internal/automation/), script routes over the unified listener in [`internal/api`](../internal/api/) and the adapter [`internal/node/scripts.go`](../internal/node/scripts.go)
 - Automation script repository: [`internal/db/automation.go`](../internal/db/automation.go)
-- Local REST API: [`internal/api`](../internal/api/), event ring [`internal/events`](../internal/events/), node adapters [`internal/node/monitor.go`](../internal/node/monitor.go), [`internal/node/scripts.go`](../internal/node/scripts.go), modem capability [`internal/node/modem.go`](../internal/node/modem.go)
+- Local REST API: [`internal/api`](../internal/api/), event ring [`internal/events`](../internal/events/), node composition and adapters [`internal/node/api.go`](../internal/node/api.go), [`internal/node/status.go`](../internal/node/status.go), [`internal/node/events.go`](../internal/node/events.go), [`internal/node/channels.go`](../internal/node/channels.go), [`internal/node/rooms.go`](../internal/node/rooms.go), [`internal/node/scripts.go`](../internal/node/scripts.go), modem capability [`internal/node/modem.go`](../internal/node/modem.go)
 - Unified API design: [`FeatureUnifiedApi.md`](FeatureUnifiedApi.md)
 - Example ECHO script: [`examples/echo.star`](examples/echo.star)
 - Example periodic weather post: [`examples/periodic.star`](examples/periodic.star)
