@@ -25,7 +25,7 @@ func roomKey(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
 
 func TestRoomSchemaCoexistsWithLegacyDatabaseAndIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kam.db")
-	persistence, err := NewPersistence(path)
+	persistence, err := NewPersistence(path, AdvertRetention{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestRoomMonitorQueriesReturnStatsAndNewestPostsFirst(t *testing.T) {
 }
 
 func TestAdvertNicknameUsesTheNewestRecord(t *testing.T) {
-	persistence, err := NewPersistence(filepath.Join(t.TempDir(), "kam.db"))
+	persistence, err := NewPersistence(filepath.Join(t.TempDir(), "kam.db"), AdvertRetention{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,14 +158,14 @@ func TestAdvertNicknameUsesTheNewestRecord(t *testing.T) {
 	advert := func(nickname string) AdvertRecord {
 		return AdvertRecord{PublicKey: key, Signature: []byte{0}, RawPayload: []byte{0}, Nickname: nickname}
 	}
-	if err := InsertAdvertsBatch(persistence.db, []AdvertRecord{advert("Old name"), advert("Newest name")}); err != nil {
+	if err := UpsertAdvertsBatch(persistence.db, []AdvertRecord{advert("Old name"), advert("Newest name")}); err != nil {
 		t.Fatal(err)
 	}
 	label, err := persistence.AdvertNickname(context.Background(), key)
 	if err != nil || label == nil || *label != "Newest name" {
 		t.Fatalf("latest nickname = %v, %v", label, err)
 	}
-	if err := InsertAdvertsBatch(persistence.db, []AdvertRecord{advert("")}); err != nil {
+	if err := UpsertAdvertsBatch(persistence.db, []AdvertRecord{advert("")}); err != nil {
 		t.Fatal(err)
 	}
 	label, err = persistence.AdvertNickname(context.Background(), key)
@@ -315,7 +315,7 @@ func TestRoomClientsRoundTripUpsertAndDelete(t *testing.T) {
 
 func TestRoomRepositoryConcurrentWritersAndPersistenceDoNotFail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kam.db")
-	persistence, err := NewPersistence(path)
+	persistence, err := NewPersistence(path, AdvertRetention{})
 	if err != nil {
 		t.Fatal(err)
 	}

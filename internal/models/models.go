@@ -28,6 +28,7 @@ type KamConfig struct {
 	Mesh    *MeshConfig    `yaml:"mesh,omitempty"`
 	Rooms   []RoomConfig   `yaml:"rooms,omitempty"`
 	Monitor *MonitorConfig `yaml:"monitor,omitempty"`
+	Adverts *AdvertsConfig `yaml:"adverts,omitempty"`
 }
 
 // RadioConfig defines the default serial and RF settings.

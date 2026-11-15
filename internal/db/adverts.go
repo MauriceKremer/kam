@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -14,11 +15,49 @@ const (
 	defaultAdvertQueueSize     = 256
 	defaultAdvertBatchSize     = 50
 	defaultAdvertFlushInterval = time.Second
+	defaultAdvertPruneInterval = time.Hour
 )
+
+// AdvertRetention bounds the adverts table; a zero field disables that bound.
+// The caller derives it from the adverts section of kam.yml.
+type AdvertRetention struct {
+	KeepDays int64
+	MaxKept  int64
+}
+
+// PruneAdverts deletes adverts not heard for keepDays (0 keeps all), then
+// every advert beyond the newest-heard maxKept rows (0 keeps all). What goes
+// is the oldest last-heard; rows are refreshed when a node is reheard, so
+// active nodes survive and stale ghosts go first.
+func PruneAdverts(db *sql.DB, keepDays, maxKept int64) (int64, error) {
+	var deleted int64
+	if keepDays > 0 {
+		result, err := db.Exec(`DELETE FROM adverts WHERE received_at < unixepoch() - ?`, keepDays*86400)
+		if err != nil {
+			return deleted, fmt.Errorf("prune adverts by age: %w", err)
+		}
+		n, _ := result.RowsAffected()
+		deleted += n
+	}
+	if maxKept > 0 {
+		// Everything after the newest-heard maxKept rows, in that order: the
+		// oldest-heard go first.
+		result, err := db.Exec(`DELETE FROM adverts WHERE id IN (
+  SELECT id FROM adverts ORDER BY received_at DESC, id DESC LIMIT -1 OFFSET ?)`, maxKept)
+		if err != nil {
+			return deleted, fmt.Errorf("prune adverts by count: %w", err)
+		}
+		n, _ := result.RowsAffected()
+		deleted += n
+	}
+	return deleted, nil
+}
 
 // AdvertQueue decouples advert ingestion from SQLite writes.
 type AdvertQueue struct {
 	db *sql.DB
+	// retention bounds the stored advert history; a zero struct never prunes.
+	retention AdvertRetention
 
 	ch       chan parsers.AdvertPacket
 	stopCh   chan struct{}
@@ -35,15 +74,16 @@ type AdvertQueue struct {
 }
 
 // NewAdvertQueue starts a batched advert writer against an already-open SQLite
-// handle. Call Stop to flush remaining items; the caller remains responsible for
-// closing the database handle.
-func NewAdvertQueue(db *sql.DB) *AdvertQueue {
+// handle with the given retention bounds; call Stop to flush remaining items.
+// The caller remains responsible for closing the database handle.
+func NewAdvertQueue(db *sql.DB, retention AdvertRetention) *AdvertQueue {
 	q := &AdvertQueue{
 		db:            db,
 		ch:            make(chan parsers.AdvertPacket, defaultAdvertQueueSize),
 		stopCh:        make(chan struct{}),
 		batchSize:     defaultAdvertBatchSize,
 		flushInterval: defaultAdvertFlushInterval,
+		retention:     retention,
 	}
 
 	q.done.Add(1)
@@ -98,6 +138,12 @@ type AdvertMetrics struct {
 func (q *AdvertQueue) writerLoop() {
 	defer q.done.Done()
 
+	if q.retention.KeepDays > 0 || q.retention.MaxKept > 0 {
+		q.prune()
+	}
+	pruneTicker := time.NewTicker(defaultAdvertPruneInterval)
+	defer pruneTicker.Stop()
+
 	ticker := time.NewTicker(q.flushInterval)
 	defer ticker.Stop()
 
@@ -107,9 +153,9 @@ func (q *AdvertQueue) writerLoop() {
 		if len(batch) == 0 {
 			return
 		}
-		if err := InsertAdvertsBatch(q.db, batch); err != nil {
+		if err := UpsertAdvertsBatch(q.db, batch); err != nil {
 			q.failed.Add(int64(len(batch)))
-			slog.Error("[AdvertQueue] batch insert failed", "error", err, "count", len(batch))
+			slog.Error("[AdvertQueue] batch write failed", "error", err, "count", len(batch))
 		} else {
 			q.flushed.Add(int64(len(batch)))
 			slog.Info("[AdvertQueue] batch flushed", "count", len(batch))
@@ -141,7 +187,23 @@ func (q *AdvertQueue) writerLoop() {
 
 		case <-ticker.C:
 			flush()
+
+		case <-pruneTicker.C:
+			q.prune()
 		}
+	}
+}
+
+// prune deletes adverts outside the retention bounds. It runs on the writer
+// goroutine, so it never races the batch inserts.
+func (q *AdvertQueue) prune() {
+	deleted, err := PruneAdverts(q.db, q.retention.KeepDays, q.retention.MaxKept)
+	if err != nil {
+		slog.Error("[AdvertQueue] prune failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		slog.Info("[AdvertQueue] pruned adverts", "deleted", deleted)
 	}
 }
 

@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS adverts (
   raw_payload BLOB NOT NULL,
   hop_count INTEGER NOT NULL DEFAULT 0,
   hop_stations TEXT NOT NULL DEFAULT '[]',
-  received_at INTEGER NOT NULL DEFAULT (unixepoch())
+  received_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  first_received_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_adverts_received_at ON adverts(received_at);
@@ -46,6 +47,11 @@ CREATE INDEX IF NOT EXISTS idx_adverts_node_type ON adverts(is_chat_node, is_rep
 	// column.
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_adverts_hop_count ON adverts(hop_count);`); err != nil {
 		return fmt.Errorf("create idx_adverts_hop_count: %w", err)
+	}
+	// Adverts first heard before this column existed have no known first-seen
+	// time; received_at is the best value available (usually a second later).
+	if _, err := db.Exec(`UPDATE adverts SET first_received_at = received_at WHERE first_received_at IS NULL`); err != nil {
+		return fmt.Errorf("backfill adverts first_received_at: %w", err)
 	}
 	return nil
 }
@@ -76,6 +82,9 @@ func migrateAdvertsColumns(db *sql.DB) error {
 	if err := add("hop_stations", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
+	if err := add("first_received_at", ""); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -99,17 +108,32 @@ type AdvertRecord struct {
 	HopStations      string // JSON array of hex-encoded path hashes, e.g. `["a1","b2c3"]`
 }
 
-func InsertAdvertsBatch(db *sql.DB, records []AdvertRecord) error {
+// UpsertAdvertsBatch stores adverts in one transaction. An advert from a
+// public key that is already stored updates the existing row (latest wins),
+// so a reheard advert moves the last-heard time instead of adding a row;
+// first_received_at keeps the original insert time.
+func UpsertAdvertsBatch(db *sql.DB, records []AdvertRecord) error {
 	if len(records) == 0 {
 		return nil
 	}
-	const query = `
+	// received_at is bumped on update so the row tracks when the node was
+	// last heard; first_received_at is only ever set on insert.
+	const updateQuery = `
+UPDATE adverts SET
+  node_hash = ?, advert_timestamp = ?, signature = ?, signature_valid = ?,
+  is_chat_node = ?, is_repeater = ?, is_room_server = ?, is_sensor = ?,
+  nickname = ?, has_location = ?, latitude = ?, longitude = ?,
+  time_drift_seconds = ?, raw_payload = ?, hop_count = ?, hop_stations = ?,
+  received_at = unixepoch()
+WHERE public_key = ?;
+`
+	const insertQuery = `
 INSERT INTO adverts (
   node_hash, public_key, advert_timestamp, signature, signature_valid,
   is_chat_node, is_repeater, is_room_server, is_sensor,
   nickname, has_location, latitude, longitude, time_drift_seconds, raw_payload,
-  hop_count, hop_stations
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+  hop_count, hop_stations, first_received_at, received_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch());
 `
 	tx, err := db.Begin()
 	if err != nil {
@@ -117,20 +141,26 @@ INSERT INTO adverts (
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(query)
+	upd, err := tx.Prepare(updateQuery)
+	if err != nil {
+		return fmt.Errorf("prepare advert update: %w", err)
+	}
+	defer upd.Close()
+	ins, err := tx.Prepare(insertQuery)
 	if err != nil {
 		return fmt.Errorf("prepare advert insert: %w", err)
 	}
-	defer stmt.Close()
+	defer ins.Close()
 
 	for i, r := range records {
 		hopStations := r.HopStations
 		if hopStations == "" {
 			hopStations = "[]"
 		}
-		if _, err := stmt.Exec(
-			r.NodeHash,
-			r.PublicKey,
+		// Payload values shared by both statements: everything except the
+		// node_hash (first column in both) and the public_key (last argument
+		// of the UPDATE's WHERE, second column of the INSERT).
+		payload := []any{
 			r.Timestamp,
 			r.Signature,
 			boolToInt(r.SignatureValid),
@@ -146,8 +176,17 @@ INSERT INTO adverts (
 			r.RawPayload,
 			r.HopCount,
 			hopStations,
-		); err != nil {
-			return fmt.Errorf("insert advert %d: %w", i, err)
+		}
+		updateArgs := append([]any{r.NodeHash}, payload...)
+		result, err := upd.Exec(append(updateArgs, r.PublicKey)...)
+		if err != nil {
+			return fmt.Errorf("update advert %d: %w", i, err)
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			insertArgs := append([]any{r.NodeHash, r.PublicKey}, payload...)
+			if _, err := ins.Exec(insertArgs...); err != nil {
+				return fmt.Errorf("insert advert %d: %w", i, err)
+			}
 		}
 	}
 

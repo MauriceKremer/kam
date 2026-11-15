@@ -23,7 +23,7 @@ func TestAdvertQueueEnqueueAndFlush(t *testing.T) {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
-	q := NewAdvertQueue(db)
+	q := NewAdvertQueue(db, AdvertRetention{})
 	defer q.Stop()
 
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
@@ -97,7 +97,7 @@ func TestAdvertQueueDropOnFull(t *testing.T) {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
-	q := NewAdvertQueue(db)
+	q := NewAdvertQueue(db, AdvertRetention{})
 	defer q.Stop()
 
 	// Fill queue beyond capacity. Default capacity is 256.
@@ -183,7 +183,7 @@ func TestAdvertBatchInsert(t *testing.T) {
 		},
 	}
 
-	if err := InsertAdvertsBatch(db, records); err != nil {
+	if err := UpsertAdvertsBatch(db, records); err != nil {
 		t.Fatalf("insert batch: %v", err)
 	}
 
@@ -219,7 +219,7 @@ func TestAdvertBatchInsertPersistsHopColumns(t *testing.T) {
 		HopCount:    2,
 		HopStations: `["aa","bb"]`,
 	}}
-	if err := InsertAdvertsBatch(db, records); err != nil {
+	if err := UpsertAdvertsBatch(db, records); err != nil {
 		t.Fatalf("insert batch: %v", err)
 	}
 
@@ -249,7 +249,7 @@ func TestAdvertQueueGracefulShutdownFlush(t *testing.T) {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
-	q := NewAdvertQueue(db)
+	q := NewAdvertQueue(db, AdvertRetention{})
 
 	advert := parsers.AdvertPacket{
 		PublicKey:  []byte("shutdown-key"),
@@ -293,7 +293,7 @@ func TestAdvertEnqueue(t *testing.T) {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
-	q := NewAdvertQueue(db)
+	q := NewAdvertQueue(db, AdvertRetention{})
 	defer q.Stop()
 
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
