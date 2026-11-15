@@ -1,6 +1,6 @@
 # Feature: MeshCore Room Server
 
-**Status:** Plan phases 1-3 are implemented (2026-10-10): packet tap, transmit scheduler, identity and crypto, signed adverts, login and roles, durable posts, push sync, keep-alive, and session persistence. Open: Phase 4 items marked in §6.14 and §11. The Phase 0 captures from a real room server are not possible at the moment (2026-10-18); interoperability is validated instead by subscribing to KAM while it runs, with the hosted rooms advertised at start-up (RS-ADV-6). Decisions D11-D17 were recorded during implementation.
+**Status:** Plan phases 1-3 are implemented (2026-10-10): packet tap, transmit scheduler, identity and crypto, signed adverts, login and roles, durable posts, push sync, keep-alive, and session persistence. Phase 4 is implemented except the status reply (RS-REQ-2), which waits on the real-room-server capture; the management endpoints landed 2026-11-15 (RS-OPS-2, RS-ADV-4). Open: items marked in §6.14 and §11. The Phase 0 captures from a real room server are not possible at the moment (2026-10-18); interoperability is validated instead by subscribing to KAM while it runs, with the hosted rooms advertised at start-up (RS-ADV-6). Decisions D11-D17 were recorded during implementation.
 **Scope:** What KAM must do to appear and behave as a MeshCore **room server** (advert type `ROOM`) to unmodified MeshCore clients, plus the KAM-specific requirements (durability, safety, operations) that the reference firmware does not provide.
 **Reference firmware:** MeshCore `main` at commit `a366955` (2026-09-30), `FIRMWARE_VERSION` `v1.17.1` in `MyMesh.h`.
 
@@ -353,7 +353,7 @@ Status as of 2026-10-10. **Done** means implemented and covered by tests (see §
 | RS-ID-1, RS-ID-2, RS-ID-3 | Done | One hex seed per room in `<database directory>/rooms/<id>.key` (mode `0600` in a `0700` directory, written atomically; a corrupt file is refused, never replaced). Hash `0x00`/`0xFF` and another room's hash are regenerated. X25519 uses `math/big` and `crypto/ecdh` (no new dependency) and is checked against the MeshCore test key pair from `Identity.cpp`. Public keys are logged and printed by `kam room show`; the private seed is never logged (tested). |
 | RS-ID-4 | Partly | Backup is copying the key file. Importing a 64-byte MeshCore private key (MAY) is not implemented. |
 | RS-ADV-1, RS-ADV-2, RS-ADV-3, RS-ADV-5 | Done | Signed `ROOM` adverts, strictly increasing timestamps within a run, configurable intervals counted by the scheduler, hash size and default scope applied. Name length is validated at load. |
-| RS-ADV-4 | Partly | `kam room show` (signed advert hex and `meshcore://contact/add` URI). On-demand adverts and adverts after a name change need an HTTP endpoint or a restart. Start-up adverts are RS-ADV-6. |
+| RS-ADV-4 | Done | `kam room show` (signed advert hex and `meshcore://contact/add` URI), and `POST /v1/rooms/{id}/advert` sends a flood advert now (2026-11-15). A changed name still shows after the next advert or a restart. Start-up adverts are RS-ADV-6. |
 | RS-ADV-6 | Done | One flood advert per room at start-up, staggered 2 s, replacing its own stale queued advert (D14). Pinned as its own MUST on 2026-10-18 because subscribing to KAM while it runs is the interoperability validation now that the Phase 0 room-server captures are not possible. |
 | RS-RX-1 .. RS-RX-7 | Done | Packet tap (`Manager.SubscribePackets`), the "for us" rule with the early-ACK exception, a 2-minute / 512-entry dedup over type and payload, `src_hash` collisions, malformed input dropped without panic (tests feed truncated, bit-flipped and random packets; there is no Go fuzz target yet), no forwarding code. |
 | RS-AUTH-1 .. RS-AUTH-7 | Done | Decision table, silence on failure, constant-time compare (SHA-256 of both sides), 15-byte limit, per-client replay rules, 13-byte response with 300 ms delay and PATH wrapping, bounded client table with least-recently-active eviction. |
@@ -365,7 +365,7 @@ Status as of 2026-10-10. **Done** means implemented and covered by tests (see §
 | RS-PUSH-1 .. RS-PUSH-9 | Done | One push in flight per client, round robin at the reference cadence, 12 s / `4 s + 2 s x (hops+1)` timeouts, three failures stop pushing until the client is active, the route is dropped after three failures, backlog window from the in-memory cache of the newest `backlog_posts`, injected clock. |
 | RS-PATH-1 .. RS-PATH-4 | Done | PATH validation and storage in encoded form, PATH returns for flood requests, replies mirror the request's hash size. |
 | RS-REQ-1 | Done | Keep-alive on direct routes. |
-| RS-REQ-2, RS-REQ-3 | Deferred | Status, telemetry and access-list requests get no reply and are counted. |
+| RS-REQ-2, RS-REQ-3 | Deferred | Status, telemetry and access-list requests get no reply and are counted. RS-REQ-2 still needs the real-room-server capture (R6). |
 | RS-REQ-4 | Not planned | D5. |
 | RS-TX-1, RS-TX-2, RS-TX-4, RS-TX-6, RS-TX-7 | Done | `kiss.TxScheduler`: one frame at a time, `TxDone` gate with a `TxAbandoned` event when the writer gives up, four priority classes, per-packet delay, cancellation by tag, packets validated with `mesh.Parse`, bounded queue (128) with eviction of deferrable packets and counters. `send.Sender` goes through the scheduler unchanged. |
 | RS-TX-3 | Partly | Sliding one-hour airtime budget from the LoRa formula (D15). `GetAirtime`-based accounting is deferred. |
@@ -375,8 +375,8 @@ Status as of 2026-10-10. **Done** means implemented and covered by tests (see §
 | RS-DB-3 | Partly | Pruning every 10 minutes with a log line; no metrics export. |
 | RS-CFG-1, RS-CFG-3 | Done | `rooms:` and `mesh:` blocks; an invalid room stays disabled (`KamConfig.ResolveRooms`). `txdelay` stays under `radio.csma` ([FeatureKissModem.md](FeatureKissModem.md)). |
 | RS-CFG-2 | Done | Passwords are plain text in `kam.yml`, like channel keys (D11). The generated identity key is its own file. |
-| RS-OPS-1 | Partly | Counters in `room.Stats` and `TxScheduler.Stats`; room statistics are logged at shutdown; no export. |
-| RS-OPS-2 | Deferred | D17. |
+| RS-OPS-1 | Done | Counters in `room.Stats` and `TxScheduler.Stats`; `GET /v1/rooms` exports the per-room counters, `GET /v1/status` the TX queue, defers and airtime used, and `room` events the per-event detail. Room statistics are also logged at shutdown. |
+| RS-OPS-2 | Done | `DELETE /v1/rooms/{id}/clients/{key}`, `DELETE /v1/rooms/{id}/posts/{post}` and `POST /v1/rooms/{id}/advert` on the loopback listener (2026-11-15, [APIdetails.md](APIdetails.md)). The calls run on the room worker; the client delete is not a ban and a failed delete leaves the session intact. Role editing stays withdrawn by FeatureKamApi D11, and the pubkey/advert and stats views are covered by `kam room show` and `GET /v1/rooms`. |
 | RS-OPS-3, RS-OPS-4, RS-OPS-5 | Done | Intake, then automation, rooms, scheduler, manager; a room that cannot start never stops ingestion; a start-up warning when the host clock is earlier than the newest stored post. |
 | RS-MULTI-1 .. RS-MULTI-5 | Done | Up to 10 rooms (D13). Regeneration avoids hash collisions at creation; keys that already collide are used and logged, and the first MAC that verifies wins. |
 
@@ -449,6 +449,7 @@ Recorded 2026-10-10. D7 and D9 differ from the recommendation; their consequence
 | D15 | **Duty-cycle cap in this round** (RS-TX-3) | Basic cap in the scheduler; or document the gap | Basic cap. | **Basic cap:** sliding one-hour estimate, default 10%, defers pushes and adverts only. |
 | D16 | **Retention defaults** (RS-POST-7) | 1000 posts / 30 days; 200 / 7 days; unlimited | 1000 / 30. | **1000 posts / 30 days**; 0 means unlimited. |
 | D17 | **Operator access in this round** (RS-ID-3, RS-ADV-4, RS-OPS-2) | Log + CLI; log only; CLI + loopback API | Log + CLI. | **Start-up log and `kam room show`**; HTTP endpoints wait for Phase 4. |
+| D18 | **Management writes in the loopback API** (RS-OPS-2, RS-ADV-4, refines D17) | Three routes: client removal, post deletion, forced advert | Phase 4 as planned. | **Accepted (2026-11-15).** Role editing stays out: FeatureKamApi D11 leaves room roles to the radio login. Creating rooms and editing posts stay CLI/config work. |
 
 D1, D2, D3, D6, D7, D9 and D11 are candidates for ADRs.
 
@@ -527,7 +528,7 @@ No time estimates. Each phase ends with an observable exit criterion.
 
 - Phase 0: paused (2026-10-18) — the captures from a real room server are not possible at the moment: the login/push/status capture (golden files and the `ServerStats` layout, R6) needs a second device running MeshCore room-server firmware. Interoperability is validated instead by the operator subscribing to KAM while it runs, against the §12 scenarios, with the hosted rooms advertised at start-up (RS-ADV-6). The modem-side measurements ran 2026-10-18 ([FeatureKissModem.md](FeatureKissModem.md) §11): TXDELAY adds 0.3-0.6 s per transmission at the 500 ms default, and the modem's `airtime(255)` reading of 848 ms scales to roughly 0.55 s for a 166-byte post, consistent with the R3 estimate; the duty-cycle ledger still needs confirmation against real catch-up traffic.
 - Phases 1-3: done (§6.14).
-- Phase 4: the duty-cycle cap, retention pruning, counters and start-up validation are done; the status reply, counter export, and KAM API endpoints are open; operator documentation is in the README and the manual.
+- Phase 4: the duty-cycle cap, retention pruning, counters, start-up validation and the KAM API endpoints (client removal, post deletion, forced advert) are done; the status reply (RS-REQ-2) is open because it needs the real-room-server capture (R6); operator documentation is in the README and the manual.
 - Phase 5: open.
 
 ## 12. Verification

@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -151,6 +152,32 @@ func (r apiRooms) Posts(ctx context.Context, id string, limit int) ([]api.RoomPo
 	return items, nil
 }
 
+// RemoveClient, DeletePost and ForceAdvert are the room management seam. The
+// capability's not-found verdicts become the API's own 404 sentinels.
+func (r apiRooms) RemoveClient(ctx context.Context, id, key string) error {
+	return roomAdminError(r.service.RemoveClient(ctx, id, key))
+}
+
+func (r apiRooms) DeletePost(ctx context.Context, id string, postID uint32) error {
+	return roomAdminError(r.service.DeletePost(ctx, id, postID))
+}
+
+func (r apiRooms) ForceAdvert(ctx context.Context, id string) error {
+	return roomAdminError(r.service.ForceAdvert(ctx, id))
+}
+
+func roomAdminError(err error) error {
+	switch {
+	case errors.Is(err, room.ErrRoomNotFound):
+		return api.ErrRoomNotFound
+	case errors.Is(err, room.ErrClientNotFound):
+		return api.ErrRoomClientNotFound
+	case errors.Is(err, room.ErrPostNotFound):
+		return api.ErrRoomPostNotFound
+	}
+	return err
+}
+
 func roomRoleName(role uint8) string {
 	switch role {
 	case room.RoleAdmin:
@@ -234,8 +261,10 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 		channelReader = apiChannels{persistence: persistence, configured: cfg.Channels}
 	}
 	var roomReader api.RoomReader
+	var roomAdmin api.RoomAdmin
 	if n.rooms != nil && n.roomRepository != nil && persistence != nil {
-		roomReader = apiRooms{service: n.rooms, repository: n.roomRepository, persistence: persistence}
+		adapter := apiRooms{service: n.rooms, repository: n.roomRepository, persistence: persistence}
+		roomReader, roomAdmin = adapter, adapter
 	}
 	var modemSource api.ModemSource
 	if n.scheduler != nil && n.radio != nil && n.radioState != nil {
@@ -251,7 +280,7 @@ func (n *Node) startMonitor(cfg *models.KamConfig, persistence *db.Persistence, 
 		snapshot := collector.Collect()
 		return systemToWire(snapshot)
 	}
-	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomReader, modemSource, systemSource))
+	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomReader, roomAdmin, modemSource, systemSource))
 	if err != nil {
 		slog.Error("local API listener unavailable", "address", settings.Listen, "error", err)
 		if n.modem != nil {

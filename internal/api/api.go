@@ -13,7 +13,9 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"mime"
 	"net"
@@ -133,6 +135,23 @@ type RoomReader interface {
 	Posts(context.Context, string, int) ([]RoomPost, error)
 }
 
+// RoomAdmin is the room write seam: forget a client, delete a post, send an
+// advert now. A nil RoomAdmin leaves these routes unregistered.
+//
+// The capability decides the verdict and the handler the status code: its
+// failures are wrapped in one of the sentinels below for 404.
+var (
+	ErrRoomNotFound       = errors.New("room not found")
+	ErrRoomClientNotFound = errors.New("room client not found")
+	ErrRoomPostNotFound   = errors.New("room post not found")
+)
+
+type RoomAdmin interface {
+	RemoveClient(ctx context.Context, roomID, publicKey string) error
+	DeletePost(ctx context.Context, roomID string, postID uint32) error
+	ForceAdvert(ctx context.Context, roomID string) error
+}
+
 type RadioStatus struct {
 	FrequencyHz     uint32 `json:"frequency_hz"`
 	BandwidthHz     uint32 `json:"bandwidth_hz"`
@@ -234,17 +253,17 @@ type SystemDB struct {
 }
 
 func NewHandler(ring EventsSource, status func() Status) http.Handler {
-	return NewHandlerWithResources(ring, status, nil, nil, nil, nil, nil)
+	return NewHandlerWithResources(ring, status, nil, nil, nil, nil, nil, nil)
 }
 
 func NewHandlerWithChannels(ring EventsSource, status func() Status, channels ChannelReader) http.Handler {
-	return NewHandlerWithResources(ring, status, nil, channels, nil, nil, nil)
+	return NewHandlerWithResources(ring, status, nil, channels, nil, nil, nil, nil)
 }
 
 // NewHandlerWithResources composes the whole listener. system hands in the
 // throttled host-snapshot collector; nil hides the system section even when a
 // request asks for it.
-func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomReader, modem ModemSource, system func() *SystemStatus) http.Handler {
+func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomReader, roomAdmin RoomAdmin, modem ModemSource, system func() *SystemStatus) http.Handler {
 	mux := http.NewServeMux()
 	registerScriptRoutes(mux, scripts)
 	registerModemRoutes(mux, modem)
@@ -429,6 +448,52 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 		}
 		writeJSON(w, 200, map[string]any{"room": id, "posts": posts})
 	})
+	if roomAdmin != nil {
+		mux.HandleFunc("DELETE /v1/rooms/{id}/clients/{key}", func(w http.ResponseWriter, request *http.Request) {
+			if rooms == nil {
+				writeJSON(w, 503, map[string]string{"error": "rooms are disabled"})
+				return
+			}
+			key := request.PathValue("key")
+			if raw, err := hex.DecodeString(key); err != nil || len(raw) != 32 {
+				writeJSON(w, 400, map[string]string{"error": "key must be a 64-character lowercase hex public key"})
+				return
+			}
+			if err := roomAdmin.RemoveClient(request.Context(), request.PathValue("id"), key); err != nil {
+				writeRoomAdminError(w, err)
+				return
+			}
+			w.WriteHeader(204)
+		})
+		mux.HandleFunc("DELETE /v1/rooms/{id}/posts/{post}", func(w http.ResponseWriter, request *http.Request) {
+			if rooms == nil {
+				writeJSON(w, 503, map[string]string{"error": "rooms are disabled"})
+				return
+			}
+			post, err := strconv.ParseUint(request.PathValue("post"), 10, 32)
+			if err != nil {
+				writeJSON(w, 400, map[string]string{"error": "post must be a post id"})
+				return
+			}
+			if err := roomAdmin.DeletePost(request.Context(), request.PathValue("id"), uint32(post)); err != nil {
+				writeRoomAdminError(w, err)
+				return
+			}
+			w.WriteHeader(204)
+		})
+		mux.HandleFunc("POST /v1/rooms/{id}/advert", func(w http.ResponseWriter, request *http.Request) {
+			if rooms == nil {
+				writeJSON(w, 503, map[string]string{"error": "rooms are disabled"})
+				return
+			}
+			id := request.PathValue("id")
+			if err := roomAdmin.ForceAdvert(request.Context(), id); err != nil {
+				writeRoomAdminError(w, err)
+				return
+			}
+			writeJSON(w, 202, map[string]string{"room": id, "status": "queued"})
+		})
+	}
 	indexHandler := func(w http.ResponseWriter, request *http.Request) {
 		endpoints := []apiEndpoint{
 			{Method: "GET", Path: "/v1/status", Purpose: "one snapshot of the running node; add ?system=true for machine memory, cpu, disk and database size"},
@@ -438,6 +503,13 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 			endpoints = append(endpoints,
 				apiEndpoint{Method: "GET", Path: "/v1/channels", Purpose: "configured channels, never a key"},
 				apiEndpoint{Method: "GET", Path: "/v1/channels/{name}/messages", Purpose: "stored group texts, newest first"},
+			)
+		}
+		if roomAdmin != nil {
+			endpoints = append(endpoints,
+				apiEndpoint{Method: "DELETE", Path: "/v1/rooms/{id}/clients/{key}", Purpose: "forget a client session and cancel its pushes"},
+				apiEndpoint{Method: "DELETE", Path: "/v1/rooms/{id}/posts/{post}", Purpose: "delete one stored post"},
+				apiEndpoint{Method: "POST", Path: "/v1/rooms/{id}/advert", Purpose: "send a flood advert now"},
 			)
 		}
 		endpoints = append(endpoints,
@@ -519,6 +591,17 @@ func loopbackHost(hostport string) bool {
 	}
 	address, err := netip.ParseAddr(host)
 	return err == nil && address.IsLoopback()
+}
+
+// writeRoomAdminError maps a RoomAdmin failure to its status code: a
+// capability not-found verdict is 404, anything else 500.
+func writeRoomAdminError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrRoomNotFound) || errors.Is(err, ErrRoomClientNotFound) || errors.Is(err, ErrRoomPostNotFound) {
+		writeJSON(w, 404, map[string]string{"error": err.Error()})
+		return
+	}
+	slog.Warn("room management call failed", "error", err)
+	writeJSON(w, 500, map[string]string{"error": "could not change the room"})
 }
 
 func roomExists(ctx context.Context, reader RoomReader, id string) (bool, error) {

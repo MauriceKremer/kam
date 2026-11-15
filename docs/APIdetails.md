@@ -2,7 +2,7 @@
 
 This is the reference for the REST endpoints KAM serves **today**. It lists only
 implemented endpoints, with their parameters and responses. Planned endpoints
-(room-client removal, script dry runs and run info) live in
+(script dry runs and run info) live in
 [FeatureKamApi.md](FeatureKamApi.md) §7 and §10; they are not described here.
 
 KAM serves one small REST API, loopback-only and without authentication, at
@@ -225,7 +225,7 @@ useless (epoch changed, or events were dropped from the ring); start over with
 | `advert_role` | Advert role, when the packet carried one. |
 | `ok` | `tx` only: the modem acknowledged the send. |
 | `origin` | `tx` only: who produced the frame — `advert`, `room`, or `other`. |
-| `event`, `client`, `role` | `room` only: one of `login_ok`, `login_failed`, `login_rate_limited`, `post`, `post_rejected`, `push_sent`, `push_acked`, `push_timeout`, the client's public key, and its role. |
+| `event`, `client`, `role` | `room` only: one of `login_ok`, `login_failed`, `login_rate_limited`, `post`, `post_rejected`, `push_sent`, `push_acked`, `push_timeout`, `client_removed`, the client's public key, and its role. |
 
 Example, abridged:
 
@@ -286,7 +286,7 @@ curl -s 'http://127.0.0.1:8766/v1/channels/%23emmen/messages?limit=10'
 ### GET /v1/rooms
 
 All configured rooms with their live counters. When the room subsystem is off,
-this (and the two room endpoints below) return `503 {"error": "rooms are
+this (and the other room endpoints) return `503 {"error":"rooms are
 disabled"}`. Counter totals reset when KAM starts.
 
 | Field | Meaning |
@@ -323,6 +323,52 @@ timestamp, `created_at`, `author_key`, `body`).
 
 ```sh
 curl -s 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=5'
+```
+
+### DELETE /v1/rooms/{id}/clients/{key}
+
+Forgets one client's session: it leaves the room's client table, its pending
+pushes are cancelled, and its stored record is deleted. Answers `204` with no
+body. A `room` event of kind `client_removed` is recorded.
+
+The path parameter is the client's 32-byte public key in lowercase hex (64
+characters); anything else is `400`. A room without that client, or an unknown
+room id, returns `404`.
+
+This is not a ban: the radio can log in again with the same room password, and
+the room's passwords and roles are unchanged.
+
+```sh
+curl -s -X DELETE 'http://127.0.0.1:8766/v1/rooms/lobby/clients/ed8342bc…'
+```
+
+### DELETE /v1/rooms/{id}/posts/{post}
+
+Deletes one stored post. `{post}` is the post `id` from `GET
+/v1/rooms/{id}/posts` (its stored timestamp). Answers `204` with no body.
+An unknown post or room id returns `404`.
+
+The post is removed from the store and from the backlog cache, so it is not
+pushed to clients that have not caught up yet. Clients that already received it
+keep their copy.
+
+```sh
+curl -s -X DELETE 'http://127.0.0.1:8766/v1/rooms/lobby/posts/91'
+```
+
+### POST /v1/rooms/{id}/advert
+
+Sends a flood advert for the room now, instead of waiting for the configured
+interval. Answers `202` with `{"room": "<id>", "status": "queued"}`: the
+packet is queued for transmission, not yet on air. An unknown room id returns
+`404`.
+
+A queued older advert for the same room is replaced, not stacked. The periodic
+advert timers keep running as before.
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://127.0.0.1:8766/v1/rooms/lobby/advert
 ```
 
 ## Modem monitoring and radio changes — /v1/modem

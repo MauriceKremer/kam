@@ -100,7 +100,15 @@ type flakyStore struct {
 	Store
 	appendErr error
 	saveErr   error
+	deleteErr error
 	saved     int
+}
+
+func (f *flakyStore) DeleteClient(ctx context.Context, roomID string, publicKey []byte) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	return f.Store.DeleteClient(ctx, roomID, publicKey)
 }
 
 func (f *flakyStore) AppendPost(ctx context.Context, roomID string, post db.RoomPost, key []byte, ts uint32) error {

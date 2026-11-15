@@ -1,6 +1,6 @@
 # Feature: KAM API
 
-**Status:** Phases 1-3 implemented (2026-10-12 phases 1-2; phase 3, modem snapshot/query/radio apply with save, landed with the unified listener — hardware verification remains pending). Phases 4 (room-client removal) and 5 (script run info and dry runs) remain planned. Real-radio capture and hardware timing verification remain pending.
+**Status:** Phases 1-4 implemented (2026-10-12 phases 1-2; phase 3, modem snapshot/query/radio apply with save, landed with the unified listener — hardware verification remains pending; phase 4, room-client removal, landed 2026-11-15 together with post deletion and a forced advert, which the room plan also wanted). Phase 5 (script run info and dry runs) remains planned. Real-radio capture and hardware timing verification remain pending.
 **Scope:** The REST interface KAM offers on the local device — the **KAM API** — for any local program. KAMmon, a separate web monitor running on the same computer, is the initial consumer: it reads live radio, channel, room and script data, manages room clients, and changes the KISS modem radio settings.
 **Written from:** KAMmon's point of view. The feature needs are in `tmp/KAMmon_Req_*.md`; the UI is shown in `tmp/kammon-prototype.html`. KAMmon is a separate Go project and never opens KAM's SQLite file.
 
@@ -295,7 +295,9 @@ Message pages are ordered by descending stored `id`, and `before_id` is exclusiv
 | `GET /v1/rooms` | Per room: `id`, `name`, `enabled`, `public_key`, `max_clients`, `clients_remembered`, `last_activity_at`, `last_post_at`, `retained_posts`, and counters (`logins_ok`, `logins_failed`, `logins_rate_limited`, `posts_accepted`, `posts_rejected`, `pushes_sent`, `pushes_acked`, `push_timeouts`). |
 | `GET /v1/rooms/{id}/clients` | Per client: `public_key`, password-granted `role`, `last_activity_at`, `push_state`, `label`. No pin or role-editing control. |
 | `GET /v1/rooms/{id}/posts?limit=` | Latest retained posts, newest first: `id`, `created_at`, `author_key`, `body`. Maximum 200. |
-| `DELETE /v1/rooms/{id}/clients/{key}` | Forgets the client's session, cancels its pending pushes and deletes its persisted client record. Returns `204`; unknown clients return `404`. |
+| `DELETE /v1/rooms/{id}/clients/{key}` | Forgets the client's session, cancels its pending pushes and deletes its persisted client record. Returns `204`; unknown clients return `404`. Implemented. |
+| `DELETE /v1/rooms/{id}/posts/{post}` | Deletes one stored post from the store and the backlog cache. Returns `204`; unknown posts return `404`. Implemented (room plan RS-OPS-2). |
+| `POST /v1/rooms/{id}/advert` | Queues a flood advert for the room now. Returns `202`; unknown rooms return `404`. Implemented (room plan RS-OPS-2, RS-ADV-4). |
 
 - `role` is `guest`, `read_only`, `read_write` or `admin`. Only `read_write` and `admin` can post. This describes radio-side room behavior; it does not grant or restrict REST access.
 - `last_activity_at` is the last time a valid request from that client was heard. `null` means KAM has no record of hearing this client. See API-RM-9.
@@ -561,7 +563,7 @@ IDs are stable. "From" lists the KAMmon feature document that needs the item (`t
 | 1 (implemented; hardware verification pending) | `internal/monitor` package, listener, `/v1/status`, event ring, `rx` and `tx` events, `epoch`/`next_after` | Overview, Traffic, DataStore | Automated transport/HTTP/cursor/lifecycle tests pass; real-radio acceptance remains pending |
 | 2 (implemented) | Channels endpoints; room list, clients, posts, `room` events, per-room counters, persisted `last_heard_at` | Channels, Rooms | Focused repository, handler, worker-snapshot and race tests pass |
 | 3 (implemented; hardware verification pending) | Modem snapshot, query and `PUT /v1/modem/radio` with save | KissModem | A change survives a KAM restart and a simulated modem reset; automated handler and recovery tests pass |
-| 4 | Client removal endpoint; protocol roles remain read-only | RoomAccounts | Removal cannot resurrect a client via batch persistence; existing room-login tests remain unchanged |
+| 4 (implemented) | Client removal endpoint; protocol roles remain read-only | RoomAccounts | Removal cannot resurrect a client via batch persistence; existing room-login tests remain unchanged |
 | 5 | Script `run` info and dry run | Automations | A dry run never transmits and cannot freeze a live script |
 
 **Tests**

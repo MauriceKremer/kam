@@ -321,7 +321,9 @@ func (r *roomState) evictionCandidate() *client {
 	return victim
 }
 
-func (r *roomState) removeClient(c *client) {
+// dropClient takes a client out of the room's table and cancels its pending
+// pushes without touching storage.
+func (r *roomState) dropClient(c *client) {
 	for i, other := range r.clients {
 		if other == c {
 			r.clients = append(r.clients[:i], r.clients[i+1:]...)
@@ -334,10 +336,16 @@ func (r *roomState) removeClient(c *client) {
 	delete(r.byKey, c.pub)
 	r.svc.clients.Add(-1)
 	r.svc.tx.Cancel(r.pushTag(c))
+}
+
+// removeClient drops a client and deletes its stored session; an eviction
+// cannot keep the record, so a failed delete is only logged.
+func (r *roomState) removeClient(c *client) {
+	r.dropClient(c)
 	ctx, cancel := storeContext()
 	defer cancel()
 	if err := r.svc.store.DeleteClient(ctx, r.cfg.ID, c.pub[:]); err != nil {
-		slog.Error("[Room] could not delete evicted client", "room", r.cfg.ID, "error", err)
+		slog.Error("[Room] could not delete client session", "room", r.cfg.ID, "error", err)
 	}
 }
 

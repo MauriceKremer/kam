@@ -109,10 +109,12 @@ Other commands: `kam channel upsert ...` (add or change a channel in `kam.yml`) 
 ## Local REST API
 
 KAM serves one loopback REST API — the **KAM API** — on `127.0.0.1:8766`. It
-hosts the read-only data surfaces — `GET /v1/status` and `GET /v1/events`,
-channel history (`GET /v1/channels`, `GET /v1/channels/{name}/messages`) and
+hosts the data surfaces — `GET /v1/status` and `GET /v1/events`,
+channel history (`GET /v1/channels`, `GET /v1/channels/{name}/messages`),
 room data (`GET /v1/rooms`, `GET /v1/rooms/{id}/clients`,
-`GET /v1/rooms/{id}/posts`) — plus, on the same listener, script management
+`GET /v1/rooms/{id}/posts`) and room management (`DELETE
+/v1/rooms/{id}/clients/{key}`, `DELETE /v1/rooms/{id}/posts/{post}`, `POST
+/v1/rooms/{id}/advert`) — plus, on the same listener, script management
 ([Automation](#automation-starlark-scripts)) and modem monitoring and radio
 control: `GET /v1/modem` (a cached snapshot refreshed every 10 s),
 `POST /v1/modem/query` (one read-only command) and `PUT /v1/modem/radio`

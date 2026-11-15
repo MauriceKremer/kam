@@ -337,6 +337,16 @@ func (r *RoomRepository) DeleteClient(ctx context.Context, roomID string, public
 	return nil
 }
 
+// DeletePost removes one post. It reports whether the room had it.
+func (r *RoomRepository) DeletePost(ctx context.Context, roomID string, postID uint32) (bool, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM room_posts WHERE room_id = ? AND post_ts = ?`, roomID, postID)
+	if err != nil {
+		return false, fmt.Errorf("delete room post: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	return deleted > 0, err
+}
+
 // LoadClients returns the stored client sessions, most recently updated first.
 func (r *RoomRepository) LoadClients(ctx context.Context, roomID string) ([]RoomClient, error) {
 	rows, err := r.db.QueryContext(ctx, `SELECT public_key, role, sync_since, last_timestamp, out_path_len, out_path, last_heard_at FROM room_clients WHERE room_id = ? ORDER BY updated_at DESC, public_key`, roomID)

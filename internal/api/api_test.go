@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -128,8 +130,9 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 		t.Fatalf("index lists channels without a channel reader: %+v", base)
 	}
 
-	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomReader{}, nil, nil)))
-	for _, want := range []string{"GET /v1/channels", "GET /v1/channels/{name}/messages"} {
+	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomReader{}, &testRoomAdmin{}, nil, nil)))
+	for _, want := range []string{"GET /v1/channels", "GET /v1/channels/{name}/messages",
+		"DELETE /v1/rooms/{id}/clients/{key}", "DELETE /v1/rooms/{id}/posts/{post}", "POST /v1/rooms/{id}/advert"} {
 		if !full[want] {
 			t.Fatalf("index missing %s: %+v", want, full)
 		}
@@ -164,6 +167,77 @@ func (r *testRoomReader) Posts(_ context.Context, _ string, limit int) ([]RoomPo
 
 func (r *testChannelReader) Channels(_ context.Context) ([]Channel, error) {
 	return r.channels, nil
+}
+
+// testRoomAdmin records management calls and replays one scripted verdict.
+type testRoomAdmin struct {
+	err  error
+	got  []string
+	post uint32
+}
+
+func (a *testRoomAdmin) RemoveClient(_ context.Context, id, key string) error {
+	a.got = append(a.got, "client "+id+" "+key)
+	return a.err
+}
+
+func (a *testRoomAdmin) DeletePost(_ context.Context, id string, postID uint32) error {
+	a.got = append(a.got, "post "+id)
+	a.post = postID
+	return a.err
+}
+
+func (a *testRoomAdmin) ForceAdvert(_ context.Context, id string) error {
+	a.got = append(a.got, "advert "+id)
+	return a.err
+}
+
+func TestRoomManagementEndpoints(t *testing.T) {
+	admin := &testRoomAdmin{}
+	reader := &testRoomReader{rooms: []Room{{ID: "lobby"}}}
+	handler := NewHandlerWithResources(newRingSource(64), func() Status { return Status{} }, nil, nil, reader, admin, nil, nil)
+	do := func(method, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(method, "http://127.0.0.1"+path, nil)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	key := strings.Repeat("ab", 32)
+	if response := do("DELETE", "/v1/rooms/lobby/clients/"+key); response.Code != 204 {
+		t.Fatalf("remove client: %d %s", response.Code, response.Body)
+	}
+	if response := do("DELETE", "/v1/rooms/lobby/posts/1700000001"); response.Code != 204 {
+		t.Fatalf("delete post: %d %s", response.Code, response.Body)
+	}
+	if response := do("POST", "/v1/rooms/lobby/advert"); response.Code != 202 {
+		t.Fatalf("force advert: %d %s", response.Code, response.Body)
+	}
+	if len(admin.got) != 3 || admin.got[0] != "client lobby "+key || admin.post != 1700000001 || admin.got[2] != "advert lobby" {
+		t.Fatalf("management calls: %+v post %d", admin.got, admin.post)
+	}
+	for _, path := range []string{"/v1/rooms/lobby/clients/nothex", "/v1/rooms/lobby/clients/abcd", "/v1/rooms/lobby/posts/x"} {
+		if response := do("DELETE", path); response.Code != 400 {
+			t.Fatalf("%s: %d %s", path, response.Code, response.Body)
+		}
+	}
+	admin.err = fmt.Errorf("wrapped: %w", ErrRoomClientNotFound)
+	if response := do("DELETE", "/v1/rooms/lobby/clients/"+key); response.Code != 404 {
+		t.Fatalf("not found: %d %s", response.Code, response.Body)
+	}
+	admin.err = errors.New("database on fire")
+	if response := do("POST", "/v1/rooms/lobby/advert"); response.Code != 500 {
+		t.Fatalf("capability failure: %d %s", response.Code, response.Body)
+	}
+	disabled := NewHandlerWithResources(newRingSource(64), func() Status { return Status{} }, nil, nil, nil, admin, nil, nil)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "http://127.0.0.1/v1/rooms/lobby/advert", nil)
+	request.Header.Set("Content-Type", "application/json")
+	disabled.ServeHTTP(response, request)
+	if response.Code != 503 {
+		t.Fatalf("rooms disabled: %d %s", response.Code, response.Body)
+	}
 }
 
 func (r *testChannelReader) Messages(_ context.Context, name string, limit int, beforeID int64, query string) (ChannelPage, error) {
@@ -212,7 +286,7 @@ func TestRoomReadEndpoints(t *testing.T) {
 		clients: []RoomClient{},
 		posts:   []RoomPost{{ID: 7, Body: "hello"}},
 	}
-	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader, nil, nil)
+	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader, nil, nil, nil)
 	request := func(path string, code int) string {
 		t.Helper()
 		response := httptest.NewRecorder()

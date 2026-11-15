@@ -1,6 +1,7 @@
 package room
 
 import (
+	"errors"
 	"log/slog"
 	"time"
 
@@ -73,13 +74,16 @@ func (r *roomState) tickAdverts(now time.Time) {
 	}
 }
 
-func (r *roomState) sendAdvert(now time.Time, flood bool) {
+func (r *roomState) sendAdvert(now time.Time, flood bool) error {
 	pkt, err := BuildAdvert(r.id, r.cfg, r.svc.mesh, r.svc.uniqueNow(now), flood)
 	if err != nil {
 		slog.Error("[Room] cannot build advert", "room", r.cfg.ID, "error", err)
-		return
+		return err
 	}
 	tag := "advert:" + r.cfg.ID
 	r.svc.tx.Cancel(tag) // a queued stale advert is replaced, not stacked
-	r.svc.submit(pkt, kiss.TxPriorityAdvert, 0, tag, r.cfg.ID)
+	if !r.svc.submit(pkt, kiss.TxPriorityAdvert, 0, tag, r.cfg.ID) {
+		return errors.New("transmit queue refused the advert")
+	}
+	return nil
 }
