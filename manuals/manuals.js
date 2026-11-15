@@ -1,5 +1,18 @@
 const navigation = document.querySelector('.manual-navigation');
 const desktopLayout = window.matchMedia('(min-width: 768px)');
+const themeToggle = document.querySelector('.theme-toggle');
+
+const isDark = () => document.documentElement.dataset.theme === 'dark';
+const themeLabel = () => themeToggle.setAttribute('aria-label', `Switch to ${isDark() ? 'light' : 'dark'} mode`);
+
+themeToggle.addEventListener('click', () => {
+    const dark = !isDark();
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    try { localStorage.setItem('kam-theme', dark ? 'dark' : 'light'); } catch {}
+    themeLabel();
+});
+
+themeLabel();
 
 function updateNavigation() {
     navigation.open = desktopLayout.matches;

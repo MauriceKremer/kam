@@ -52,6 +52,8 @@ Keep glass optional and confined to navigation, with a nearly opaque fallback. R
 
 `manuals/manuals.css` owns the shared token values. Preserve compatibility aliases when changing tokens.
 
+Every manual ships both themes. Light is the default; the dark palette lives in `manuals.css` under `:root[data-theme="dark"]`. A small inline script in each page's `<head>` applies the saved choice (or the system preference on a first visit) before the first paint, and the icon button in the sidebar (moon for switching to dark, sun for switching back) switches and stores it, with its `aria-label` naming the action. Add both the script and the `.theme-toggle` button when you create a manual, and give every new colour a token so both themes follow.
+
 ```css
 :root {
   color-scheme: dark;
@@ -162,6 +164,7 @@ For every manual change, verify the applicable checks:
 - **Accessibility:** WCAG AA contrast for text on actual surfaces, visible focus, keyboard navigation, accessible names, and proper landmarks. Transparency and blur must never obscure text or carry meaning.
 - **Responsive:** desktop, mobile, 320px width, and 200% zoom; no clipped content, overlapping text, or page-wide horizontal scrolling.
 - **Navigation:** anchors, cross-document links, disclosure controls, active states, and copy controls where present.
+- **Themes:** light and dark both readable, the toggle shows the right icon and an action label, the saved choice survives a reload, and print output stays light.
 - **Degradation:** usable content with JavaScript disabled, native font fallbacks, unsupported glass effects, and unavailable external assets.
 - **Motion:** respect `prefers-reduced-motion`.
 - **Diagrams:** correct rendering, visible labels, and local scrolling on narrow screens.
