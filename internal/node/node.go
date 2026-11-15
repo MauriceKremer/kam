@@ -101,7 +101,15 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 		return nil, fmt.Errorf("bootstrap channels: %w", err)
 	}
 
-	persistence, err := db.NewPersistence(dbPath)
+	advertCfg, advertProblems := cfg.ResolveAdverts()
+	for _, problem := range advertProblems {
+		slog.Error("[Node] adverts configuration problem", "error", problem)
+	}
+
+	persistence, err := db.NewPersistence(dbPath, db.AdvertRetention{
+		KeepDays: int64(advertCfg.KeepDays),
+		MaxKept:  int64(advertCfg.MaxKept),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open persistence: %w", err)
 	}

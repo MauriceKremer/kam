@@ -61,6 +61,11 @@ channels:
     key_strategy: "public"
     key_hex: "8b3387e9c5cdea6ac9e5edbaa115cd72"  # MeshCore public PSK, public by design
     enabled: true
+
+# How much advert history kam.db keeps (defaults shown; 0 = keep everything).
+adverts:
+  keep_days: 30   # delete adverts not heard for this many days
+  max_kept: 10000 # cap the adverts table at this many rows
 ```
 
 See [Channel Credentials Storage Design](#channel-credentials-storage-design) below for the full `key_strategy` semantics (`public` / `derived` / `explicit`).
@@ -430,8 +435,25 @@ Validated `ADVERT` packets are persisted to SQLite without blocking the packet r
 2. The parser validates the packet, including Ed25519 signature verification.
 3. The parser enqueues the `AdvertPacket` onto `AdvertQueue` via the `kiss.Persistence` interface.
 4. Enqueue is non-blocking; if the queue is full, the advert is dropped and a counter is incremented.
-5. A single background writer goroutine drains the queue, accumulates a batch, and inserts it transactionally on batch size or flush interval.
+5. A single background writer goroutine drains the queue, accumulates a batch, and stores it transactionally on batch size or flush interval. An advert from a node that is already stored **updates** that row (latest wins) instead of adding one: `received_at` moves to the new hearing ("last heard"), and `first_received_at` keeps the first-seen time. `kam.yml`'s `adverts:` block bounds the table — see [Advert retention](#advert-retention).
 6. `Manager.Stop()` flushes the remaining batch and closes the queue.
+
+### Advert retention
+
+Every other packet on a busy mesh could otherwise grow `kam.db` for ever — a hostile or merely talkative mesh can feed KAM an endless stream of fresh-looking adverts. Two `kam.yml` settings cap that, and both prune on start-up and once an hour afterwards, oldest last-heard first:
+
+```yaml
+adverts:
+  keep_days: 30    # delete adverts not heard for this many days
+  max_kept: 10000  # cap the adverts table at this many rows
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `adverts.keep_days` | 30 | Delete adverts not heard for this many days; 0 keeps everything. |
+| `adverts.max_kept` | 10000 | Cap the adverts table at this many rows, deleting the oldest-heard ones first; 0 keeps everything. |
+
+Because a reheard advert refreshes its last-heard time instead of adding a row, active nodes never fall out of these bounds — only stale ghosts go first. These are storage settings: an invalid value is logged as a problem and replaced with the default, and the radio keeps ingesting (like mesh settings). `adverts:` is read at start-up; restart KAM after changing it.
 
 ### SQLite write tuning
 
@@ -459,7 +481,8 @@ CREATE TABLE IF NOT EXISTS adverts (
   raw_payload BLOB NOT NULL,
   hop_count INTEGER NOT NULL DEFAULT 0,
   hop_stations TEXT NOT NULL DEFAULT '[]',
-  received_at INTEGER NOT NULL DEFAULT (unixepoch())
+  received_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  first_received_at INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_adverts_received_at ON adverts(received_at);
@@ -468,7 +491,7 @@ CREATE INDEX IF NOT EXISTS idx_adverts_node_hash ON adverts(node_hash);
 CREATE INDEX IF NOT EXISTS idx_adverts_node_type ON adverts(is_chat_node, is_repeater, is_room_server, is_sensor);
 ```
 
-The parser stores the full raw advert payload and the first byte of the public key (`node_hash`) so every persisted row remains self-contained and can be replayed or inspected later. Adverts carry no RSSI/SNR because the MeshCore advert payload does not contain them; group texts do (`snr_quarter_db`, `rssi_dbm` below, captured from the radio's frame metadata).
+The parser stores the full raw advert payload and the first byte of the public key (`node_hash`) so every persisted row remains self-contained and can be replayed or inspected later. One row exists per public key: `received_at` is when the node was last heard, `first_received_at` when it was first heard. Adverts carry no RSSI/SNR because the MeshCore advert payload does not contain them; group texts do (`snr_quarter_db`, `rssi_dbm` below, captured from the radio's frame metadata).
 
 The parser extracts the node type from the lower nibble of the appdata flags byte per the MeshCore spec:
 - `0x01` — chat node

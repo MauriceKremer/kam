@@ -30,7 +30,7 @@ func saveScript(t *testing.T, repository *AutomationRepository, id, name string)
 
 func TestAutomationSchemaCoexistsWithLegacyDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kam.db")
-	persistence, err := NewPersistence(path)
+	persistence, err := NewPersistence(path, AdvertRetention{})
 	if err != nil {
 		t.Fatal(err)
 	}

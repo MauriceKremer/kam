@@ -38,6 +38,11 @@ channels:
 # mesh:
 #   path_hash_size: 1          # bytes per path hash on floods KAM sends (1 for firmware 1.13 and older)
 #   default_scope: "#region"   # region for adverts; empty sends unscoped floods
+
+# How much advert history kam.db keeps. Defaults shown; 0 keeps everything.
+# adverts:
+#   keep_days: 30
+#   max_kept: 10000
 #   regions: ["#region"]       # extra regions recognised on inbound floods
 #   duty_cycle_percent: 10     # airtime cap for pushes and adverts; 0 disables
 #

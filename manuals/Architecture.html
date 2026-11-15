@@ -388,6 +388,7 @@ unsubscribePackets = manager.SubscribePackets(service.HandlePacket)</code></pre>
                         <tr><td>Transmit scheduler to radio</td><td>One frame in flight</td><td>The scheduler waits for <code>TxDone</code>. If it never comes, the writer gives up after a timeout and the scheduler moves on.</td></tr>
                     </tbody>
                 </table>
+                <p>Disk space gets the same treatment. Adverts are stored one record per node: hearing a node again updates its existing record instead of adding a new one. KAM deletes the oldest-heard records when the database passes the <code>adverts:</code> settings in <code>kam.yml</code> (checked at startup and every hour). Stored channel messages (group texts) have no such cap yet.</p>
                 <h3>Who goes first on the air</h3>
                 <p>All outgoing packets share one radio, so the transmit scheduler sends the lowest-numbered priority first. Pushes and adverts are the ones allowed to wait when the airtime budget is spent, so they cannot crowd out the answers people are waiting for.</p>
                 <table>

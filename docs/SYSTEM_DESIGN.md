@@ -207,7 +207,7 @@ main goroutine
 | 2 | `readLoop` | `kiss.Manager` | `Start`→`Stop` | reads `serial`, sends `rxChan` |
 | 3 | `writeLoop` | `kiss.Manager` | `Start`→`Stop` | recv `txChan`, writes `serial` |
 | 4 | `routeLoop` | `kiss.Manager` | `Start`→`Stop` | recv `rxChan`, dispatches to registry/parsers/Store/handlers |
-| 5 | advert `writerLoop` | `db.AdvertQueue` | `NewAdvertQueue`→`Stop` | recv `ch`, batch insert into SQLite |
+| 5 | advert `writerLoop` | `db.AdvertQueue` | `NewAdvertQueue`→`Stop` | recv `ch`, batch upsert into SQLite; prune per `adverts:` retention on start and hourly |
 | 6 | group-text `writerLoop` | `db.GroupTextQueue` | `NewGroupTextQueue`→`Stop` | recv `ch`, batch insert into SQLite |
 | 7 | automation `worker` | `automation.Runtime` | `NewRuntime`→`Stop` | recv bounded `queue`, runs scripts sequentially, `reply` sends via `send.Sender` |
 | 7a | Local API server | `node.startAPI` / `api.Listen` | node startup→HTTP shutdown | loopback HTTP on `monitor.listen` (default 8766), with at most 8 admitted requests; bounded event pages, script management, SQLite channel/post reads, and worker-owned room snapshots |
@@ -489,12 +489,13 @@ Client                                 KAM room (ADV_TYPE_ROOM, default scope)
 | `csmaMu` / `airtimeMu` | `sync.RWMutex` ×2 | Cached CSMA settings and one-hour airtime estimate read by the API snapshot and the scheduler. |
 | `onGroupText` handlers | `onGroupTextMu sync.RWMutex` | Route loop reads (RLock); subscribe/unsubscribe writes. Unsubscribe nils the slot, doesn't shrink slice. |
 | `pendingGroupText` + timer | `pendingMu sync.Mutex` | Single in-flight group text awaiting RxMeta. |
-| `dedupCache` | `sync.Mutex` | Checked by `routeLoop`, marked by the scheduler (`MarkSeen`). Bounded: 2 minutes, 512 entries. |
+| `dedupCache` | `sync.Mutex` | Checked by `routeLoop`, marked by the scheduler (`Mark`). Bounded: 2 minutes, 512 entries. |
 | `onPacket` handlers | `onPacketMu sync.RWMutex` | Same pattern as `onGroupText`. |
 | `TxScheduler` queue, airtime ledger, in-flight flag | `sync.Mutex` | Producers submit from any goroutine; one run goroutine sends. Modem events reach it through a buffered channel and never block the event loop. |
 | Room state (client tables, post caches, timers, push state) | none (room worker only) | Counters are atomics, so `Stats()` is safe from any goroutine. Monitor snapshots copy under the service's `monitorMu`; activity recorder swaps serialize on it. |
 | `RoomRepository` | single SQLite connection | Writes first in every transaction, so a concurrent commit by the persistence connection cannot fail it with `SQLITE_BUSY_SNAPSHOT`. |
 | `AdvertQueue.ch` / `GroupTextQueue.ch` | channel | Bounded; enqueue non-blocking. |
+| `adverts` table | SQLite | Bounded by `adverts.keep_days` / `adverts.max_kept`: the advert writer prunes at startup and hourly. The writer also upserts, so reheard adverts do not add rows. |
 | automation `queue` | channel | Bounded (128); carries both group texts and timer fires, enqueue non-blocking, drops are counted and logged. |
 | automation timer schedule | timer-loop goroutine only (no lock) | The loop owns `next[id]` and recomputes it from the scripts map on every wake. `Save`/`SetEnabled`/`Recover`/`Delete` nudge it through the size-1 `timerChanged` channel; the map read itself is under the `scripts` RLock. |
 | `RoomPoster` (script → room) | none; `systemIn` channel + room worker | `AddSystemPost` hands the request to the room worker's bounded channel (16) and waits for its reply or its own context, so `room_post` shares the script deadline. |
