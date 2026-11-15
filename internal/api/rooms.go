@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -48,8 +49,7 @@ type RoomPost struct {
 	Body      string    `json:"body"`
 }
 
-// RoomSource is the rooms seam: three reads and the removal of one remembered
-// client.
+// RoomSource is the rooms seam: reads and management calls.
 type RoomSource interface {
 	Rooms(context.Context) ([]Room, error)
 	Clients(context.Context, string) ([]RoomClient, error)
@@ -57,11 +57,18 @@ type RoomSource interface {
 	// RemoveClient forgets one client of a room. It returns an error that
 	// wraps ErrRoomClientNotFound when the room has no such client.
 	RemoveClient(ctx context.Context, roomID string, publicKey [32]byte) error
+	DeletePost(ctx context.Context, roomID string, postID uint32) error
+	ForceAdvert(ctx context.Context, roomID string) error
 }
 
 // ErrRoomClientNotFound is the RoomSource answer for a client the room does
 // not remember; the handler turns it into 404.
 var ErrRoomClientNotFound = errors.New("room client not found")
+
+var (
+	ErrRoomNotFound     = errors.New("room not found")
+	ErrRoomPostNotFound = errors.New("room post not found")
+)
 
 func registerRoomRoutes(mux *http.ServeMux, rooms RoomSource) {
 	mux.HandleFunc("GET /v1/rooms", func(w http.ResponseWriter, request *http.Request) {
@@ -169,6 +176,43 @@ func registerRoomRoutes(mux *http.ServeMux, rooms RoomSource) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("DELETE /v1/rooms/{id}/posts/{post}", func(w http.ResponseWriter, request *http.Request) {
+		if rooms == nil {
+			writeJSON(w, 503, map[string]string{"error": "rooms are disabled"})
+			return
+		}
+		post, err := strconv.ParseUint(request.PathValue("post"), 10, 32)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"error": "post must be a post id"})
+			return
+		}
+		if err := rooms.DeletePost(request.Context(), request.PathValue("id"), uint32(post)); err != nil {
+			writeRoomAdminError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /v1/rooms/{id}/advert", func(w http.ResponseWriter, request *http.Request) {
+		if rooms == nil {
+			writeJSON(w, 503, map[string]string{"error": "rooms are disabled"})
+			return
+		}
+		id := request.PathValue("id")
+		if err := rooms.ForceAdvert(request.Context(), id); err != nil {
+			writeRoomAdminError(w, err)
+			return
+		}
+		writeJSON(w, 202, map[string]string{"room": id, "status": "queued"})
+	})
+}
+
+func writeRoomAdminError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrRoomNotFound) || errors.Is(err, ErrRoomPostNotFound) {
+		writeJSON(w, 404, map[string]string{"error": err.Error()})
+		return
+	}
+	slog.Warn("room management call failed", "error", err)
+	writeJSON(w, 500, map[string]string{"error": "could not change the room"})
 }
 
 // parsePublicKey decodes a path key of exactly 64 hex characters, in either

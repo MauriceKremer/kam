@@ -225,4 +225,10 @@ func TestRoomClientRemovalThroughTheAPI(t *testing.T) {
 	if err := source.RemoveClient(ctx, "lobby", key); !errors.Is(err, api.ErrRoomClientNotFound) {
 		t.Fatalf("adapter error for an unknown client: %v", err)
 	}
+	if err := source.DeletePost(ctx, "lobby", 1); !errors.Is(err, api.ErrRoomPostNotFound) {
+		t.Fatalf("adapter error for an unknown post: %v", err)
+	}
+	if err := source.ForceAdvert(ctx, "unknown"); !errors.Is(err, api.ErrRoomNotFound) {
+		t.Fatalf("adapter error for an unknown room: %v", err)
+	}
 }

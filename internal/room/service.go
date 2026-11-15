@@ -35,6 +35,8 @@ const (
 	inboundQueue = 64
 	// systemPostQueue bounds script posts waiting for the worker.
 	systemPostQueue = 16
+	// adminQueue bounds management calls waiting for the worker.
+	adminQueue = 8
 	// storeTimeout bounds one database call made by the worker.
 	storeTimeout = 10 * time.Second
 )
@@ -54,6 +56,7 @@ type Store interface {
 	PrunePosts(ctx context.Context, roomID string, keepNewest int, olderThan uint32) (int64, error)
 	SaveClients(ctx context.Context, roomID string, clients []db.RoomClient) error
 	DeleteClient(ctx context.Context, roomID string, publicKey []byte) error
+	DeletePost(ctx context.Context, roomID string, postID uint32) (found bool, err error)
 	LoadClients(ctx context.Context, roomID string) ([]db.RoomClient, error)
 }
 
@@ -165,6 +168,7 @@ type Service struct {
 	in        chan kiss.RxPacket
 	monitor   chan monitorSnapshotRequest
 	systemIn  chan systemPostRequest
+	adminIn   chan adminRequest
 	removeIn  chan removeClientRequest
 	stop      chan struct{}
 	done      chan struct{}
@@ -211,6 +215,7 @@ func NewService(opts Options) (*Service, error) {
 		in:       make(chan kiss.RxPacket, inboundQueue),
 		monitor:  make(chan monitorSnapshotRequest),
 		systemIn: make(chan systemPostRequest, systemPostQueue),
+		adminIn:  make(chan adminRequest, adminQueue),
 		removeIn: make(chan removeClientRequest),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -395,6 +400,8 @@ func (s *Service) run() {
 			request.reply <- s.addSystemPost(request.roomID, request.text, s.now())
 		case request := <-s.removeIn:
 			request.reply <- s.forgetClient(request.roomID, request.key, s.now())
+		case request := <-s.adminIn:
+			request.reply <- s.applyAdmin(request)
 		case <-ticker.C:
 			s.tick(s.now())
 		}

@@ -92,6 +92,24 @@ func (r apiRooms) RemoveClient(ctx context.Context, roomID string, publicKey [32
 	return err
 }
 
+func (r apiRooms) DeletePost(ctx context.Context, id string, postID uint32) error {
+	return roomAdminError(r.service.DeletePost(ctx, id, postID))
+}
+
+func (r apiRooms) ForceAdvert(ctx context.Context, id string) error {
+	return roomAdminError(r.service.ForceAdvert(ctx, id))
+}
+
+func roomAdminError(err error) error {
+	switch {
+	case errors.Is(err, room.ErrRoomNotFound):
+		return api.ErrRoomNotFound
+	case errors.Is(err, room.ErrPostNotFound):
+		return api.ErrRoomPostNotFound
+	}
+	return err
+}
+
 func roomRoleName(role uint8) string {
 	switch role {
 	case room.RoleAdmin:

@@ -90,8 +90,7 @@
                         <tr><td><code>kam room show</code> command</td><td><span class="badge badge-green">Implemented</span></td><td>Prints each room's public key, contact link and signed advert.</td></tr>
                         <tr><td>A Starlark script posts into a room</td><td><span class="badge badge-green">Implemented</span></td><td>The post is authored by the room's own identity and reaches clients like a client post; see the <a href="FeatureStarlark.html#capabilities">Starlark manual</a>. A script event for received posts remains planned.</td></tr>
                         <tr><td>Status, telemetry and access-list requests</td><td><span class="badge badge-slate">Not implemented</span></td><td>KAM sends no reply, so an app that asks for a room's status times out.</td></tr>
-                        <tr><td>Room data and client removal over the local API</td><td><span class="badge badge-green">Implemented</span></td><td>List rooms, their clients and posts, and make a room forget one client; see the <a href="FeatureMonitorApi.html#reference">backend API manual</a>. Removal is not a ban: the radio can log in again.</td></tr>
-                        <tr><td>Changing roles, creating or deleting posts, forcing an advert</td><td><span class="badge badge-slate">Not implemented</span></td><td>The local API has no endpoint for these. Roles change only by logging in with another password.</td></tr>
+                        <tr><td>Management API (forget a client, delete a post, forced advert)</td><td><span class="badge badge-green">Implemented</span></td><td>Three routes on the loopback API; see the <a href="FeatureMonitorApi.html">backend API manual</a>. Editing a client role is not offered: roles change only by logging in with another password.</td></tr>
                         <tr><td>Over-the-air admin commands</td><td><span class="badge badge-slate">Not planned for v1</span></td><td>KAM acknowledges nothing and answers nothing for them.</td></tr>
                         <tr><td>Test with real radios and apps</td><td><span class="badge badge-amber">Pending</span></td><td>Needed to confirm timing, airtime and the status-reply layout.</td></tr>
                     </tbody>
@@ -430,13 +429,13 @@ rooms:
                 <h2>Operating a Room</h2>
                 <ul>
                     <li><strong>What the log shows:</strong> at start-up, one <code>room identity</code> line per room (public key, hash, key file) and <code>room ready</code> with the number of cached posts and restored clients. During operation: <code>login accepted</code>, <code>login refused</code>, <code>login attempt rate limited</code>, <code>push not acknowledged</code>, and errors such as <code>post not stored</code>. Passwords and full client keys are never logged; keys appear as their first 4 bytes.</li>
-                    <li><strong>Statistics:</strong> logins (ok, failed, rate-limited, replayed), posts (accepted, rejected), pushes (sent, acknowledged, timed out), unsupported requests and dropped packets are counted. KAM logs a summary when it stops; there is no export yet.</li>
+                    <li><strong>Statistics:</strong> logins (ok, failed, rate-limited, replayed), posts (accepted, rejected), pushes (sent, acknowledged, timed out), unsupported requests and dropped packets are counted. Per-room counters are readable over the API (<code>GET /v1/rooms</code>); KAM also logs a summary when it stops.</li>
                     <li><strong>Changing a room:</strong> edit <code>kam.yml</code> and restart KAM. Changing the <code>name</code> or <code>location</code> changes the advert; clients keep the old name until they hear the new advert.</li>
                     <li><strong>Removing a room:</strong> set <code>enabled: false</code> or delete the entry. The posts stay in <code>kam.db</code> and the key stays in <code>rooms/</code>, so re-enabling the same <code>id</code> brings the room back at the same address.</li>
                     <li><strong>Isolation:</strong> a room failure never stops radio ingestion. A room that cannot start is logged and skipped.</li>
                     <li><strong>Shutdown:</strong> KAM stops listening, then stops automation and the rooms (writing client sessions), then stops transmitting, then stops the modem manager.</li>
                     <li><strong>Backups:</strong> keep <code>kam.db</code> (posts and sessions) and the <code>rooms</code> directory (identities). See the <a href="KAM.html">KAM Guide</a> for how to copy the database safely.</li>
-                    <li><strong>Authentication:</strong> the local API has none, so only loopback access protects it. Through it a local program can read room data and make a room forget a client; see the <a href="FeatureMonitorApi.html#reference">backend API manual</a>.</li>
+                    <li><strong>Authentication:</strong> the Local Management API has none, so only loopback access protects it. It can forget a client session, delete a post and send an advert now; client roles still change only by logging in with another password.</li>
                 </ul>
             </section>
 

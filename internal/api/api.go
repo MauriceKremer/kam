@@ -67,6 +67,8 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 			apiEndpoint{Method: "GET", Path: "/v1/rooms/{id}/clients", Purpose: "remembered clients of one room"},
 			apiEndpoint{Method: "GET", Path: "/v1/rooms/{id}/posts", Purpose: "retained posts, newest first"},
 			apiEndpoint{Method: "DELETE", Path: "/v1/rooms/{id}/clients/{key}", Purpose: "forget one client's session and pending pushes; not a ban"},
+			apiEndpoint{Method: "DELETE", Path: "/v1/rooms/{id}/posts/{post}", Purpose: "delete one stored post"},
+			apiEndpoint{Method: "POST", Path: "/v1/rooms/{id}/advert", Purpose: "send a flood advert now"},
 			apiEndpoint{Method: "GET", Path: "/scripts", Purpose: "list all scripts"},
 			apiEndpoint{Method: "POST", Path: "/scripts", Purpose: "create a script (expected_revision 0)"},
 			apiEndpoint{Method: "GET", Path: "/scripts/{id}", Purpose: "read one script"},

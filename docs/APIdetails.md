@@ -287,7 +287,7 @@ curl -s 'http://127.0.0.1:8766/v1/channels/%23emmen/messages?limit=10'
 ### GET /v1/rooms
 
 All configured rooms with their live counters. When the room subsystem is off,
-this and the other room endpoints below return `503 {"error": "rooms are
+this (and the other room endpoints) return `503 {"error":"rooms are
 disabled"}`. Counter totals reset when KAM starts.
 
 | Field | Meaning |
@@ -328,31 +328,50 @@ curl -s 'http://127.0.0.1:8766/v1/rooms/lobby/posts?limit=5'
 
 ### DELETE /v1/rooms/{id}/clients/{key}
 
-Makes the room forget one client. KAM deletes the client's stored record, drops
-its session and withdraws any post still waiting to be pushed to it. `key` is
-the client's `public_key` from `GET /v1/rooms/{id}/clients`: 64 hex
-characters, upper or lower case. There is no request body.
+Forgets one client's session: it leaves the room's client table, its pending
+pushes are cancelled, and its stored record is deleted. Answers `204` with no
+body. A `room` event of kind `client_removed` is recorded.
 
-This is **not a ban**. The client can log in again under the room's usual
-rules and then starts as a new client. Until then the room ignores its posts
-and requests and pushes nothing to it. A login with a blank password no longer
-resumes the old session: it is checked like any new login, so it only gets in
-where a blank password is accepted (`open_room` or `allow_read_only`).
+The path parameter is the client's 32-byte public key in hex (64 characters,
+upper or lower case); anything else is `400`. A room without that client, or an
+unknown room id, returns `404`. A failed database delete returns `500` and
+leaves the session intact. When rooms are disabled the route returns `503`.
 
-| Status | When |
-|---|---|
-| `204` | Removed; the response has no body. |
-| `400` | `key` is not 64 hex characters. |
-| `404` | Unknown room (`room not found`) or the room does not remember this client (`client not found`). |
-| `500` | The database delete failed. The client is kept exactly as it was, so you can simply retry. |
-| `503` | The room subsystem is off (`rooms are disabled`). |
-
-A removal adds a `client_removed` room event to `GET /v1/events`.
+This is not a ban: the radio can log in again with the same room password, and
+the room's passwords and roles are unchanged. A blank-password login is checked
+like any new login, rather than resuming the old session.
 
 ```sh
-# Prints 204 when the client was removed.
-curl -s -X DELETE -w '%{http_code}\n' \
-  http://127.0.0.1:8766/v1/rooms/lobby/clients/ed8342bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+curl -s -X DELETE 'http://127.0.0.1:8766/v1/rooms/lobby/clients/ed8342bcaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+```
+
+### DELETE /v1/rooms/{id}/posts/{post}
+
+Deletes one stored post. `{post}` is the post `id` from `GET
+/v1/rooms/{id}/posts` (its stored timestamp). Answers `204` with no body.
+An unknown post or room id returns `404`.
+
+The post is removed from the store and from the backlog cache, so it is not
+pushed to clients that have not caught up yet. Clients that already received it
+keep their copy.
+
+```sh
+curl -s -X DELETE 'http://127.0.0.1:8766/v1/rooms/lobby/posts/91'
+```
+
+### POST /v1/rooms/{id}/advert
+
+Sends a flood advert for the room now, instead of waiting for the configured
+interval. Answers `202` with `{"room": "<id>", "status": "queued"}`: the
+packet is queued for transmission, not yet on air. An unknown room id returns
+`404`.
+
+A queued older advert for the same room is replaced, not stacked. The periodic
+advert timers keep running as before.
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' \
+  http://127.0.0.1:8766/v1/rooms/lobby/advert
 ```
 
 ## Modem monitoring and radio changes — /v1/modem
