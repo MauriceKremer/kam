@@ -12,6 +12,17 @@ KAM is for enthusiasts: [README.md](README.md#philosophy--intent) puts pragmatis
 - A requirement that asks for such hardening gives way to this section. Record the outcome as a decision in the plan's decisions table (as D11 in [FeatureRoomServer.md](docs/FeatureRoomServer.md)), not as a deviation, and state its consequence once instead of repeating warnings.
 - Write docs for beginners, in plain words.
 
+## Versioning
+
+The version number records what KAM has reached: `0.x.y` while pre-1.0, stated in the `## Status` section of [README.md](README.md) and mirrored by a matching git tag on `main`.
+
+After a task is complete and the change has landed on `main` — a finished feature phase, a status change in a `docs/Feature*.md`, or enough other work to warrant a release — update the version in the same pass:
+
+1. Bump the first line of `## Status` in [README.md](README.md): `x.(y+1).0` for new functionality, `x.y.(z+1)` for docs or bug-fix work only.
+2. Create the tag at the merge commit: `git tag v<new-version> <merge-commit>`.
+
+No bump for work still in flight; a version number is only for what has landed.
+
 ## Project docs
 
 Read the doc that matches the task before changing code:
