@@ -42,7 +42,6 @@ CREATE INDEX IF NOT EXISTS idx_adverts_hop_count ON adverts(hop_count);
 	return nil
 }
 
-
 type AdvertRecord struct {
 	NodeHash         byte
 	PublicKey        []byte
