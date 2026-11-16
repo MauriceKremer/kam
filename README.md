@@ -5,6 +5,16 @@ MIT-licensed Go bridge for MeshCore KISS TNC / LoRa radios. Built to make MeshCo
 New to KAM or MeshCore? Start with the [KAM manual](manuals/KAM.html) for
 purpose, design philosophy, radio-network basics, setup, and everyday operation.
 
+## Status
+
+KAM v0.5.0 is a pre-release build. The core — radio ingestion, persistent storage,
+Starlark automation, room servers, and the local REST API — is complete, documented,
+and covered by CI; it is not a production promise. Known pending items are listed
+under [Room servers](#room-servers) ("Not yet implemented") and in the feature
+docs in `docs/Feature*.md` (for example, KAM API phase 5, the room status reply, and
+the physical unplug fail-stop drill). Version `0.x` means the API and config may
+change before the first `1.0.0`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
