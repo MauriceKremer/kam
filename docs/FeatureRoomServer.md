@@ -371,7 +371,7 @@ Status as of 2026-10-10. **Done** means implemented and covered by tests (see §
 | RS-TX-3 | Partly | Sliding one-hour airtime budget from the LoRa formula (D15). `GetAirtime`-based accounting is deferred. |
 | RS-TX-5 | Done earlier | `radio.csma.txdelay_ms` ([FeatureKissModem.md](FeatureKissModem.md)). |
 | RS-SCOPE-1 .. RS-SCOPE-3 | Done | `mesh.default_scope` and `mesh.regions`; R5 resolved (§5.10); a startup warning when no default scope is set. |
-| RS-DB-1, RS-DB-2 | Done | `RoomRepository` on its own connection with `synchronous=FULL`, versioned migrations (`room_schema_version`), post and client timestamp in one transaction. |
+| RS-DB-1, RS-DB-2 | Done | `RoomRepository` on its own connection with `synchronous=FULL`, post and client timestamp in one transaction. Originally versioned migrations (`room_schema_version`); since the create-only schema policy (see [FeatureStarlark.md](FeatureStarlark.md), "no data-migration registry", and README "Schema policy") the tables are created with the full column set and there is no upgrade path. |
 | RS-DB-3 | Partly | Pruning every 10 minutes with a log line; no metrics export. |
 | RS-CFG-1, RS-CFG-3 | Done | `rooms:` and `mesh:` blocks; an invalid room stays disabled (`KamConfig.ResolveRooms`). `txdelay` stays under `radio.csma` ([FeatureKissModem.md](FeatureKissModem.md)). |
 | RS-CFG-2 | Done | Passwords are plain text in `kam.yml`, like channel keys (D11). The generated identity key is its own file. |

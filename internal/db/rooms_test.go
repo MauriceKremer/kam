@@ -23,7 +23,7 @@ func openRoomTestRepository(t *testing.T, path string) *RoomRepository {
 
 func roomKey(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
 
-func TestRoomSchemaCoexistsWithLegacyDatabaseAndIsIdempotent(t *testing.T) {
+func TestRoomSchemaLeavesOtherTablesIntactAndIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kam.db")
 	persistence, err := NewPersistence(path, AdvertRetention{})
 	if err != nil {
@@ -33,24 +33,14 @@ func TestRoomSchemaCoexistsWithLegacyDatabaseAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	repository := openRoomTestRepository(t, path)
-	if columns, err := tableColumns(repository.db, "adverts"); err != nil || !columns["hop_count"] {
-		t.Fatalf("legacy adverts table damaged: %v, error %v", columns, err)
-	}
 	for i := 0; i < 3; i++ {
 		if err := EnsureRoomSchema(repository.db); err != nil {
 			t.Fatalf("schema creation is not idempotent: %v", err)
 		}
 	}
-	var versions int
-	if err := repository.db.QueryRow(`SELECT COUNT(*) FROM room_schema_version`).Scan(&versions); err != nil || versions != len(roomMigrations) {
-		t.Fatalf("recorded versions: %d (error %v), want %d", versions, err, len(roomMigrations))
-	}
-
-	if _, err := repository.db.Exec(`INSERT INTO room_schema_version (version) VALUES (99)`); err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsureRoomSchema(repository.db); err == nil {
-		t.Fatal("a database from a newer build was accepted")
+	// adverts created by NewPersistence must survive room schema creation.
+	if _, err := repository.db.Exec(`SELECT 1 FROM adverts LIMIT 1`); err != nil {
+		t.Fatalf("adverts table damaged by room schema creation: %v", err)
 	}
 }
 
