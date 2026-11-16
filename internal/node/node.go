@@ -106,9 +106,27 @@ func New(cfg *models.KamConfig, dbPath, configPath string) (*Node, error) {
 		slog.Error("[Node] adverts configuration problem", "error", problem)
 	}
 
+	groupTextCfg, groupTextProblems := cfg.ResolveGroupTexts()
+	for _, problem := range groupTextProblems {
+		slog.Error("[Node] group_texts configuration problem", "error", problem)
+	}
+	groupTextChannels := make(map[string]db.GroupTextLimits, len(groupTextCfg.Channels))
+	for channel, limits := range groupTextCfg.Channels {
+		groupTextChannels[channel] = db.GroupTextLimits{
+			MaxPosts:   int64(limits.MaxPosts),
+			MaxAgeDays: int64(limits.MaxAgeDays),
+		}
+	}
+
 	persistence, err := db.NewPersistence(dbPath, db.AdvertRetention{
 		KeepDays: int64(advertCfg.KeepDays),
 		MaxKept:  int64(advertCfg.MaxKept),
+	}, db.GroupTextsRetention{
+		Default: db.GroupTextLimits{
+			MaxPosts:   int64(groupTextCfg.MaxPosts),
+			MaxAgeDays: int64(groupTextCfg.MaxAgeDays),
+		},
+		Channels: groupTextChannels,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open persistence: %w", err)

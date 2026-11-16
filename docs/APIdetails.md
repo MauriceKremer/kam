@@ -32,7 +32,7 @@ automation stays off: the data surfaces work, every script route answers
   Anything else gets `403`. This is a DNS-rebinding guard, not a login.
 - **Errors are JSON.** Errors the API itself produces are
   `{"error": "message"}` with a suitable status code (`400`, `403`, `404`,
-  `405`, `409`, `415`, `422`, `500`, `502`, `503`, `504`; the modem routes add
+  `405`, `409`, `413`, `415`, `422`, `500`, `502`, `503`, `504`; the modem routes add
   `502` for a rejected command and `504` for a timed-out one). The Go
   standard-library mux still answers a completely unknown path or a wrong
   method on an unregistered path with its plain-text default (`404 page not
@@ -42,7 +42,8 @@ automation stays off: the data surfaces work, every script route answers
   above).
 - **JSON bodies.** `POST` and `PUT` need `Content-Type: application/json`
   (otherwise `415`); request bodies with unknown JSON fields are rejected with
-  `400`.
+  `400`, and bodies over 1 MiB are rejected without being read further
+  (with `413`). Script sources are kilobytes, so the cap is pure headroom.
 - **Optimistic locking.** Script changes carry an `expected_revision` and fail
   with `409` when it is stale.
 - **Bounded listener.** At most 8 requests run at once (more get `503

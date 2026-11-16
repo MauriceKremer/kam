@@ -16,6 +16,7 @@ const (
 	defaultGroupTextQueueSize     = 256
 	defaultGroupTextBatchSize     = 50
 	defaultGroupTextFlushInterval = time.Second
+	defaultGroupTextPruneInterval = time.Hour
 )
 
 // GroupTextQueue decouples group text ingestion from SQLite writes.
@@ -29,6 +30,7 @@ type GroupTextQueue struct {
 
 	batchSize     int
 	flushInterval time.Duration
+	retention     GroupTextsRetention
 
 	enqueued atomic.Int64
 	dropped  atomic.Int64
@@ -37,15 +39,17 @@ type GroupTextQueue struct {
 }
 
 // NewGroupTextQueue starts a batched group-text writer against an already-open
-// SQLite handle. Call Stop to flush remaining items; the caller remains
+// SQLite handle, applying retention bounds to each channel; a zero retention
+// keeps every row. Call Stop to flush remaining items; the caller remains
 // responsible for closing the database handle.
-func NewGroupTextQueue(db *sql.DB) *GroupTextQueue {
+func NewGroupTextQueue(db *sql.DB, retention GroupTextsRetention) *GroupTextQueue {
 	q := &GroupTextQueue{
 		db:            db,
 		ch:            make(chan parsers.GroupTextMessage, defaultGroupTextQueueSize),
 		stopCh:        make(chan struct{}),
 		batchSize:     defaultGroupTextBatchSize,
 		flushInterval: defaultGroupTextFlushInterval,
+		retention:     retention,
 	}
 
 	q.done.Add(1)
@@ -103,6 +107,15 @@ func (q *GroupTextQueue) writerLoop() {
 	ticker := time.NewTicker(q.flushInterval)
 	defer ticker.Stop()
 
+	var pruneTicker *time.Ticker
+	var pruneC <-chan time.Time
+	if q.retention.anyBound() {
+		pruneTicker = time.NewTicker(defaultGroupTextPruneInterval)
+		defer pruneTicker.Stop()
+		pruneC = pruneTicker.C
+		q.prune() // bounds apply to history already in the table
+	}
+
 	batch := make([]GroupTextRecord, 0, q.batchSize)
 
 	flush := func() {
@@ -142,7 +155,24 @@ func (q *GroupTextQueue) writerLoop() {
 
 		case <-ticker.C:
 			flush()
+
+		case <-pruneC:
+			q.prune()
 		}
+	}
+}
+
+// prune deletes group texts outside each channel's retention bounds. Like
+// AdvertQueue's prune it runs on the writer goroutine, so it never overlaps a
+// batch insert.
+func (q *GroupTextQueue) prune() {
+	deleted, err := PruneGroupTexts(q.db, q.retention)
+	if err != nil {
+		slog.Error("[GroupTextQueue] prune failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		slog.Info("[GroupTextQueue] pruned group texts", "deleted", deleted)
 	}
 }
 
