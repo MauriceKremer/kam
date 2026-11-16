@@ -45,10 +45,11 @@ type RoomRepository struct {
 	db *sql.DB
 }
 
-// roomMigrations are applied in order; the index plus one is the schema
-// version recorded in room_schema_version.
-var roomMigrations = []string{
-	`CREATE TABLE IF NOT EXISTS rooms (
+// roomSchemaDdl creates the room tables from scratch or no-ops when they
+// already exist; there is no upgrade path — schema changes mean deleting the
+// database file and starting over.
+const roomSchemaDdl = `
+CREATE TABLE IF NOT EXISTS rooms (
   room_id TEXT PRIMARY KEY,
   public_key BLOB NOT NULL,
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -70,14 +71,13 @@ CREATE TABLE IF NOT EXISTS room_clients (
   last_timestamp INTEGER NOT NULL,
   out_path_len INTEGER NOT NULL,
   out_path BLOB NOT NULL,
+  last_heard_at INTEGER,
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
 	PRIMARY KEY (room_id, public_key)
-) WITHOUT ROWID;`,
-	`ALTER TABLE room_clients ADD COLUMN last_heard_at INTEGER;`,
-}
+) WITHOUT ROWID;`
 
-// OpenRoomRepository opens the repository at the database path and applies
-// pending migrations.
+// OpenRoomRepository opens the repository at the database path and creates
+// the room tables if missing.
 func OpenRoomRepository(path string) (*RoomRepository, error) {
 	db, err := OpenKamDB(path)
 	if err != nil {
@@ -96,37 +96,10 @@ func OpenRoomRepository(path string) (*RoomRepository, error) {
 	return &RoomRepository{db: db}, nil
 }
 
-// EnsureRoomSchema creates or upgrades the room tables. It is idempotent.
+// EnsureRoomSchema creates the room tables. It is idempotent.
 func EnsureRoomSchema(db *sql.DB) error {
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS room_schema_version (version INTEGER NOT NULL)`); err != nil {
-		return fmt.Errorf("ensure room schema version table: %w", err)
-	}
-	var current int
-	err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM room_schema_version`).Scan(&current)
-	if err != nil {
-		return fmt.Errorf("read room schema version: %w", err)
-	}
-	if current > len(roomMigrations) {
-		return fmt.Errorf("room schema version %d is newer than this build supports (%d)", current, len(roomMigrations))
-	}
-	for version := current + 1; version <= len(roomMigrations); version++ {
-		// The first statement of the transaction is a write; a read first would
-		// fail with SQLITE_BUSY_SNAPSHOT if another connection commits meanwhile.
-		tx, err := db.Begin()
-		if err != nil {
-			return fmt.Errorf("begin room migration %d: %w", version, err)
-		}
-		if _, err := tx.Exec(roomMigrations[version-1]); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("apply room migration %d: %w", version, err)
-		}
-		if _, err := tx.Exec(`INSERT INTO room_schema_version (version) VALUES (?)`, version); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("record room migration %d: %w", version, err)
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit room migration %d: %w", version, err)
-		}
+	if _, err := db.Exec(roomSchemaDdl); err != nil {
+		return fmt.Errorf("ensure room schema: %w", err)
 	}
 	return nil
 }

@@ -39,9 +39,9 @@ func TestAutomationSchemaCoexistsWithLegacyDatabase(t *testing.T) {
 	}
 	repository := openAutomationTestRepository(t, path)
 	saveScript(t, repository, "first", "first")
-	columns, err := tableColumns(repository.db, "adverts")
-	if err != nil || !columns["hop_count"] {
-		t.Fatalf("legacy adverts table damaged: %v, error %v", columns, err)
+	// adverts created by NewPersistence must survive automation schema creation.
+	if _, err := repository.db.Exec(`SELECT 1 FROM adverts LIMIT 1`); err != nil {
+		t.Fatalf("legacy adverts table damaged: %v", err)
 	}
 	if err := EnsureAutomationScriptsSchema(repository.db); err != nil {
 		t.Fatalf("schema creation is not idempotent: %v", err)

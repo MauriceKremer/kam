@@ -128,6 +128,8 @@ and open a pull request instead (GitHub enforces the same rule on the server).
 
 DB path precedence: `-db` flag > `kam.yml db_path` > `kam.db`.
 
+Schema policy: KAM creates its SQLite tables on start-up and carries no upgrade machinery. After upgrading to a build that changed the schema, delete `kam.db` and restart; the database is recreated empty. Keep the `rooms/` directory next to it — its files hold each room's identity key. The usual symptom of a stale database is a `no such column` error at start-up.
+
 Other commands: `kam channel upsert ...` (add or change a channel in `kam.yml`) and `kam room show` (print room keys and adverts, see [Room servers](#room-servers)).
 
 ## Local REST API

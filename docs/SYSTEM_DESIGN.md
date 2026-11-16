@@ -547,8 +547,7 @@ One file (`kam.db`) holds `adverts`, `group_texts`, the automation table
 `automation_scripts` (script source, timeout, status, last error, revision),
 and the room tables `rooms` (id and public key), `room_posts` (room, server
 timestamp, author key, text) and `room_clients` (role, cursor, replay
-timestamp, stored route), with a `room_schema_version` table for migrations.
-Channel configuration is **not** persisted here — it lives in `kam.yml` (see
+timestamp, stored route). Channel configuration is **not** persisted here — it lives in `kam.yml` (see
 `internal/config`). Opened with
 WAL mode, 5s busy timeout, NORMAL synchronous mode; the room repository sets
 FULL on its own connection so a post survives power loss before it is

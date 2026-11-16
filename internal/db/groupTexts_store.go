@@ -31,67 +31,7 @@ CREATE INDEX IF NOT EXISTS idx_group_texts_sender ON group_texts(sender);
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("ensure group texts schema: %w", err)
 	}
-	if err := migrateGroupTextsColumns(db); err != nil {
-		return fmt.Errorf("migrate group texts columns: %w", err)
-	}
 	return nil
-}
-
-// migrateGroupTextsColumns adds columns introduced after the initial schema to
-// databases created by older kam versions. SQLite has no ADD COLUMN IF NOT
-// EXISTS, so we introspect pragma_table_info and issue idempotent ALTERs.
-func migrateGroupTextsColumns(db *sql.DB) error {
-	cols, err := tableColumns(db, "group_texts")
-	if err != nil {
-		return err
-	}
-
-	add := func(name, def string) error {
-		if cols[name] {
-			return nil
-		}
-		_, err := db.Exec("ALTER TABLE group_texts ADD COLUMN " + name + " " + def)
-		if err != nil {
-			return fmt.Errorf("add column %s: %w", name, err)
-		}
-		return nil
-	}
-
-	if err := add("hop_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := add("hop_stations", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
-		return err
-	}
-	if err := add("snr_quarter_db", "INTEGER"); err != nil {
-		return err
-	}
-	if err := add("rssi_dbm", "INTEGER"); err != nil {
-		return err
-	}
-	return nil
-}
-
-// tableColumns returns the set of column names for a table.
-func tableColumns(db *sql.DB, table string) (map[string]bool, error) {
-	rows, err := db.Query("SELECT name FROM pragma_table_info(?)", table)
-	if err != nil {
-		return nil, fmt.Errorf("pragma_table_info %s: %w", table, err)
-	}
-	defer rows.Close()
-
-	out := make(map[string]bool)
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, fmt.Errorf("scan column name: %w", err)
-		}
-		out[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate columns: %w", err)
-	}
-	return out, nil
 }
 
 type GroupTextRecord struct {
