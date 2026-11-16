@@ -327,3 +327,26 @@ func TestLoopbackHostGuard(t *testing.T) {
 		}
 	}
 }
+
+func TestScriptCreateRejectsOversizedBody(t *testing.T) {
+	var fake scriptFake
+	fake.save = func(Script, int64) (Script, error) { t.Fatal("seam got the oversized body"); return Script{}, nil }
+	handler := scriptHandler(&fake)
+
+	// A body one byte beyond the cap, and still syntactically valid JSON up to
+	// the cap, so the size limit is the only reason to fail.
+	oversized := `{"script":{"id":"big","source":"` + strings.Repeat("a", maxRequestBodyBytes) + `"}}`
+	response := scriptRequest(handler, http.MethodPost, "/scripts", oversized, "application/json")
+	if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), "request body larger than") {
+		t.Fatalf("oversized body: %d %q", response.Code, response.Body)
+	}
+
+	// At the cap, the same handler reaches the seam.
+	saved := false
+	fake.save = func(Script, int64) (Script, error) { saved = true; return Script{}, nil }
+	prefix, suffix := `{"script":{"id":"x","source":"`, `"}}`
+	atCap := prefix + strings.Repeat("a", maxRequestBodyBytes-len(prefix)-len(suffix)) + suffix
+	if response := scriptRequest(handler, http.MethodPost, "/scripts", atCap, "application/json"); response.Code != http.StatusCreated || !saved {
+		t.Fatalf("body at the cap: %d %q", response.Code, response.Body)
+	}
+}

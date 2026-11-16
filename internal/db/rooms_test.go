@@ -25,7 +25,7 @@ func roomKey(b byte) []byte { return bytes.Repeat([]byte{b}, 32) }
 
 func TestRoomSchemaCoexistsWithLegacyDatabaseAndIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kam.db")
-	persistence, err := NewPersistence(path, AdvertRetention{})
+	persistence, err := NewPersistence(path, AdvertRetention{}, GroupTextsRetention{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestRoomMonitorQueriesReturnStatsAndNewestPostsFirst(t *testing.T) {
 }
 
 func TestAdvertNicknameUsesTheNewestRecord(t *testing.T) {
-	persistence, err := NewPersistence(filepath.Join(t.TempDir(), "kam.db"), AdvertRetention{})
+	persistence, err := NewPersistence(filepath.Join(t.TempDir(), "kam.db"), AdvertRetention{}, GroupTextsRetention{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestRoomClientsRoundTripUpsertAndDelete(t *testing.T) {
 
 func TestRoomRepositoryConcurrentWritersAndPersistenceDoNotFail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kam.db")
-	persistence, err := NewPersistence(path, AdvertRetention{})
+	persistence, err := NewPersistence(path, AdvertRetention{}, GroupTextsRetention{})
 	if err != nil {
 		t.Fatal(err)
 	}

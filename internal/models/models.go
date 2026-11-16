@@ -29,6 +29,8 @@ type KamConfig struct {
 	Rooms   []RoomConfig   `yaml:"rooms,omitempty"`
 	Monitor *MonitorConfig `yaml:"monitor,omitempty"`
 	Adverts *AdvertsConfig `yaml:"adverts,omitempty"`
+	// GroupTexts is validated lazily by ResolveGroupTexts, like Adverts.
+	GroupTexts *GroupTextsConfig `yaml:"group_texts,omitempty"`
 }
 
 // RadioConfig defines the default serial and RF settings.

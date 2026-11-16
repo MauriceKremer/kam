@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 )
@@ -103,11 +104,23 @@ func writeScriptError(w http.ResponseWriter, err error) {
 	}
 }
 
-// decodeJSON reads one body with unknown-field rejection.
+// maxRequestBodyBytes caps every JSON body the API reads: decodeJSON is the
+// only place a request body is read. Script sources are kilobytes, so the
+// limit asks for no more than headroom.
+const maxRequestBodyBytes = 1 << 20
+
+// decodeJSON reads one body, capped at maxRequestBodyBytes, with
+// unknown-field rejection.
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Errorf("request body larger than %d bytes", maxRequestBodyBytes))
+			return false
+		}
 		writeError(w, http.StatusBadRequest, err)
 		return false
 	}

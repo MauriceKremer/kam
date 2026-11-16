@@ -109,6 +109,40 @@ type GroupTextRecord struct {
 	RSSIDBM          *int
 }
 
+// GroupTextLimits is the resolved retention pair for one channel.
+type GroupTextLimits struct {
+	MaxPosts   int64
+	MaxAgeDays int64
+}
+
+// GroupTextsRetention bounds the group_texts table per channel. Channels
+// absent from Channels — and any row under a name that is not a configured
+// channel any more — use Default. A zero Default with empty/zero-valued
+// entries keeps everything.
+type GroupTextsRetention struct {
+	Default  GroupTextLimits
+	Channels map[string]GroupTextLimits
+}
+
+func (r GroupTextsRetention) anyBound() bool {
+	if r.Default.MaxPosts > 0 || r.Default.MaxAgeDays > 0 {
+		return true
+	}
+	for _, limits := range r.Channels {
+		if limits.MaxPosts > 0 || limits.MaxAgeDays > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (r GroupTextsRetention) limits(channel string) GroupTextLimits {
+	if limits, ok := r.Channels[channel]; ok {
+		return limits
+	}
+	return r.Default
+}
+
 func InsertGroupTextsBatch(db *sql.DB, records []GroupTextRecord) error {
 	if len(records) == 0 {
 		return nil
@@ -159,6 +193,60 @@ INSERT INTO group_texts (
 		return fmt.Errorf("commit group text batch: %w", err)
 	}
 	return nil
+}
+
+// PruneGroupTexts applies each channel's retention pair to the group_texts
+// table: delete rows older than its max_age_days, then everything beyond its
+// newest max_posts rows, oldest first. Both bounds come from the channel's
+// override when it has one, from Default otherwise; a pair of zeros prunes
+// that channel's rows not at all. Returns the total rows deleted.
+func PruneGroupTexts(db *sql.DB, retention GroupTextsRetention) (int64, error) {
+	if !retention.anyBound() {
+		return 0, nil
+	}
+	var channels []string
+	rows, err := db.Query(`SELECT DISTINCT channel_name FROM group_texts`)
+	if err != nil {
+		return 0, fmt.Errorf("list group text channels: %w", err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan group text channel: %w", err)
+		}
+		channels = append(channels, name)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("list group text channels: %w", err)
+	}
+	rows.Close()
+
+	var deleted int64
+	for _, channel := range channels {
+		limits := retention.limits(channel)
+		if limits.MaxAgeDays > 0 {
+			result, err := db.Exec(`DELETE FROM group_texts WHERE channel_name = ? AND received_at < unixepoch() - ?`, channel, limits.MaxAgeDays*86400)
+			if err != nil {
+				return deleted, fmt.Errorf("prune group texts by age for %s: %w", channel, err)
+			}
+			n, _ := result.RowsAffected()
+			deleted += n
+		}
+		if limits.MaxPosts > 0 {
+			// Everything after the newest maxPosts rows; same shape as
+			// PrunePosts against the channel index.
+			result, err := db.Exec(`DELETE FROM group_texts WHERE channel_name = ?1 AND id IN (
+      SELECT id FROM group_texts WHERE channel_name = ?1 ORDER BY received_at DESC, id DESC LIMIT -1 OFFSET ?2)`, channel, limits.MaxPosts)
+			if err != nil {
+				return deleted, fmt.Errorf("prune group texts by count for %s: %w", channel, err)
+			}
+			n, _ := result.RowsAffected()
+			deleted += n
+		}
+	}
+	return deleted, nil
 }
 
 // (hex helpers live in groupTexts.go where conversion happens)

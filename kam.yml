@@ -46,6 +46,16 @@ channels:
 #   regions: ["#region"]       # extra regions recognised on inbound floods
 #   duty_cycle_percent: 10     # airtime cap for pushes and adverts; 0 disables
 #
+# How much group-text history kam.db keeps per channel. Defaults shown; a
+# pair of 0 keeps everything. Entries under channels stand alone for one
+# name (omitted key = unlimited) and also reach channel names that are no
+# longer in `channels:`.
+# group_texts:
+#   max_posts: 1000
+#   max_age_days: 30
+#   channels:
+#     "#mesh-dev": { max_posts: 5000, max_age_days: 90 }
+#
 rooms:
   - id: lobby                # a-z, 0-9, '-' and '_'; names the identity file
     name: "KAM Lobby"        # advert name, at most 31 bytes (23 with a location)

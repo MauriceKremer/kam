@@ -9,7 +9,7 @@ import (
 )
 
 func TestMonitorChannelCatalogAndHistory(t *testing.T) {
-	p, err := NewPersistence(filepath.Join(t.TempDir(), "monitor.db"), AdvertRetention{})
+	p, err := NewPersistence(filepath.Join(t.TempDir(), "monitor.db"), AdvertRetention{}, GroupTextsRetention{})
 	if err != nil {
 		t.Fatal(err)
 	}

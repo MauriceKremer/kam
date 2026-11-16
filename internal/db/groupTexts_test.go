@@ -21,7 +21,7 @@ func TestGroupTextQueueEnqueueAndFlush(t *testing.T) {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
-	q := NewGroupTextQueue(db)
+	q := NewGroupTextQueue(db, GroupTextsRetention{})
 	defer q.Stop()
 
 	msg := parsers.GroupTextMessage{
@@ -74,7 +74,7 @@ func TestGroupTextQueueSignedMessage(t *testing.T) {
 		t.Fatalf("ensure schema: %v", err)
 	}
 
-	q := NewGroupTextQueue(db)
+	q := NewGroupTextQueue(db, GroupTextsRetention{})
 	defer q.Stop()
 
 	msg := parsers.GroupTextMessage{

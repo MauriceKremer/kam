@@ -73,9 +73,18 @@ channels:
     enabled: true
 
 # How much advert history kam.db keeps (defaults shown; 0 = keep everything).
-adverts:
-  keep_days: 30   # delete adverts not heard for this many days
   max_kept: 10000 # cap the adverts table at this many rows
+
+# How much group-text history kam.db keeps per channel (defaults shown;
+# 0 = unlimited). Per-channel bounds work the same way, and an entry under
+# `channels` stands alone for one name — an omitted key there is 0,
+# unlimited. The name need not be in `channels:`; history for a channel you
+# no longer run is pruned by its entry just the same.
+group_texts:
+  max_posts: 1000  # newest messages kept per channel
+  max_age_days: 30 # delete messages older than this many days
+  # channels:
+  #   "#mesh-dev": { max_posts: 5000, max_age_days: 90 }
 ```
 
 See [Channel Credentials Storage Design](#channel-credentials-storage-design) below for the full `key_strategy` semantics (`public` / `derived` / `explicit`).

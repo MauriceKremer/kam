@@ -18,9 +18,10 @@ type Persistence struct {
 
 // NewPersistence opens the SQLite database at dbPath, ensures all required
 // schemas, and starts the background advert and group-text writers. retention
-// bounds the advert history (see AdvertRetention); a zero struct keeps every
-// advert.
-func NewPersistence(dbPath string, retention AdvertRetention) (*Persistence, error) {
+// bounds the advert history (see AdvertRetention) and groupTexts the per-
+// channel group-text history (see GroupTextsRetention); zero structs keep
+// both for ever.
+func NewPersistence(dbPath string, retention AdvertRetention, groupTexts GroupTextsRetention) (*Persistence, error) {
 	db, err := OpenKamDB(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open persistence db: %w", err)
@@ -38,7 +39,7 @@ func NewPersistence(dbPath string, retention AdvertRetention) (*Persistence, err
 	p := &Persistence{
 		db:             db,
 		AdvertQueue:    NewAdvertQueue(db, retention),
-		GroupTextQueue: NewGroupTextQueue(db),
+		GroupTextQueue: NewGroupTextQueue(db, groupTexts),
 	}
 	return p, nil
 }
