@@ -1,6 +1,6 @@
 # Feature: KAM API
 
-**Status:** Phases 1-2 implemented (2026-10-12): loopback status/events, bounded RX/TX/room event ring, read-only channel and room resources, persisted signal metadata and client last-heard times. Script dry-run shipped (2026-11-04); remaining work in phases 3-5 is planned. Real-radio capture and hardware timing verification remain pending.
+**Status:** Phases 1-4 implemented (2026-10-12 phases 1-2; phase 3, modem snapshot/query/radio apply with save, landed with the unified listener — hardware verification remains pending; phase 4, room-client removal, landed 2026-11-15 together with post deletion and a forced advert, which the room plan also wanted). Phase 5 (script run info and dry runs) remains planned. Real-radio capture and hardware timing verification remain pending.
 **Scope:** The REST interface KAM offers on the local device — the **KAM API** — for any local program. KAMmon, a separate web monitor running on the same computer, is the initial consumer: it reads live radio, channel, room and script data, manages room clients, and changes the KISS modem radio settings.
 **Written from:** KAMmon's point of view. The feature needs are in `tmp/KAMmon_Req_*.md`; the UI is shown in `tmp/kammon-prototype.html`. KAMmon is a separate Go project and never opens KAM's SQLite file.
 
