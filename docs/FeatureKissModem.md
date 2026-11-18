@@ -1,6 +1,6 @@
 # Feature: KISS Modem Command Layer
 
-**Status:** Implemented in code. The real-radio smoke test and Phase 0 measurements ran 2026-10-18 on a Heltec V3 (firmware version 1) - see §11 for results and §9 for what the board changed. Still open: the physical unplug fail-stop drill (Phase 5) and one older-firmware build (R6).
+**Status:** Implemented in code. The real-radio smoke test and Phase 0 measurements ran 2026-10-18 on a Heltec V3 (firmware version 1), and the physical unplug fail-stop drill (Phase 5) ran 2026-11-18 - see §11 for results and §9 for what the board changed. Still open: one older-firmware build (R6).
 **Scope:** Cover the MeshCore KISS modem's command surface (standard KISS parameters, `SetHardware` sub-commands and unsolicited events) through the existing reader, router and writer, and put the typed command API in [cmd_radio.go](../internal/kiss/cmd_radio.go).
 **Reference firmware:** MeshCore `main`, files read 2026-10-10. `examples/kiss_modem` last changed in `3b69e78` (committed 2026-07-18); `docs/kiss_modem_protocol.md` last changed in `448d1b2` (2026-09-18).
 
@@ -8,7 +8,7 @@
 
 KAM talks to the modem through [kiss_reader.go](../internal/kiss/kiss_reader.go), [kiss_router.go](../internal/kiss/kiss_router.go) and [kiss_writer.go](../internal/kiss/kiss_writer.go). The typed command client covers the Tier 1 modem surface: 5 standard KISS parameters, radio configuration, TX power, signal reporting, diagnostics and unsolicited events. Crypto/identity commands and `Reboot` remain deferred (§2).
 
-Implementation status: the request slot and Ping barrier, typed errors, prioritized control queue, command validation, startup probe, TX gate, modem events/counters, link fail-stop and reset probe are implemented. The hardware smoke test and Phase 0 measurements ran on a real board on 2026-10-18 (§11); the unplug drill and an older-firmware check remain.
+Implementation status: the request slot and Ping barrier, typed errors, prioritized control queue, command validation, startup probe, TX gate, modem events/counters, link fail-stop and reset probe are implemented. The hardware smoke test and Phase 0 measurements ran on a real board on 2026-10-18 (§11), and the unplug drill ran on 2026-11-18; the older-firmware check remains.
 
 Baseline findings addressed by this implementation:
 
@@ -448,7 +448,7 @@ No time estimates. Each phase ends with an observable exit criterion.
 | **2. Commands, config, startup** | Typed Tier 1 methods, validation, optional YAML keys and startup sequence. | **Implemented and package-tested.** |
 | **3. Events and pacing** | Event subscriptions, airtime, TX gate, retry, length checks and counters. | **Implemented and unit-tested.** |
 | **4. Diagnostics** | RSSI, noise floor, channel busy, stats, battery, temperature, sensors, version and device name. | **Implemented; hardware response captures recorded 2026-10-18 (§11).** |
-| **5. Link health** | `Manager.Done`, fail-stop in `Node.Run`, 30-second probe, reset detection and re-apply. | **Implemented. The reboot-reset drill ran in the smoke test (zero cache detected, config re-applied, 2026-10-18). The physical unplug drill is still open.** |
+| **5. Link health** | `Manager.Done`, fail-stop in `Node.Run`, 30-second probe, reset detection and re-apply. | **Implemented. The reboot-reset drill ran in the smoke test (zero cache detected, config re-applied, 2026-10-18); the physical unplug drill ran 2026-11-18 (§11).** |
 
 ## 11. Verification
 
@@ -469,3 +469,5 @@ No time estimates. Each phase ends with an observable exit criterion.
 | Older firmware (R6) | Not yet tried |
 
   This consequence is now handled: D9 (2026-10-18) mirrors every busy-classified error to the TX gate in addition to the pending request slot, so KM-TX-3's backoff-and-resend fires instead of a silent gate-timeout drop. Regression test: `kiss_router_busy_test.go`. On the re-run the board exercised the retry path live.
+
+  - **Physical unplug drill (Phase 5, KM-LINK-1):** first run 2026-11-18, Heltec V3, firmware version 1, same radio settings as the smoke test, idle node with the room server enabled, macOS host. The USB cable was pulled roughly ten minutes into the run. The reader's serial read returned `device not configured` (the host's error for a vanished USB device); `readLoop` logged it and called `Fail`, closing `Done()`. `Node.Run` then shut down in order and returned `KISS modem link lost: device not configured`, flushing the room statistics on the way; the process exited with status 1 about 2 ms after the read error. The 30-second probe never fired: the read error surfaced first. No reconnect is attempted, as designed (D7) - restore the link and start KAM again, or run it under a supervisor.
