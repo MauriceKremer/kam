@@ -43,6 +43,16 @@ func (s *Sender) Send(ctx context.Context, channelName, body string) error {
 	}
 }
 
+// ValidateReply applies the same channel and packet-size checks as Send without
+// placing a frame on the transmit queue.
+func (s *Sender) ValidateReply(channelName, body string) error {
+	_, err := s.builder.Build(channelName, body)
+	if err != nil {
+		return fmt.Errorf("build group text: %w", err)
+	}
+	return nil
+}
+
 // NewForManager creates a Sender for a kiss.Manager using its NodeName.
 func NewForManager(m *kiss.Manager) *Sender {
 	return NewSender(m, m.NodeName)

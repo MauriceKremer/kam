@@ -7,11 +7,13 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // Script is the script resource's wire shape; node's adapter maps it from the
@@ -47,9 +49,44 @@ type ScriptValidateRequest struct {
 	TimeoutMS int64  `json:"timeout_ms"`
 }
 
-// Scripts is the automation capability seam: script management plus the
-// compile-only validation. Implementations apply capability policy (timeouts,
-// revisions) and classify their failures with ScriptError.
+// ScriptDryRunRequest is a validated fixture for a one-off script invocation.
+type ScriptDryRunRequest struct {
+	Source    string
+	TimeoutMS int64
+	Message   ScriptDryRunMessage
+}
+
+// ScriptDryRunMessage contains the normalized input fields exposed to Starlark.
+type ScriptDryRunMessage struct {
+	Channel          string
+	Sender           string
+	Body             string
+	Timestamp        time.Time
+	HopCount         int
+	HopStations      [][]byte
+	HasRxMeta        bool
+	SNRQuarterDB     int
+	RSSIDBm          int
+	TimeDriftSeconds int64
+}
+
+// ScriptDryRunReply is a reply captured without transmitting it.
+type ScriptDryRunReply struct {
+	Channel string `json:"channel"`
+	Text    string `json:"text"`
+}
+
+// ScriptDryRunResult reports the outcome and any captured replies.
+type ScriptDryRunResult struct {
+	OK         bool                `json:"ok"`
+	DurationMS int64               `json:"duration_ms"`
+	Replies    []ScriptDryRunReply `json:"replies"`
+	Error      string              `json:"error,omitempty"`
+}
+
+// Scripts is the automation capability seam: script management, compile-only
+// validation and isolated dry runs. Implementations apply capability policy
+// (timeouts, revisions) and classify their failures with ScriptError.
 type Scripts interface {
 	List(context.Context) ([]Script, error)
 	Get(ctx context.Context, id string) (Script, error)
@@ -58,6 +95,26 @@ type Scripts interface {
 	SetEnabled(ctx context.Context, id string, enabled bool, expectedRevision int64) (Script, error)
 	Recover(ctx context.Context, id string, timeoutMS int64, expectedRevision int64) (Script, error)
 	Validate(ctx context.Context, id, source string, timeoutMS int64) error
+	DryRun(context.Context, ScriptDryRunRequest) (ScriptDryRunResult, error)
+}
+
+type scriptDryRunBody struct {
+	Source    *string                  `json:"source"`
+	TimeoutMS *int64                   `json:"timeout_ms"`
+	Message   *scriptDryRunMessageBody `json:"message"`
+}
+
+type scriptDryRunMessageBody struct {
+	Channel          string   `json:"channel"`
+	Sender           *string  `json:"sender"`
+	Body             *string  `json:"body"`
+	TimestampUnix    *int64   `json:"timestamp_unix"`
+	HopCount         *int     `json:"hop_count"`
+	HopStations      []string `json:"hop_stations"`
+	HasRxMeta        *bool    `json:"has_rx_meta"`
+	SNRQuarterDB     *int     `json:"snr_quarter_db"`
+	RSSIDBm          *int     `json:"rssi_dbm"`
+	TimeDriftSeconds *int64   `json:"time_drift_seconds"`
 }
 
 // ScriptErrorClass is the transport's error vocabulary: the status code a
@@ -173,6 +230,30 @@ func registerScriptRoutes(mux *http.ServeMux, scripts Scripts) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"valid": true})
 	})
+	mux.HandleFunc("POST /scripts/dry-run", func(w http.ResponseWriter, r *http.Request) {
+		if scripts == nil {
+			automationDisabled(w)
+			return
+		}
+		var body scriptDryRunBody
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		request, err := normalizeScriptDryRunBody(body)
+		if err != nil {
+			writeError(w, http.StatusUnprocessableEntity, err)
+			return
+		}
+		result, err := scripts.DryRun(r.Context(), request)
+		if err != nil {
+			writeScriptError(w, err)
+			return
+		}
+		if result.Replies == nil {
+			result.Replies = []ScriptDryRunReply{}
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
 	mux.HandleFunc("POST /scripts", func(w http.ResponseWriter, r *http.Request) {
 		if scripts == nil {
 			automationDisabled(w)
@@ -265,4 +346,66 @@ func registerScriptRoutes(mux *http.ServeMux, scripts Scripts) {
 			writeJSON(w, http.StatusOK, saved)
 		})
 	}
+}
+
+func normalizeScriptDryRunBody(body scriptDryRunBody) (ScriptDryRunRequest, error) {
+	if body.Source == nil {
+		return ScriptDryRunRequest{}, errors.New("source is required")
+	}
+	if body.Message == nil {
+		return ScriptDryRunRequest{}, errors.New("message is required")
+	}
+	timeoutMS := int64(500)
+	if body.TimeoutMS != nil {
+		timeoutMS = *body.TimeoutMS
+	}
+	if timeoutMS < 1 || timeoutMS > 3000 {
+		return ScriptDryRunRequest{}, errors.New("timeout_ms must be between 1 and 3000")
+	}
+	fixture := body.Message
+	if fixture.Channel == "" {
+		return ScriptDryRunRequest{}, errors.New("message.channel is required")
+	}
+	message := ScriptDryRunMessage{
+		Channel: fixture.Channel, Sender: "test", Timestamp: time.Now().UTC(),
+		HopStations: make([][]byte, 0, len(fixture.HopStations)),
+	}
+	if fixture.Sender != nil {
+		message.Sender = *fixture.Sender
+	}
+	if fixture.Body != nil {
+		message.Body = *fixture.Body
+	}
+	if fixture.TimestampUnix != nil {
+		message.Timestamp = time.Unix(*fixture.TimestampUnix, 0).UTC()
+	}
+	if fixture.HopCount != nil {
+		message.HopCount = *fixture.HopCount
+	}
+	if message.HopCount < 0 {
+		return ScriptDryRunRequest{}, errors.New("message.hop_count must not be negative")
+	}
+	if len(fixture.HopStations) > 63 {
+		return ScriptDryRunRequest{}, errors.New("message.hop_stations must contain at most 63 stations")
+	}
+	for _, stationHex := range fixture.HopStations {
+		station, err := hex.DecodeString(stationHex)
+		if err != nil || len(station) < 1 || len(station) > 3 {
+			return ScriptDryRunRequest{}, errors.New("message.hop_stations entries must be 1 to 3 bytes of hex")
+		}
+		message.HopStations = append(message.HopStations, station)
+	}
+	if fixture.HasRxMeta != nil {
+		message.HasRxMeta = *fixture.HasRxMeta
+	}
+	if fixture.SNRQuarterDB != nil {
+		message.SNRQuarterDB = *fixture.SNRQuarterDB
+	}
+	if fixture.RSSIDBm != nil {
+		message.RSSIDBm = *fixture.RSSIDBm
+	}
+	if fixture.TimeDriftSeconds != nil {
+		message.TimeDriftSeconds = *fixture.TimeDriftSeconds
+	}
+	return ScriptDryRunRequest{Source: *body.Source, TimeoutMS: timeoutMS, Message: message}, nil
 }

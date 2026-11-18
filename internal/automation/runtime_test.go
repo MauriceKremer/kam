@@ -554,6 +554,58 @@ func TestMessageConversionExposesDocumentedFieldsReadOnly(t *testing.T) {
 	}
 }
 
+func TestRuntimeDryRunCapturesRepliesWithoutChangingLiveState(t *testing.T) {
+	repository := openTestRepository(t)
+	stored := saveScript(t, repository, "stored", replySource("live"))
+	sender := &recordingSender{}
+	runtime := newTestRuntime(t, repository, sender)
+
+	result, err := runtime.DryRun(context.Background(), "preview", `def on_group_text(message):
+    reply(message["channel"], message["body"])
+`, 500, parsers.GroupTextMessage{ChannelName: "public", Body: "fixture"})
+	if err != nil || !result.OK || result.Error != "" || len(result.Replies) != 1 || result.Replies[0] != (DryRunReply{Channel: "#public", Text: "fixture"}) {
+		t.Fatalf("dry-run result: %+v, error %v", result, err)
+	}
+	if got := sender.snapshot(); len(got) != 0 {
+		t.Fatalf("dry-run called the live sender: %v", got)
+	}
+	after, err := repository.Get(context.Background(), stored.ID)
+	if err != nil || after != stored {
+		t.Fatalf("dry-run changed stored script: before %+v, after %+v, error %v", stored, after, err)
+	}
+}
+
+func TestRuntimeDryRunValidatesFixtureAndReplyLimits(t *testing.T) {
+	runtime := newTestRuntime(t, openTestRepository(t), &recordingSender{})
+	source := func(body string) string {
+		return "def on_group_text(message):\n    " + body + "\n"
+	}
+	fixture := parsers.GroupTextMessage{ChannelName: "#public"}
+
+	if _, err := runtime.DryRun(context.Background(), "preview", source("pass"), 500, parsers.GroupTextMessage{ChannelName: "#missing"}); err == nil {
+		t.Fatal("dry-run accepted an unconfigured channel")
+	}
+
+	tooMany := source("for index in range(17):\n        reply(message[\"channel\"], \"x\")")
+	result, err := runtime.DryRun(context.Background(), "preview", tooMany, 500, fixture)
+	if err != nil || result.OK || len(result.Replies) != maxDryRunReplies || !strings.Contains(result.Error, "16 reply limit") {
+		t.Fatalf("reply-count limit: result %+v, error %v", result, err)
+	}
+
+	tooManyBytes := source("reply(message[\"channel\"], \"é\" * 2045)")
+	result, err = runtime.DryRun(context.Background(), "preview", tooManyBytes, 500, fixture)
+	if err != nil || result.OK || len(result.Replies) != 0 || !strings.Contains(result.Error, "4096-byte reply limit") {
+		t.Fatalf("reply-byte limit: result %+v, error %v", result, err)
+	}
+
+	runtime.dryRunMu.Lock()
+	_, err = runtime.DryRun(context.Background(), "preview", source("pass"), 500, fixture)
+	runtime.dryRunMu.Unlock()
+	if !errors.Is(err, ErrDryRunBusy) {
+		t.Fatalf("concurrent dry-run error: got %v, want %v", err, ErrDryRunBusy)
+	}
+}
+
 func TestHandlePassesHopStationsToScripts(t *testing.T) {
 	repository := openTestRepository(t)
 	saveScript(t, repository, "path", "def on_group_text(message):\n    reply(message[\"channel\"], \",\".join(message[\"hop_stations\"]))\n")

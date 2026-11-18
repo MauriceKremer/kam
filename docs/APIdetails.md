@@ -115,13 +115,14 @@ Every read and write returns a script in this shape:
 | `PUT /scripts/{id}` | Update source, name, enabled state or timeout. |
 | `DELETE /scripts/{id}?revision=N` | Delete a script. |
 | `POST /scripts/validate` | Compile source without saving. |
+| `POST /scripts/dry-run` | Run source against a fixture and capture replies without sending. |
 | `POST /scripts/{id}/enable` | Turn the desired state on. |
 | `POST /scripts/{id}/disable` | Turn the desired state off. |
 | `POST /scripts/{id}/recover` | Recompile a `FROZEN` or `BROKEN` script. |
 
 Requests that create lists use an empty JSON array (`[]`); all
 create/update/action requests carry `expected_revision` (create uses `0`),
-except `validate`, which changes nothing.
+except `validate` and `dry-run`, which change nothing.
 
 **POST /scripts** — body:
 
@@ -151,6 +152,42 @@ invalid, `409` when stale.
 **POST /scripts/validate** — body `{"id": "scratch", "source": "...",
 "timeout_ms": 500}` (`id` optional, `timeout_ms` optional). Returns
 `{"valid": true}`, or `422` with the compile error.
+
+**POST /scripts/dry-run** — run source once against a made-up message. Nothing
+is saved, enabled, or transmitted. Example request:
+
+```json
+{
+  "source": "def on_group_text(message):\n    reply(message[\"channel\"], message[\"body\"])\n",
+  "timeout_ms": 500,
+  "message": {
+    "channel": "#public", "sender": "test", "body": "hello",
+    "hop_count": 0, "hop_stations": [], "has_rx_meta": false
+  }
+}
+```
+
+`source` and `message` are required. The fixture's `channel` must be enabled.
+`timeout_ms` defaults to 500 and must be 1-3000. Optional message fields are
+`sender` (default `test`), `body` (empty), `timestamp_unix` (server time),
+`hop_count` (0), `hop_stations` (empty), `has_rx_meta` (false),
+`snr_quarter_db` (0), `rssi_dbm` (0), and `time_drift_seconds` (0). Hop count
+must be non-negative; `hop_stations` accepts at most 63 hexadecimal strings,
+each encoding 1-3 bytes.
+
+The response is `200` for both a successful test and a script failure. Replies
+are captured in the response and never sent. For example:
+
+```json
+{"ok":true,"duration_ms":1,"replies":[{"channel":"#public","text":"hello"}]}
+```
+
+Failures return `{"ok":false,"duration_ms":N,"replies":[],"error":"..."}`;
+already captured replies remain in the response if a later call fails. One dry
+run executes at a time (`409` if busy); compilation and execution share the
+requested timeout, capped at 3000 ms. At most 16 replies and 4096 UTF-8 bytes
+across reply channel names and text are captured. Malformed or unknown fields
+return `400`; invalid fixture values or a disabled/unknown channel return `422`.
 
 **POST /scripts/{id}/enable|disable** — body `{"expected_revision": N}`.
 Changes only the desired state: a `FROZEN` or `BROKEN` script stays inactive
@@ -506,7 +543,7 @@ capability gets `503`.
 
 ## What is deliberately not here
 
-Script run info and dry runs, and per-script event streams are planned but not
-implemented yet; see [FeatureKamApi.md](FeatureKamApi.md) §7 and §10 until
-they ship.
+Room client removal, script run info, and per-script event streams are planned
+but not implemented yet; see [FeatureKamApi.md](FeatureKamApi.md)
+§7 and §10 until they ship.
 When an endpoint ships, it moves into this document.

@@ -233,7 +233,7 @@ func TestRestGetGuardErrors(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := hostRestGet(context.Background(), &Runtime{}, test.args, nil)
+			_, err := hostRestGet(context.Background(), &Runtime{}, nil, test.args, nil)
 			if err == nil || err.Error() != test.wantMsg {
 				t.Fatalf("error: got %v, want %q", err, test.wantMsg)
 			}
@@ -247,7 +247,7 @@ func TestRestGetHeaderValueTypeError(t *testing.T) {
 		t.Fatal(err)
 	}
 	kwargs := []starlark.Tuple{{starlark.String("headers"), dict}}
-	_, err := hostRestGet(context.Background(), &Runtime{}, starlark.Tuple{starlark.String("http://example.com")}, kwargs)
+	_, err := hostRestGet(context.Background(), &Runtime{}, nil, starlark.Tuple{starlark.String("http://example.com")}, kwargs)
 	if err == nil || err.Error() != "rest_get: headers must map strings to strings" {
 		t.Fatalf("error: got %v", err)
 	}
