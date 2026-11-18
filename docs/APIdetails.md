@@ -543,13 +543,7 @@ capability gets `503`.
 
 ## What is deliberately not here
 
-<<<<<<< Updated upstream
-Script run info and dry runs, and per-script event streams are planned but not
-implemented yet; see [FeatureKamApi.md](FeatureKamApi.md) §7 and §10 until
-they ship.
-=======
 Room client removal, script run info, and per-script event streams are planned
 but not implemented yet; see [FeatureKamApi.md](FeatureKamApi.md)
 §7 and §10 until they ship.
->>>>>>> Stashed changes
 When an endpoint ships, it moves into this document.
