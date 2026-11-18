@@ -3,8 +3,13 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+<<<<<<< Updated upstream:docs/manuals/FeatureMonitorApi.html
     <meta name="description" content="Use KAM's loopback API for status, events, channel history, room monitoring and management, script management and modem diagnostics; script dry runs and run information remain planned.">
     <title>Backend API Manual</title>
+=======
+    <meta name="description" content="Use KAM's loopback API for status, events, channel history, room monitoring, modem readings, radio changes and script dry runs; room-client removal and run information remain planned.">
+    <title>KAM API Manual</title>
+>>>>>>> Stashed changes:manuals/FeatureKamApi.html
     <link href="manuals.css" rel="stylesheet">
     <script>try{var t=localStorage.getItem("kam-theme");if(t?t==="dark":matchMedia("(prefers-color-scheme: dark)").matches)document.documentElement.dataset.theme="dark"}catch(e){}</script>
     <script src="manuals.js" defer></script>
@@ -52,7 +57,11 @@
             <span>Architecture &amp; API Manual</span>
             <h1>KAM Backend API</h1>
             <p>How another program can monitor and control KAM without becoming part of its radio service.</p>
+<<<<<<< Updated upstream:docs/manuals/FeatureMonitorApi.html
             <p><span class="badge badge-green">Implemented</span><span>Status, events, channel history, room resources with client removal, post deletion and a forced advert, script management and the modem snapshot, query and radio-apply routes are available. Script dry runs and run information remain planned; real-radio verification is pending.</span></p>
+=======
+            <p><span class="badge badge-green">Phases 1-3 implemented</span><span>Status, events, channel history, room resources, modem readings, radio changes and script dry runs are available. Room-client removal and script run information remain planned; real-radio verification is pending.</span></p>
+>>>>>>> Stashed changes:manuals/FeatureKamApi.html
         </header>
         <article class="prose">
             <section id="overview">
@@ -60,7 +69,11 @@
                 <p>An <strong>API</strong>, or application programming interface, lets one program ask another program for information or request a change. KAM's backend API provides status, recent radio and room events, configured channels with message history, room summaries, clients, posts and room management (forget a client, delete a post, send an advert now), script management and modem monitoring and radio changes. Any local dashboard or command-line script can use the same API.</p>
                 <p>For example, KAMmon could ask, "Which packets arrived since my last request?" KAM would return a list. KAMmon would draw the chart and decide which of its signed-in web users may see the details.</p>
                 <p><strong>KAM does the radio work. KAMmon provides the web interface.</strong> KAM remains an open system: it starts, receives, stores messages and runs scripts without KAMmon. It does not register KAMmon as a client, check whether KAMmon is alive, or wait for it to consume events.</p>
+<<<<<<< Updated upstream:docs/manuals/FeatureMonitorApi.html
                 <div class="info-box info-box-blue"><p><strong>Available now:</strong> one loopback listener on port 8766 serving the bounded event ring, status and event reads, channel list/history, room reads and management (forget a client, delete a post, send an advert now), script management (the old script API on port 8765 is retired) and modem monitoring with radio changes. Script dry runs and run information are still planned. The listener answers <code>GET /</code> with the routes it serves right now; <a href="../docs/APIdetails.md">APIdetails.md</a> is the full reference.</p></div>
+=======
+                <div class="info-box info-box-blue"><p><strong>Available now:</strong> one loopback listener on port 8766 serving the bounded event ring, status and event reads, channel list/history, room list/client/post reads, modem snapshots and radio changes, script management, and <code>POST /scripts/dry-run</code> (the old script API on port 8765 is retired; see <a href="../docs/FeatureUnifiedApi.md">FeatureUnifiedApi.md</a>). Room-client removal and in-memory script run information remain planned. The listener answers <code>GET /</code> with the routes it serves right now.</p></div>
+>>>>>>> Stashed changes:manuals/FeatureKamApi.html
             </section>
 
             <section id="concepts">
@@ -91,12 +104,21 @@
                     <tbody>
                         <tr><td>Radio, channel storage and room service</td><td>Implemented</td><td>Existing KAM functionality, independent of KAMmon.</td></tr>
                         <tr><td>Script management on the same listener (8766)</td><td>Implemented</td><td>List, validate, create, update, enable, disable, recover and delete scripts.</td></tr>
+<<<<<<< Updated upstream:docs/manuals/FeatureMonitorApi.html
                         <tr><td>Monitor listener on 8766</td><td>Implemented</td><td>Status, RX/TX/room events, channel history, room reads and management, and the modem routes; automated race tests pass. Real-radio verification is pending.</td></tr>
                         <tr><td>Optional system section on the status route</td><td>Implemented</td><td><code>GET /v1/status?system=true</code> adds machine memory, CPU model, core count and load averages, disk space and database size, collected at most once per <code>monitor.system_interval_sec</code> seconds. macOS and Linux report every field; Windows reports the database size only.</td></tr>
                         <tr><td>Channel and room history endpoints</td><td>Implemented</td><td>Configured channels and messages, room summaries, clients and retained posts.</td></tr>
                         <tr><td>REST modem control</td><td>Implemented</td><td>Read diagnostics, query in one command, preview changes, apply and save with recovery. Hardware verification is pending.</td></tr>
                         <tr><td>Room management</td><td>Implemented</td><td>Forget a client session, delete one post and send a flood advert now; existing radio login rules remain unchanged.</td></tr>
                         <tr><td>Script dry runs and run information</td><td>Planned</td><td>Test without transmitting; in-memory execution statistics.</td></tr>
+=======
+                        <tr><td>KAM API listener on 8766</td><td>Phases 1-3 implemented</td><td>Status, RX/TX/room events, channel history, room reads, modem monitoring and radio changes; automated race tests pass. Real-radio verification is pending.</td></tr>
+                        						<tr><td>Channel and room history endpoints</td><td>Implemented</td><td>Configured channels and messages, room summaries, clients and retained posts.</td></tr>
+                        						<tr><td>REST modem control</td><td>Implemented; hardware verification pending</td><td>Read cached diagnostics and readings, preview changes, apply and save with recovery.</td></tr>
+                        <tr><td>Room-client removal</td><td>Planned</td><td>Forget a session; existing radio login rules remain unchanged.</td></tr>
+                        <tr><td>Script dry runs</td><td>Implemented</td><td>Test a fixture message without transmitting; replies are captured.</td></tr>
+                        <tr><td>Script run information</td><td>Planned</td><td>In-memory execution statistics.</td></tr>
+>>>>>>> Stashed changes:manuals/FeatureKamApi.html
                     </tbody>
                 </table>
             </section>
@@ -297,7 +319,11 @@ curl --fail-with-body -X POST -H 'Content-Type: application/json' \
 
             <section id="reference">
                 <h2>Endpoint Reference</h2>
+<<<<<<< Updated upstream:docs/manuals/FeatureMonitorApi.html
                 <p>Status, event, channel, room, script and modem endpoints on port 8766 are implemented, including room-client removal, post deletion and a forced advert. Script dry runs and run information remain planned. The listener answers <code>GET /</code> with the routes it serves, implemented ones only. <code>GET</code> reads data, <code>POST</code> requests an action, <code>PUT</code> applies a setting and <code>DELETE</code> removes a record. Paths beginning with <code>/v1</code> identify version 1 of the contract; script routes sit under <code>/scripts</code>.</p>
+=======
+                <p>Status, event, channel, room, modem and script endpoints on port 8766 are implemented except the ones labelled planned below. Room-client removal and script run information remain planned. Both listeners answer <code>GET /</code> with the routes they serve, implemented ones only. <code>GET</code> reads data, <code>POST</code> requests an action, <code>PUT</code> applies a setting and <code>DELETE</code> removes a record. Paths beginning with <code>/v1</code> identify version 1 of the contract.</p>
+>>>>>>> Stashed changes:manuals/FeatureKamApi.html
                 <table>
                     <thead><tr><th>Method &amp; path</th><th>Purpose</th></tr></thead>
                     <tbody>
@@ -325,6 +351,7 @@ curl --fail-with-body -X POST -H 'Content-Type: application/json' \
                         <tr><td><code>POST /v1/modem/query</code></td><td>One typed read-only modem command.</td></tr>
                         <tr><td><code>PUT /v1/modem/radio?preview=true</code></td><td>Validate and list intended commands without sending or saving.</td></tr>
                         <tr><td><code>PUT /v1/modem/radio</code></td><td>Apply, check echo, save and recover on failure.</td></tr>
+                        <tr><td><code>POST /scripts/dry-run</code></td><td>Run source against a fixture and capture replies without transmitting.</td></tr>
                     </tbody>
                 </table>
                 <p>Use actual ids and public keys in paths, not the braces shown in the table. Room keys are 64 hexadecimal characters; KAM lists them in lowercase and accepts either case in a path. Times use RFC 3339 UTC timestamps. Unknown measurements are <code>null</code>; empty lists are <code>[]</code>.</p>
@@ -353,7 +380,11 @@ curl --fail-with-body -X POST -H 'Content-Type: application/json' \
 
             <section id="scripts">
                 <h2>Script Testing</h2>
+<<<<<<< Updated upstream:docs/manuals/FeatureMonitorApi.html
                 <p><strong>Starlark</strong> is the restricted scripting language KAM uses for automation. Script management shares the unified listener on port 8766 with the monitoring surfaces, keeping its current revision checks. The planned additions are in-memory last-run information and <code>POST /scripts/dry-run</code> (see <a href="../docs/FeatureKamApi.md">FeatureKamApi.md</a>), so script writes keep their <code>revision</code> checks today.</p>
+=======
+                <p><strong>Starlark</strong> is the restricted scripting language KAM uses for automation. Script management shares the unified listener on port 8766 with the read-only data surfaces, keeping its current revision checks. <code>POST /scripts/dry-run</code> is available; in-memory last-run information remains planned.</p>
+>>>>>>> Stashed changes:manuals/FeatureKamApi.html
                 <p>A dry run compiles and runs supplied source against a <strong>fixture</strong>, a made-up input message. Calls to <code>reply(channel, text)</code> are captured as output instead of being transmitted. The test does not save the script, change its enabled state or freeze the live version.</p>
                 <table>
                     <thead><tr><th>Test limit</th><th>Meaning</th></tr></thead>
@@ -365,7 +396,7 @@ curl --fail-with-body -X POST -H 'Content-Type: application/json' \
                     </tbody>
                 </table>
                 <p>The input must name an enabled channel. Defaults include sender <code>test</code>, empty body, zero hops and no signal metadata. A disconnected caller cancels the test. Successful or failed dry runs never update live execution statistics.</p>
-                <p>Read the <a href="FeatureStarlark.html">Starlark manual</a> for the current message dictionary and <code>reply</code> behavior. Run statistics reset when KAM restarts; they are not a permanent execution log.</p>
+                <p>Read the <a href="FeatureStarlark.html">Starlark manual</a> for the current message dictionary and <code>reply</code> behavior. In-memory run statistics are not included yet.</p>
             </section>
 
             <section id="sources">

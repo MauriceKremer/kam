@@ -122,7 +122,7 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 		"GET /v1/status", "GET /v1/events", "GET /v1/rooms", "GET /v1/rooms/{id}/clients", "GET /v1/rooms/{id}/posts",
 		"DELETE /v1/rooms/{id}/clients/{key}",
 		"GET /scripts", "POST /scripts", "GET /scripts/{id}", "PUT /scripts/{id}", "DELETE /scripts/{id}?revision=N",
-		"POST /scripts/validate", "POST /scripts/{id}/enable", "POST /scripts/{id}/disable", "POST /scripts/{id}/recover",
+		"POST /scripts/validate", "POST /scripts/dry-run", "POST /scripts/{id}/enable", "POST /scripts/{id}/disable", "POST /scripts/{id}/recover",
 	} {
 		if !base[want] {
 			t.Fatalf("index missing %s: %+v", want, base)

@@ -87,7 +87,7 @@ func TestRoomPostErrorSurface(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			runtime := &Runtime{poster: test.poster}
-			_, err := hostRoomPost(context.Background(), runtime, test.args, test.kwargs)
+			_, err := hostRoomPost(context.Background(), runtime, nil, test.args, test.kwargs)
 			if err == nil || err.Error() != test.want {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
@@ -97,7 +97,7 @@ func TestRoomPostErrorSurface(t *testing.T) {
 
 func TestRoomPostKeywordArguments(t *testing.T) {
 	poster := &fakePoster{}
-	_, err := hostRoomPost(context.Background(), &Runtime{poster: poster}, nil, []starlark.Tuple{
+	_, err := hostRoomPost(context.Background(), &Runtime{poster: poster}, nil, nil, []starlark.Tuple{
 		{starlark.String("room_id"), starlark.String("lobby")},
 		{starlark.String("text"), starlark.String("keyword")},
 	})

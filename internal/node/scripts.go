@@ -11,6 +11,7 @@ import (
 	"kam.bytecoder.nl/internal/api"
 	"kam.bytecoder.nl/internal/automation"
 	"kam.bytecoder.nl/internal/db"
+	"kam.bytecoder.nl/internal/kiss/parsers"
 )
 
 type apiScripts struct {
@@ -68,6 +69,34 @@ func (s apiScripts) Recover(ctx context.Context, id string, timeoutMS int64, exp
 
 func (s apiScripts) Validate(ctx context.Context, id, source string, timeoutMS int64) error {
 	return s.runtime.Validate(ctx, id, source, timeoutMS)
+}
+
+func (s apiScripts) DryRun(ctx context.Context, request api.ScriptDryRunRequest) (api.ScriptDryRunResult, error) {
+	message := request.Message
+	result, err := s.runtime.DryRun(ctx, "dry-run", request.Source, request.TimeoutMS, parsers.GroupTextMessage{
+		ChannelName:      message.Channel,
+		Timestamp:        message.Timestamp,
+		Message:          message.Body,
+		Sender:           message.Sender,
+		Body:             message.Body,
+		HopCount:         message.HopCount,
+		HopStations:      message.HopStations,
+		HasRxMeta:        message.HasRxMeta,
+		SNR:              message.SNRQuarterDB,
+		RSSI:             message.RSSIDBm,
+		TimeDriftSeconds: message.TimeDriftSeconds,
+	})
+	if errors.Is(err, automation.ErrDryRunBusy) {
+		return api.ScriptDryRunResult{}, &api.ScriptError{Class: api.ScriptErrorConflict, Message: err.Error(), Cause: err}
+	}
+	if err != nil {
+		return api.ScriptDryRunResult{}, translateScriptError(err)
+	}
+	replies := make([]api.ScriptDryRunReply, 0, len(result.Replies))
+	for _, reply := range result.Replies {
+		replies = append(replies, api.ScriptDryRunReply{Channel: reply.Channel, Text: reply.Text})
+	}
+	return api.ScriptDryRunResult{OK: result.OK, DurationMS: result.DurationMS, Replies: replies, Error: result.Error}, nil
 }
 
 // translateScriptError classifies the runtime's domain sentinels for the

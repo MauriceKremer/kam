@@ -72,7 +72,7 @@ type compiledScript struct {
 }
 
 // hostFunction is a capability scripts may call; ctx carries the invocation deadline and must be honoured.
-type hostFunction func(ctx context.Context, r *Runtime, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error)
+type hostFunction func(ctx context.Context, r *Runtime, sender Sender, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error)
 
 // hostFunctions is the complete set of names visible to scripts; anything else fails compilation.
 var hostFunctions = map[string]hostFunction{
@@ -103,17 +103,17 @@ func isPredeclared(name string) bool {
 	return ok
 }
 
-func hostReply(ctx context.Context, r *Runtime, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func hostReply(ctx context.Context, r *Runtime, sender Sender, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var channel, text string
 	if err := starlark.UnpackArgs("reply", args, kwargs, "channel", &channel, "text", &text); err != nil {
 		return starlark.None, err
 	}
 	sendContext, cancel := context.WithTimeout(ctx, defaultReplyTimeout)
 	defer cancel()
-	return starlark.None, r.sender.Send(sendContext, channel, text)
+	return starlark.None, sender.Send(sendContext, channel, text)
 }
 
-func hostRestGet(ctx context.Context, r *Runtime, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func hostRestGet(ctx context.Context, r *Runtime, sender Sender, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var rawURL string
 	var rawHeaders starlark.Value = starlark.None
 	if err := starlark.UnpackArgs("rest_get", args, kwargs, "url", &rawURL, "headers?", &rawHeaders); err != nil {
@@ -166,7 +166,7 @@ func hostRestGet(ctx context.Context, r *Runtime, args starlark.Tuple, kwargs []
 	return starlark.Tuple{starlark.String(body), starlark.MakeInt(response.StatusCode)}, nil
 }
 
-func hostRoomPost(ctx context.Context, r *Runtime, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+func hostRoomPost(ctx context.Context, r *Runtime, sender Sender, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var roomID, text string
 	if err := starlark.UnpackArgs("room_post", args, kwargs, "room_id", &roomID, "text", &text); err != nil {
 		return starlark.None, err
@@ -214,6 +214,7 @@ type Runtime struct {
 	intakeMu       sync.Mutex
 	scripts        map[string]*compiledScript
 	once           sync.Once
+	dryRunMu       sync.Mutex
 	monitorDropped atomic.Uint64
 }
 
@@ -498,12 +499,16 @@ func (r *Runtime) invoke(script *compiledScript, entry string, args starlark.Tup
 	timeout := timeoutDuration(script.definition.TimeoutMS)
 	ctx, cancel := context.WithTimeout(r.ctx, timeout)
 	defer cancel()
+	return r.invokeWithSender(ctx, script, entry, args, r.sender, timeout)
+}
+
+func (r *Runtime) invokeWithSender(ctx context.Context, script *compiledScript, entry string, args starlark.Tuple, sender Sender, timeout time.Duration) error {
 	thread := &starlark.Thread{Name: script.definition.ID}
 	stopInterrupt := context.AfterFunc(ctx, func() { thread.Cancel("script execution interrupted") })
 	defer stopInterrupt()
 	predeclared := predeclaredValues(func(name string, function hostFunction) starlark.Value {
 		return starlark.NewBuiltin(name, func(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-			return function(ctx, r, args, kwargs)
+			return function(ctx, r, sender, args, kwargs)
 		})
 	})
 	globals, err := script.program.Init(thread, predeclared)

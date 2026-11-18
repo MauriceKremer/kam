@@ -22,6 +22,7 @@ type scriptFake struct {
 	enabled func(string, bool, int64) (Script, error)
 	recover func(string, int64, int64) (Script, error)
 	prepare func(string, string, int64) error
+	dryRun  func(ScriptDryRunRequest) (ScriptDryRunResult, error)
 
 	record []string
 }
@@ -82,6 +83,14 @@ func (f *scriptFake) Validate(_ context.Context, id, source string, timeoutMS in
 	return f.prepare(id, source, timeoutMS)
 }
 
+func (f *scriptFake) DryRun(_ context.Context, request ScriptDryRunRequest) (ScriptDryRunResult, error) {
+	f.record = append(f.record, "dry-run")
+	if f.dryRun == nil {
+		return ScriptDryRunResult{}, nil
+	}
+	return f.dryRun(request)
+}
+
 func scriptHandler(scripts Scripts) http.Handler {
 	return NewHandlerWithResources(newRingSource(8), func() Status { return Status{} }, scripts, nil, nil, nil, nil)
 }
@@ -106,6 +115,7 @@ func TestScriptRoutesAnswerDisabledWithoutAutomation(t *testing.T) {
 		{http.MethodPut, "/scripts/x", `{"script":{}}`},
 		{http.MethodDelete, "/scripts/x?revision=1", ""},
 		{http.MethodPost, "/scripts/validate", `{"source":"def on_group_text(message):\n    pass\n"}`},
+		{http.MethodPost, "/scripts/dry-run", `{"source":"x","message":{"channel":"#public"}}`},
 		{http.MethodPost, "/scripts/x/enable", `{"expected_revision":1}`},
 		{http.MethodPost, "/scripts/x/disable", `{"expected_revision":1}`},
 		{http.MethodPost, "/scripts/x/recover", `{"expected_revision":1}`},
@@ -239,6 +249,41 @@ func TestScriptRouteBodiesAndValidation(t *testing.T) {
 	}
 	if validatedID != "validation" || validatedTimeout != 0 || validatedSource == "" {
 		t.Fatalf("validate forwarded: %q %d", validatedID, validatedTimeout)
+	}
+
+	fake.dryRun = func(request ScriptDryRunRequest) (ScriptDryRunResult, error) {
+		if request.Source != "source" || request.TimeoutMS != 500 || request.Message.Channel != "#public" || request.Message.Sender != "alice" || request.Message.Body != "hello" || request.Message.Timestamp.Unix() != 42 || request.Message.HopCount != 2 || len(request.Message.HopStations) != 1 || string(request.Message.HopStations[0]) != string([]byte{0xab, 0x01}) || !request.Message.HasRxMeta || request.Message.SNRQuarterDB != -7 || request.Message.RSSIDBm != -91 || request.Message.TimeDriftSeconds != 3 {
+			t.Fatalf("dry-run forwarded fixture: %+v", request)
+		}
+		return ScriptDryRunResult{OK: true, DurationMS: 1, Replies: []ScriptDryRunReply{{Channel: "#public", Text: "hello"}}}, nil
+	}
+	response = scriptRequest(handler, http.MethodPost, "/scripts/dry-run", `{"source":"source","message":{"channel":"#public","sender":"alice","body":"hello","timestamp_unix":42,"hop_count":2,"hop_stations":["ab01"],"has_rx_meta":true,"snr_quarter_db":-7,"rssi_dbm":-91,"time_drift_seconds":3}}`, "application/json")
+	if response.Code != http.StatusOK || response.Body.String() != `{"ok":true,"duration_ms":1,"replies":[{"channel":"#public","text":"hello"}]}` {
+		t.Fatalf("dry-run: %d %q", response.Code, response.Body)
+	}
+	if fake.record[len(fake.record)-1] != "dry-run" {
+		t.Fatalf("dry-run was not forwarded: %v", fake.record)
+	}
+
+	for _, body := range []string{
+		`{"message":{"channel":"#public"}}`,
+		`{"source":"x"}`,
+		`{"source":"x","timeout_ms":3001,"message":{"channel":"#public"}}`,
+		`{"source":"x","message":{"channel":"#public","hop_count":-1}}`,
+		`{"source":"x","message":{"channel":"#public","hop_stations":["xyz"]}}`,
+	} {
+		if response := scriptRequest(handler, http.MethodPost, "/scripts/dry-run", body, "application/json"); response.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("invalid dry-run body %s: %d %q", body, response.Code, response.Body)
+		}
+	}
+	if response := scriptRequest(handler, http.MethodPost, "/scripts/dry-run", `{"source":"x","message":{"channel":"#public"},"unknown":true}`, "application/json"); response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown dry-run field: %d %q", response.Code, response.Body)
+	}
+	fake.dryRun = func(ScriptDryRunRequest) (ScriptDryRunResult, error) {
+		return ScriptDryRunResult{}, &ScriptError{Class: ScriptErrorConflict, Message: "another script dry run is already running"}
+	}
+	if response := scriptRequest(handler, http.MethodPost, "/scripts/dry-run", `{"source":"x","message":{"channel":"#public"}}`, "application/json"); response.Code != http.StatusConflict {
+		t.Fatalf("busy dry-run: %d %q", response.Code, response.Body)
 	}
 
 	// A validation failure keeps its message.

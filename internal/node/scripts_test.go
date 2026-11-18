@@ -160,6 +160,12 @@ func TestScriptRoutesThroughUnifiedListener(t *testing.T) {
 	if status != http.StatusOK || body != `{"valid":true}` {
 		t.Fatalf("validate: %d %q", status, body)
 	}
+	status, body = doScript(t, http.MethodPost, scriptPath(server, "/scripts/dry-run"),
+		`{"source":"def on_group_text(message):\n    reply(message[\"channel\"], message[\"body\"])\n","message":{"channel":"#public","body":"fixture"}}`, "application/json")
+	var dryRun api.ScriptDryRunResult
+	if err := json.Unmarshal([]byte(body), &dryRun); err != nil || status != http.StatusOK || !dryRun.OK || len(dryRun.Replies) != 1 || dryRun.Replies[0].Channel != "#public" || dryRun.Replies[0].Text != "fixture" {
+		t.Fatalf("dry-run: status %d result %+v body %q error %v", status, dryRun, body, err)
+	}
 	status, body = doScript(t, http.MethodPost, scriptPath(server, "/scripts/validate"),
 		`{"source":"def on_group_text(message:\n"}`, "application/json")
 	if status != http.StatusUnprocessableEntity || body == "" {
