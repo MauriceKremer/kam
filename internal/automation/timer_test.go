@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func saveTimerScript(t *testing.T, repository Repository, id, source string) {
 	}
 }
 
-const timerEveryMinute = "timer_interval_minutes = 1\ndef on_timer(message):\n    room_post(\"lobby\", \"tick\")\n"
+const timerEveryMinute = "timer_interval_minutes = 1\ndef on_timer(now):\n    room_post(\"lobby\", \"tick\")\n"
 
 // countPoster records how many times it was called and when.
 type countPoster struct {
@@ -172,7 +173,7 @@ func TestSavingANewIntervalRestartsTheCycle(t *testing.T) {
 	fastTimers(t, 100*time.Millisecond)
 	repository := openTestRepository(t)
 	poster := &countPoster{}
-	saveTimerScript(t, repository, "weather", "timer_interval_minutes = 10\ndef on_timer(message):\n    room_post(\"lobby\", \"slow\")\n")
+	saveTimerScript(t, repository, "weather", "timer_interval_minutes = 10\ndef on_timer(now):\n    room_post(\"lobby\", \"slow\")\n")
 	runtime := newTimerRuntime(t, repository, poster)
 
 	time.Sleep(60 * time.Millisecond)
@@ -198,7 +199,7 @@ func TestFrozenTimerScriptLeavesTheScheduleAndRejoins(t *testing.T) {
 	poster := &countPoster{}
 	if _, err := repository.Save(context.Background(), db.AutomationScript{
 		ID: "slow", Name: "slow", TimeoutMS: 50, Enabled: true, RuntimeStatus: "READY",
-		Source: "timer_interval_minutes = 1\ndef on_timer(message):\n    for index in range(1000000000):\n        pass\n",
+		Source: "timer_interval_minutes = 1\ndef on_timer(now):\n    for index in range(1000000000):\n        pass\n",
 	}, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +254,7 @@ func TestTimerOnlyScriptIgnoresGroupText(t *testing.T) {
 	repository := openTestRepository(t)
 	poster := &countPoster{}
 	sender := &recordingSender{}
-	saveTimerScript(t, repository, "weather", "timer_interval_minutes = 60\ndef on_timer(message):\n    reply(\"public\", \"timer ran\")\n")
+	saveTimerScript(t, repository, "weather", "timer_interval_minutes = 60\ndef on_timer(now):\n    reply(\"public\", \"timer ran\")\n")
 	runtime, err := NewRuntime(context.Background(), repository, sender, poster)
 	if err != nil {
 		t.Fatal(err)
@@ -274,7 +275,7 @@ func TestScriptWithBothEntriesRunsBothPaths(t *testing.T) {
 	sender := &recordingSender{}
 	source := "timer_interval_minutes = 1\n" +
 		"def on_group_text(message):\n    reply(message[\"channel\"], \"text\")\n" +
-		"def on_timer(message):\n    room_post(\"lobby\", \"timer %d\" % message[\"timestamp_unix\"])\n"
+		"def on_timer(now):\n    room_post(\"lobby\", \"timer %d\" % now.unix)\n"
 	saveTimerScript(t, repository, "both", source)
 	poster := &countPoster{}
 	runtime, err := NewRuntime(context.Background(), repository, sender, poster)
@@ -324,7 +325,7 @@ func TestStopEndsTheTimerLoop(t *testing.T) {
 func TestTimerFireDropIncrementsTheDroppedCounter(t *testing.T) {
 	fastTimers(t, 20*time.Millisecond)
 	repository := openTestRepository(t)
-	saveTimerScript(t, repository, "weather", "timer_interval_minutes = 1\ndef on_timer(message):\n    for index in range(200000000):\n        pass\n")
+	saveTimerScript(t, repository, "weather", "timer_interval_minutes = 1\ndef on_timer(now):\n    for index in range(200000000):\n        pass\n")
 	runtime, err := NewRuntimeWithQueueSize(context.Background(), repository, &recordingSender{}, &countPoster{}, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -340,4 +341,29 @@ func TestTimerFireDropIncrementsTheDroppedCounter(t *testing.T) {
 	}
 	_, depth, dropped := runtime.MonitorStats()
 	t.Fatalf("no drop was counted with a full queue (depth %d, dropped %d)", depth, dropped)
+}
+
+// The timer handler receives the fire time as a time.time value, not a
+// group-text message dict: attributes and format() work on it directly.
+func TestTimerHandlerReceivesTheFireTime(t *testing.T) {
+	fastTimers(t, 40*time.Millisecond)
+	repository := openTestRepository(t)
+	poster := &countPoster{}
+	saveTimerScript(t, repository, "clock", "timer_interval_minutes = 1\n"+
+		"def on_timer(now):\n    room_post(\"lobby\", \"%d %s\" % (now.unix, now.format(\"2006\")))\n")
+	newTimerRuntime(t, repository, poster)
+
+	poster.waitForCount(t, 1, 2*time.Second)
+	posted := poster.textsAt(0)
+	var unix int64
+	var year string
+	if _, err := fmt.Sscanf(posted, "%d %s", &unix, &year); err != nil {
+		t.Fatalf("posted %q: %v", posted, err)
+	}
+	if delta := time.Since(time.Unix(unix, 0)); delta < 0 || delta > 5*time.Second {
+		t.Fatalf("timer argument was %ds away from now", int64(delta.Seconds()))
+	}
+	if want := time.Now().Format("2006"); year != want {
+		t.Fatalf("now.format(\"2006\") = %q, want %q", year, want)
+	}
 }

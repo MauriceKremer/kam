@@ -287,6 +287,55 @@ func TestValidateRejectsInvalidAndForbiddenSources(t *testing.T) {
 	}
 }
 
+// A validated or saved source must name only rooms and channels that exist,
+// when it names them as string literals.
+func TestValidateChecksLiteralRoomAndChannelTargets(t *testing.T) {
+	repository := openTestRepository(t)
+	runtime, err := NewRuntime(context.Background(), repository, &recordingSender{}, &fakePoster{rooms: map[string]bool{"lobby": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(runtime.Stop)
+	cases := []struct {
+		name   string
+		source string
+		valid  bool
+	}{
+		{"known room", "def on_group_text(message):\n    room_post(\"lobby\", \"text\")\n", true},
+		{"unknown room", "def on_group_text(message):\n    room_post(\"nowhere\", \"text\")\n", false},
+		{"computed room target", "def on_group_text(message):\n    room_post(message[\"sender\"], \"text\")\n", true},
+		{"own room_post definition", "def room_post(room, text):\n    pass\ndef on_group_text(message):\n    room_post(\"nowhere\", \"text\")\n", true},
+		{"public channel", "def on_group_text(message):\n    reply(\"#public\", \"text\")\n", true},
+		{"unknown channel", "def on_group_text(message):\n    reply(\"not-a-channel\", \"text\")\n", false},
+		{"dynamic channel", "def on_group_text(message):\n    reply(message[\"channel\"], \"text\")\n", true},
+	}
+	for _, test := range cases {
+		err := runtime.Validate(context.Background(), "validate", test.source, 500)
+		if test.valid && err != nil {
+			t.Errorf("%s: unexpected error %v", test.name, err)
+		}
+		if !test.valid && err == nil {
+			t.Errorf("%s: unknown target accepted", test.name)
+		}
+	}
+	err = runtime.Validate(context.Background(), "validate", cases[1].source, 500)
+	if err == nil || !strings.Contains(err.Error(), `room "nowhere" is not a configured room`) {
+		t.Errorf("unknown-room error = %v, want the configured-room refusal", err)
+	}
+	err = runtime.Validate(context.Background(), "validate", cases[5].source, 500)
+	if err == nil || !strings.Contains(err.Error(), `channel "not-a-channel" is not an enabled channel`) {
+		t.Errorf("unknown-channel error = %v, want the enabled-channel refusal", err)
+	}
+	// Saving runs the same check: a script naming an unknown room is refused,
+	// not stored broken.
+	_, err = runtime.Save(context.Background(), db.AutomationScript{
+		ID: "bad-target", Name: "bad target", Source: "def on_group_text(message):\n    room_post(\"KAM Lobby\", \"text\")\n", TimeoutMS: 30_000, RuntimeStatus: "READY",
+	}, 0)
+	if err == nil || !strings.Contains(err.Error(), "KAM Lobby") {
+		t.Errorf("Save with unknown room = %v, want the refused save", err)
+	}
+}
+
 func TestHostFailuresDoNotFreezeScriptsOrBlockOthers(t *testing.T) {
 	repository := openTestRepository(t)
 	saveScript(t, repository, "a-failing-send", replySource("boom"))

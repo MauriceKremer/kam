@@ -24,9 +24,10 @@ func (s apiScripts) List(ctx context.Context) ([]api.Script, error) {
 		return nil, err
 	}
 	intervals := s.runtime.TimerIntervals()
+	schedules := s.runtime.TimerSchedules()
 	scripts := make([]api.Script, 0, len(stored))
 	for _, item := range stored {
-		scripts = append(scripts, withInterval(toAPIScript(item), intervals))
+		scripts = append(scripts, withPeriods(toAPIScript(item), intervals, schedules))
 	}
 	return scripts, nil
 }
@@ -36,7 +37,7 @@ func (s apiScripts) Get(ctx context.Context, id string) (api.Script, error) {
 	if err != nil {
 		return api.Script{}, translateScriptError(err)
 	}
-	return withInterval(toAPIScript(script), s.runtime.TimerIntervals()), nil
+	return withPeriods(toAPIScript(script), s.runtime.TimerIntervals(), s.runtime.TimerSchedules()), nil
 }
 
 func (s apiScripts) Save(ctx context.Context, script api.Script, expectedRevision int64) (api.Script, error) {
@@ -44,7 +45,7 @@ func (s apiScripts) Save(ctx context.Context, script api.Script, expectedRevisio
 	if err != nil {
 		return api.Script{}, translateScriptError(err)
 	}
-	return withInterval(toAPIScript(saved), s.runtime.TimerIntervals()), nil
+	return withPeriods(toAPIScript(saved), s.runtime.TimerIntervals(), s.runtime.TimerSchedules()), nil
 }
 
 func (s apiScripts) Delete(ctx context.Context, id string, revision int64) error {
@@ -56,7 +57,7 @@ func (s apiScripts) SetEnabled(ctx context.Context, id string, enabled bool, exp
 	if err != nil {
 		return api.Script{}, translateScriptError(err)
 	}
-	return withInterval(toAPIScript(saved), s.runtime.TimerIntervals()), nil
+	return withPeriods(toAPIScript(saved), s.runtime.TimerIntervals(), s.runtime.TimerSchedules()), nil
 }
 
 func (s apiScripts) Recover(ctx context.Context, id string, timeoutMS int64, expectedRevision int64) (api.Script, error) {
@@ -64,7 +65,7 @@ func (s apiScripts) Recover(ctx context.Context, id string, timeoutMS int64, exp
 	if err != nil {
 		return api.Script{}, translateScriptError(err)
 	}
-	return withInterval(toAPIScript(saved), s.runtime.TimerIntervals()), nil
+	return withPeriods(toAPIScript(saved), s.runtime.TimerIntervals(), s.runtime.TimerSchedules()), nil
 }
 
 func (s apiScripts) Validate(ctx context.Context, id, source string, timeoutMS int64) error {
@@ -114,9 +115,10 @@ func translateScriptError(err error) error {
 	return &api.ScriptError{Class: class, Message: err.Error(), Cause: err}
 }
 
-// withInterval fills the read-only timer field from the compiled source.
-func withInterval(script api.Script, intervals map[string]int64) api.Script {
+// withPeriods fills the read-only timer fields from the compiled source.
+func withPeriods(script api.Script, intervals map[string]int64, schedules map[string]string) api.Script {
 	script.TimerIntervalMinutes = intervals[script.ID]
+	script.TimerSchedule = schedules[script.ID]
 	return script
 }
 

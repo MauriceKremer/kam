@@ -205,9 +205,9 @@ func TestScriptRoutesForwardAndMapErrors(t *testing.T) {
 
 // The timer interval is part of the resource: it serializes on reads and a
 // request value is carried to the capability untouched, which then ignores it.
-func TestScriptCarriesTheTimerInterval(t *testing.T) {
+func TestScriptCarriesTheTimerPeriods(t *testing.T) {
 	var fake scriptFake
-	timer := Script{ID: "weather", Name: "weather", Source: "x", TimerIntervalMinutes: 5, Revision: 1}
+	timer := Script{ID: "weather", Name: "weather", Source: "x", TimerIntervalMinutes: 5, TimerSchedule: "0 7 * * *", Revision: 1}
 	fake.list = func() ([]Script, error) { return []Script{timer}, nil }
 	fake.get = func(string) (Script, error) { return timer, nil }
 	handler := scriptHandler(&fake)
@@ -215,6 +215,9 @@ func TestScriptCarriesTheTimerInterval(t *testing.T) {
 	response := scriptRequest(handler, http.MethodGet, "/scripts", "", "")
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"timer_interval_minutes":5`) {
 		t.Fatalf("list: %d %q", response.Code, response.Body)
+	}
+	if !strings.Contains(response.Body.String(), `"timer_schedule":"0 7 * * *"`) {
+		t.Fatalf("list schedule: %d %q", response.Code, response.Body)
 	}
 	response = scriptRequest(handler, http.MethodGet, "/scripts/weather", "", "")
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"timer_interval_minutes":5`) {

@@ -4,12 +4,16 @@
 #
 # Save it with timeout_ms = 30000: the 500 ms default is fine for a reply on
 # air, but a cold HTTPS round trip to an API can take longer than that.
+#
+# Prefer fixed clock times instead of a drifting interval? Replace the interval
+# line with a cron schedule, e.g. timer_schedule = "0 */6 * * *" (every 6 hours
+# on the hour). Exactly one of the two timer lines may be set.
 timer_interval_minutes = 15
 
 ROOM = "lobby"
 API_URL = "https://api.weatherapi.com/v1/current.json?key=YOUR_KEY&q=Emmen"
 
-def on_timer(message):
+def on_timer(now):
     body, status = rest_get(API_URL)
     if status != 200:
         return  # stay quiet and try again next interval; a bad key is not room news
@@ -21,6 +25,6 @@ def on_timer(message):
         current["condition"]["text"],
         current["wind_kph"],
         current["humidity"],
-        time.from_timestamp(message["timestamp_unix"]).format("15:04"),
+        now.format("15:04"),
     )
     room_post(ROOM, text)

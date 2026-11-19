@@ -101,6 +101,7 @@ Every read and write returns a script in this shape:
 | `runtime_status` | `READY`, `BROKEN` (compile or run failure) or `FROZEN` (persist failed). |
 | `last_error` | Last error text; omitted when there is none. |
 | `timer_interval_minutes` | Minutes between timer runs, taken from the source's `timer_interval_minutes`; `0` means no timer. A request's value is ignored, because the source decides it. |
+| `timer_schedule` | The source's `timer_schedule` cron text (optional seconds field allowed), when the script declares a cron timer instead of an interval; omitted otherwise. Exactly one of the two timer forms is set. Read-only and ignored on writes like the interval. |
 | `revision` | Counter that goes up on every change; pass it as `expected_revision` to make a change. |
 | `created_at`, `updated_at` | Unix epoch seconds. |
 

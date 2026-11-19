@@ -500,6 +500,12 @@ func (s *Service) flushAll(now time.Time) {
 	}
 }
 
+// HasRoom reports whether the service is configured with that room id; it is
+// the existence oracle for script target validation.
+func (s *Service) HasRoom(id string) bool {
+	return s.roomByID(id) != nil
+}
+
 func (s *Service) roomByID(id string) *roomState {
 	for _, r := range s.rooms {
 		if r.cfg.ID == id {

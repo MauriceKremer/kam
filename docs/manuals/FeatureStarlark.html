@@ -221,15 +221,30 @@
             <!-- Environment -->
             <section id="environment">
                 <h2>Writing a Script</h2>
-                <p>A script defines one or both of these entry points, and declares a timer by setting an interval at the top of the file:</p>
+                <p>A script defines one or both of these entry points, and declares a timer by setting an interval or a cron schedule at the top of the file:</p>
                 <pre><code class="language-python">def on_group_text(message):   # called for each decoded group text
     ...
 
-def on_timer(message):        # called every timer_interval_minutes
+def on_timer(now):        # called on the timer the source declares
     ...
 
-timer_interval_minutes = 15   # integer literal, at least 1; 0/absent = no timer</code></pre>
-                <p>KAM rejects a script with neither entry point, and also rejects an incomplete timer: <code>timer_interval_minutes</code> without a callable <code>on_timer(message)</code> is an error, and so is <code>on_timer</code> without the interval. The interval must be a plain integer literal written directly in the source (not a calculation and not a variable), so a script cannot change its own schedule; a value below 1 is rejected at save time. The API reports the compiled value as the read-only <code>timer_interval_minutes</code> field, and a request's value for it is ignored.</p>
+timer_interval_minutes = 15   # interval in minutes, at least 1  
+# or, instead:  timer_schedule = "0 7 * * *"   # cron slots, e.g. daily at 07:00</code></pre>
+                <p>KAM rejects a script with neither entry point, and also rejects an incomplete timer: a timer line without a callable <code>on_timer(now)</code> is an error, and so is <code>on_timer</code> without any timer line. Two timer forms exist, and a script may set exactly one of them: <code>timer_interval_minutes</code>, a plain integer literal written directly in the source (not a calculation and not a variable) with a value of at least 1, or <code>timer_schedule</code>, a plain string literal holding a standard cron expression</p>
+            <p>A cron expression has five fields (minute, hour, day of month, month, weekday) and allows an optional sixth seconds field in front, so <code>"*/1 * * * * *"</code> means once a second — the fastest a script may run. Slots align with the clock: <code>"0 7 * * *"</code> runs at 07:00 local time, and the first run comes at the first slot after the script is saved or KAM restarts. Both forms are rejected at save time when they cannot be read. The API reports them as the read-only <code>timer_interval_minutes</code> and <code>timer_schedule</code> fields, and a request's values for them are ignored.</p>
+                <h4>Cron in practice</h4>
+                <p>Read a cron expression left to right as <em>minute, hour, day of month, month, weekday</em>, with an optional seconds field in front. A <code>*</code> means "every". Each row is the value to put after <code>timer_schedule =</code>, with the first runs it produces when saved on a Thursday evening:</p>
+                <table><thead><tr><th>You want</th><th>Expression</th><th>First runs from Thursday 21:52</th></tr></thead><tbody>
+                    <tr><td>Daily at 21:50</td><td><code>50 21 * * *</code></td><td>Fri 21:50, Sat 21:50</td></tr>
+                    <tr><td>Every hour on the hour</td><td><code>0 * * * *</code></td><td>22:00, 23:00, 00:00</td></tr>
+                    <tr><td>Every 15 minutes</td><td><code>*/15 * * * *</code></td><td>22:00, 22:15, 22:30</td></tr>
+                    <tr><td>21:50 on weekdays only</td><td><code>50 21 * * 1-5</code></td><td>Fri 21:50, Mon 21:50</td></tr>
+                    <tr><td>Twice a day, 07:50 and 21:50</td><td><code>50 7,21 * * *</code></td><td>Fri 07:50, Fri 21:50</td></tr>
+                    <tr><td>First of the month, 08:00</td><td><code>0 8 1 * *</code></td><td>1 Dec 08:00, 1 Jan 08:00</td></tr>
+                    <tr><td>Every 10 seconds (testing)</td><td><code>*/10 * * * * *</code></td><td>21:52:10, 21:52:20</td></tr>
+                </tbody></table>
+                <p>Weekday numbers run <code>0</code> to <code>6</code> from Sunday, and <code>1-5</code> is Monday to Friday. A comma lists alternatives (<code>7,21</code> means those two hours) and a slash means "every N" (<code>*/15</code> means every 15 minutes).</p>
+                <p>One thing cron cannot say: a different minute in each hour. <code>50 21,7 * * *</code> is <strong>not</strong> 21:50 plus 07:00 — it is minute 50 in both hours, so 21:50 and 07:50. For two different minutes, use two timer scripts, each with its own expression.</p>
                 <p>Each event or timer fire gets a <strong>fresh</strong> interpreter state: the top level of the file runs again every time, and nothing you assign survives to the next event. Treat every call as a brand-new interaction; there is no persistent storage for scripts.</p>
 
                 <h3>The <code>message</code> dictionary</h3>
@@ -253,7 +268,7 @@ timer_interval_minutes = 15   # integer literal, at least 1; 0/absent = no timer
                 </table>
                 <p>KAM waits up to 200 ms for the modem's signal report; if it does not arrive, the event is delivered with <code>has_rx_meta</code> false (and <code>snr_quarter_db</code> and <code>rssi_dbm</code> at 0).</p>
                 <p>Scripts only see messages from channels KAM can decrypt, i.e. channels that are enabled in <code>kam.yml</code>.</p>
-                <p>A timer fire gets a much smaller dictionary: <code>message["timestamp_unix"]</code> is the fire time in Unix seconds, and that is all. Use it with the <code>time</code> module to format a clock time, as the weather example does.</p>
+                <p>A timer fire does not get a message dictionary at all. Its one argument is a <code>time</code> value — the moment the fire was due — so the handler reads <code>now.unix</code> for Unix seconds or calls <code>now.format("15:04")</code> for a clock time, as the weather example does. Nothing else of a group text exists there: no <code>body</code>, <code>sender</code> or <code>channel</code>.</p>
 
                 <h3>Language limits worth knowing</h3>
                 <ul>
@@ -342,11 +357,11 @@ def on_group_text(message):
 <!-- Periodic posts -->
             <section id="periodic">
                 <h2>Timers &amp; Periodic Posts</h2>
-                <p>The second entry point lets a script act on its own schedule instead of waiting for radio traffic. KAM runs one timer loop for all scripts: each interval it checks which timer scripts are due and calls their <code>on_timer(message)</code>, one script at a time through the same worker as group texts.</p>
+                <p>The second entry point lets a script act on its own schedule instead of waiting for radio traffic. KAM runs one timer loop for all scripts: each interval it checks which timer scripts are due and calls their <code>on_timer(now)</code>, one script at a time through the same worker as group texts.</p>
                 <pre><code class="language-python">timer_interval_minutes = 15
 
-def on_timer(message):
-    room_post("lobby", "checkpoint at %s" % time.from_timestamp(message["timestamp_unix"]).format("15:04"))</code></pre>
+def on_timer(now):
+    room_post("lobby", "checkpoint at %s" % now.format("15:04"))</code></pre>
                 <p>What to expect:</p>
                 <ul>
                     <li><strong>First fire:</strong> about one interval after the script becomes enabled and <code>READY</code> — a 15-minute timer does not fire immediately after saving.</li>
@@ -360,7 +375,7 @@ def on_timer(message):
 ROOM = "lobby"
 API_URL = "https://api.weatherapi.com/v1/current.json?key=YOUR_KEY&q=Emmen"
 
-def on_timer(message):
+def on_timer(now):
     body, status = rest_get(API_URL)
     if status != 200:
         return  # stay quiet and try again next interval; a bad key is not room news
@@ -372,7 +387,7 @@ def on_timer(message):
         current["condition"]["text"],
         current["wind_kph"],
         current["humidity"],
-        time.from_timestamp(message["timestamp_unix"]).format("15:04"),
+        now.format("15:04"),
     )
     room_post(ROOM, text)</code></pre>
                 <p>On the real WeatherAPI endpoint this posts one line such as <code>Emmen 4.9°C, feels 1.8°C, Clear, wind 14 km/h, humidity 80% (19:52)</code>. Edit <code>ROOM</code> and <code>API_URL</code> (with your own API key) before installing; the <a href="#quickstart">Quick Start</a> shows the command. The API key sits in the script source like a channel key in <code>kam.yml</code> — readable by anyone with database or API access, which on a single-operator node means you.</p>
@@ -474,8 +489,8 @@ curl -s -X POST localhost:8766/scripts/ping/recover -H 'Content-Type: applicatio
                 <details>
                     <summary>The Execution Worker</summary>
                     <div class="prose">
-                        <p>KAM subscribes one handler to decoded group texts. The handler copies the message and does a non-blocking put on a 128-event queue, so a slow script can never block packet routing. If the queue is full the event is dropped and logged. A separate timer loop goroutine feeds the same queue: per script it keeps one next-fire time, recomputed after every wake from the compiled intervals; a change (save, enable, recover, delete) nudges it through a one-slot channel. Both event kinds are structs on the same channel, so the queue, drops and shutdown handling stay one mechanism.</p>
-                        <p>A single worker takes events in order. For each event or timer fire it snapshots the enabled <code>READY</code> scripts and runs them one after another, sorted by script id. A timer fire re-checks eligibility and calls <code>on_timer(message)</code> with a one-key dictionary holding <code>timestamp_unix</code>. Execution is therefore sequential and deterministic; scripts need no locking and cannot run in parallel.</p>
+                        <p>KAM subscribes one handler to decoded group texts. The handler copies the message and does a non-blocking put on a 128-event queue, so a slow script can never block packet routing. If the queue is full the event is dropped and logged. A separate timer loop goroutine feeds the same queue: per script it keeps one pending fire plus the declaration it came from, replaced when a save changes the interval or schedule; a change (save, enable, recover, delete) nudges it through a one-slot channel. Both event kinds are structs on the same channel, so the queue, drops and shutdown handling stay one mechanism.</p>
+                        <p>A single worker takes events in order. For each event or timer fire it snapshots the enabled <code>READY</code> scripts and runs them one after another, sorted by script id. A timer fire re-checks eligibility and calls <code>on_timer(now)</code> with a <code>time</code> value holding the fire moment. Execution is therefore sequential and deterministic; scripts need no locking and cannot run in parallel.</p>
                         <p>Each run uses the already-compiled program held in memory with a new interpreter thread and the script's deadline. The interval itself is fixed at compile time (the parser rejects anything but an integer literal of at least 1), so the schedule needs no recomputation between saves. SQLite is not read per event; it is touched only at startup, on API changes and when a status becomes <code>FROZEN</code> or <code>BROKEN</code>.</p>
                         <p>On shutdown KAM stops the API and event intake, cancels the running script, stops the timer loop first so no new fire can be queued, drops any queued events (and logs how many), and only then stops the radio manager and rooms.</p>
                     </div>

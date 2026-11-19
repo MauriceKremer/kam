@@ -78,9 +78,9 @@ func TestEntryPointRuleMatrix(t *testing.T) {
 		{"timer only", timerScript, false, true, ""},
 		{"both", "timer_interval_minutes = 5\n\ndef on_group_text(message):\n    pass\n\ndef on_timer(message):\n    pass\n", true, true, ""},
 		{"neither", "VALUE = 1\n", false, false, "script must define callable on_group_text(message) or a timer"},
-		{"interval without on_timer", "timer_interval_minutes = 5\n", false, false, "script sets timer_interval_minutes but does not define callable on_timer(message)"},
-		{"on_timer without interval", "def on_timer(message):\n    pass\n", false, true, "script defines on_timer but does not set timer_interval_minutes"},
-		{"on_timer is not callable", "timer_interval_minutes = 5\non_timer = 1\n", false, false, "script sets timer_interval_minutes but does not define callable on_timer(message)"},
+		{"interval without on_timer", "timer_interval_minutes = 5\n", false, false, "script sets timer_interval_minutes but does not define a callable on_timer"},
+		{"on_timer without timer", "def on_timer(message):\n    pass\n", false, true, "script defines on_timer but does not set timer_interval_minutes or timer_schedule"},
+		{"on_timer is not callable", "timer_interval_minutes = 5\non_timer = 1\n", false, false, "script sets timer_interval_minutes but does not define a callable on_timer"},
 		{"on_group_text is not callable", "on_group_text = 1\n", false, false, "script must define callable on_group_text(message) or a timer"},
 	}
 	for _, test := range cases {

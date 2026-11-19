@@ -29,7 +29,7 @@ YAML remains the source for node, radio, and channel configuration. SQLite becom
 - ECHO is an ordinary script. The native `internal/echo` service, `models.EchoConfig`, and the `legacy_echo_v1` migration were removed; databases that already ran the migration keep their `builtin.echo` row, and a leftover `echo:` block in `kam.yml` is ignored.
 - A single worker processes a bounded 128-event queue in order. Enabled scripts run sequentially in stable script-ID order. Queue saturation is non-blocking and logged; shutdown cancels the active invocation and drops queued events with a log entry.
 - Each invocation initializes fresh Starlark globals from its resident compiled program. Message dictionaries and path lists are frozen copies. The `reply` capability uses the existing sender and a best-effort 500 ms send timeout.
-- The script routes listen on the unified local REST API (`monitor.listen`, default `127.0.0.1:8766`) without authentication ([FeatureUnifiedApi.md](FeatureUnifiedApi.md) merged the two listeners, retiring port 8765). The routes are `GET /scripts`, `GET /scripts/{id}`, `POST /scripts`, `POST /scripts/validate`, `PUT /scripts/{id}`, `POST /scripts/{id}/enable`, `POST /scripts/{id}/disable`, `POST /scripts/{id}/recover`, and `DELETE /scripts/{id}?revision=N`. Create/update/action requests carry an `expected_revision`; create uses zero. Create/update payloads wrap the script record in a `script` object. A missing `timeout_ms` defaults to 500, and unknown JSON fields are rejected. `enable` and `disable` change only the desired state: a `FROZEN` or `BROKEN` script stays inactive until `recover` (which recompiles the stored source and may set `timeout_ms`) or a source update. Name collisions and stale revisions return 409; unknown IDs return 404.
+- The script routes listen on the unified local REST API (`monitor.listen`, default `127.0.0.1:8766`) without authentication ([FeatureUnifiedApi.md](FeatureUnifiedApi.md) merged the two listeners, retiring port 8765). The routes are `GET /scripts`, `GET /scripts/{id}`, `POST /scripts`, `POST /scripts/validate`, `PUT /scripts/{id}`, `POST /scripts/{id}/enable`, `POST /scripts/{id}/disable`, `POST /scripts/{id}/recover`, and `DELETE /scripts/{id}?revision=N`. Create/update/action requests carry an `expected_revision`; create uses zero. Create/update payloads wrap the script record in a `script` object. A missing `timeout_ms` defaults to 500, and unknown JSON fields are rejected. `enable` and `disable` change only the desired state: a `FROZEN` or `BROKEN` script stays inactive until `recover` (which recompiles the stored source and may set `timeout_ms`) or a source update. Name collisions and stale revisions return 409; unknown IDs return 404. Validate and save additionally reject string-literal `room_post` and `reply` targets that name an unconfigured room or a channel that is not enabled (computed targets are beyond that check).
 - Because the API has no authentication, it only serves loopback `Host` headers (DNS-rebinding guard) and requires `Content-Type: application/json` on `POST`/`PUT`, which browsers cannot send cross-site without a preflight that the API never answers.
 - A timeout freezes the script in memory immediately; if persisting `FROZEN` fails the error is logged and the script stays frozen until restart.
 - Host functions are registered in one table (`hostFunctions` in `internal/automation/runtime.go`); compilation only accepts those names as predeclared, and each call receives the invocation context so it shares the script deadline. Adding a capability means adding an entry there, as done for `rest_get` and `room_post`.
@@ -68,7 +68,7 @@ YAML remains the source for node, radio, and channel configuration. SQLite becom
 
 ### Script shape
 
-Each script exports at least one entry point. `on_group_text(message)` runs for every decoded group text; `on_timer(message)` runs on the interval the source declares in `timer_interval_minutes` ([FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md)). A script needs one of the two, or both:
+Each script exports at least one entry point. `on_group_text(message)` runs for every decoded group text; `on_timer(now)` runs on the schedule the source declares — the interval in `timer_interval_minutes` ([FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md)) or the cron expression in `timer_schedule` ([FeatureStarlarkTimerSchedules.md](FeatureStarlarkTimerSchedules.md)); exactly one timer line may be set. A script needs one of the two, or both:
 
 ```python
 def on_group_text(message):
@@ -83,7 +83,7 @@ The weather script that shipped is the opposite of this earlier sketch: no coord
 timer_interval_minutes = 15
 API_URL = "https://api.weatherapi.com/v1/current.json?key=YOUR_KEY&q=Emmen"
 
-def on_timer(message):
+def on_timer(now):
     body, status = rest_get(API_URL)
     if status != 200:
         return
