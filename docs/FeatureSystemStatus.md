@@ -135,7 +135,7 @@ All four groups are objects even when a platform cannot fill them; unsupported v
 | `memory` | `/proc/meminfo`: `MemTotal`, `MemAvailable` | `hw.memsize` + `vm.page_free_count` + `vm.page_speculative_count` (fallback `vm.stats.vm.*` on older hosts); approximate: available ≈ free + speculative, matching `top`'s "unused" | `null` |
 | `cpu.model` | `/proc/cpuinfo` `model name` | `machdep.cpu.brand_string` | `null` |
 | `cpu.cores` | `runtime.NumCPU()` | `runtime.NumCPU()` | `runtime.NumCPU()` |
-| `cpu.load_*` | `/proc/loadavg` | `vm.loadavg` sysctl (string, parsed) | `null` |
+| `cpu.load_*` | `/proc/loadavg` | `vm.loadavg` sysctl, decoded raw as kernel `struct loadavg` (fixed-point counters / fscale) | `null` |
 | `disk` | `syscall.Statfs` | `syscall.Statfs` | `null` |
 | `database` | `os.Stat` of db and `-wal` files | same | same |
 
@@ -234,6 +234,8 @@ monitor:
 ## 8. Corrections
 
 None to external sources. Two clarifications worth recording:
+
+- Correction (2026-11-19): `vm.loadavg` is a CTLTYPE_STRUCT sysctl — Go's `syscall.Sysctl` returns the raw `struct loadavg` bytes, not the "{ 1.23 4.56 7.89 }" text `sysctl(1)` prints. `loadAverages` decodes the struct (fixed-point counters divided by the carried fscale); the original string parse left the load fields `null` on every macOS host.
 
 - APIdetails' "new fields are only ever added" still holds: `system` is added, but conditionally present (SS-API-3). The status field table must state the condition explicitly when this lands.
 - README's "changes to this block require a restart" is inherited, unchanged, by the new knob (SS-CFG-1).
