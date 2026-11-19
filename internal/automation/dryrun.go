@@ -103,6 +103,8 @@ func (r *Runtime) DryRun(ctx context.Context, id, source string, timeoutMS int64
 		definition: db.AutomationScript{ID: id, Source: source, TimeoutMS: timeoutMS, RuntimeStatus: "READY"},
 		program:    program,
 		interval:   compiled.interval,
+		schedule:   compiled.schedule,
+		spec:       compiled.spec,
 		message:    compiled.messageEntry,
 		timer:      compiled.timerEntry,
 	}

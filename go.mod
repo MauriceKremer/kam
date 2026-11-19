@@ -3,6 +3,7 @@ module kam.bytecoder.nl
 go 1.25.0
 
 require (
+	github.com/robfig/cron/v3 v3.0.1
 	go.bug.st/serial v1.7.1
 	go.starlark.net v0.0.0-20261005163335-bcb1a1a55bf9
 	golang.org/x/sys v0.44.0

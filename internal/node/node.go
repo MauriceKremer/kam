@@ -528,3 +528,9 @@ type roomPoster struct{ service *room.Service }
 func (r roomPoster) Post(ctx context.Context, roomID, text string) error {
 	return r.service.AddSystemPost(ctx, roomID, text)
 }
+
+// HasRoom satisfies automation.RoomChecker so validation can reject scripts
+// posting to rooms that are not configured.
+func (r roomPoster) HasRoom(roomID string) bool {
+	return r.service.HasRoom(roomID)
+}

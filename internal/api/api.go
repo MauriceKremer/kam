@@ -74,7 +74,7 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 			apiEndpoint{Method: "GET", Path: "/scripts/{id}", Purpose: "read one script"},
 			apiEndpoint{Method: "PUT", Path: "/scripts/{id}", Purpose: "update a script (expected_revision)"},
 			apiEndpoint{Method: "DELETE", Path: "/scripts/{id}?revision=N", Purpose: "delete a script"},
-			apiEndpoint{Method: "POST", Path: "/scripts/validate", Purpose: "compile source without saving"},
+			apiEndpoint{Method: "POST", Path: "/scripts/validate", Purpose: "compile source without saving; literal room and channel targets must exist"},
 			apiEndpoint{Method: "POST", Path: "/scripts/dry-run", Purpose: "run source against a fixture and capture replies without sending"},
 			apiEndpoint{Method: "POST", Path: "/scripts/{id}/enable", Purpose: "enable the desired state (expected_revision)"},
 			apiEndpoint{Method: "POST", Path: "/scripts/{id}/disable", Purpose: "disable the desired state (expected_revision)"},

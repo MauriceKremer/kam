@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	starlarkjson "go.starlark.net/lib/json"
 	starlarktime "go.starlark.net/lib/time"
 	"go.starlark.net/starlark"
@@ -66,9 +67,36 @@ type Repository interface {
 type compiledScript struct {
 	definition db.AutomationScript
 	program    *starlark.Program
-	interval   int64 // timer_interval_minutes as compiled, 0 = no timer
-	message    bool  // on_group_text is defined and callable
-	timer      bool  // on_timer is defined and callable
+	interval   int64         // timer_interval_minutes as compiled, 0 = no interval timer
+	schedule   cron.Schedule // timer_schedule as compiled, nil = no cron timer
+	spec       string        // timer_schedule source text, "" = no cron timer
+	message    bool          // on_group_text is defined and callable
+	timer      bool          // on_timer is defined and callable
+}
+
+// timerCronParser accepts the cron text a timer_schedule literal may hold: the
+// standard five fields plus an optional seconds field. @every and friends are
+// deliberately excluded, so one second is the shortest expressible period and
+// a bad script cannot become a tight loop.
+var timerCronParser = cron.NewParser(cron.SecondOptional | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+
+// timerPeriod is the compiled timer of one script: a fixed step in declared
+// minutes (timer_interval_minutes) or a cron slot list (timer_schedule).
+// key is a comparable description of the declaration, so the timer loop can
+// notice that a save changed the period; the cron.Schedule itself is not
+// comparable (its concrete type holds slices).
+type timerPeriod struct {
+	step time.Duration
+	expr cron.Schedule
+	key  string
+}
+
+// nextAfter returns the next fire strictly after t.
+func (p timerPeriod) nextAfter(t time.Time) time.Time {
+	if p.expr != nil {
+		return p.expr.Next(t)
+	}
+	return t.Add(p.step)
 }
 
 // hostFunction is a capability scripts may call; ctx carries the invocation deadline and must be honoured.
@@ -270,7 +298,7 @@ func NewRuntimeWithQueueSize(parent context.Context, repository Repository, send
 			slog.Error("[Automation] script is not runnable", "script_id", definition.ID, "error", err)
 		}
 		if err == nil {
-			runtime.scripts[definition.ID] = &compiledScript{definition: definition, program: program, interval: compiled.interval, message: compiled.messageEntry, timer: compiled.timerEntry}
+			runtime.scripts[definition.ID] = &compiledScript{definition: definition, program: program, interval: compiled.interval, schedule: compiled.schedule, spec: compiled.spec, message: compiled.messageEntry, timer: compiled.timerEntry}
 		}
 	}
 	go runtime.worker()
@@ -334,27 +362,35 @@ func (r *Runtime) dropQueuedEvents(alreadyDropped int) {
 	}
 }
 
-// timerLoop schedules on_timer for every timer script. It keeps one next fire
-// time per script id and recomputes the whole schedule whenever the scripts map
-// may have changed, so there is no per-script bookkeeping to get wrong.
+// timerSlot is one script's pending fire: when it is due and which declared
+// period it was computed from. Comparing keys is how a save that changes the
+// schedule replaces the pending slot instead of keeping a stale one.
+type timerSlot struct {
+	at  time.Time
+	key string
+}
+
+// timerLoop schedules on_timer for every timer script. It keeps one pending
+// slot per script id and recomputes the whole schedule whenever the scripts map
+// or a script's declared period may have changed.
 func (r *Runtime) timerLoop() {
 	defer close(r.timerDone)
-	next := make(map[string]time.Time)
+	next := make(map[string]timerSlot)
 	for {
-		schedule := r.timerIntervals()
+		periods := r.timerPeriods()
 		now := time.Now()
 		for id := range next {
-			if _, ok := schedule[id]; !ok {
+			if _, ok := periods[id]; !ok {
 				delete(next, id)
 			}
 		}
 		var wake time.Time
-		for id, interval := range schedule {
-			if _, ok := next[id]; !ok {
-				next[id] = now.Add(interval)
+		for id, period := range periods {
+			if slot, ok := next[id]; !ok || slot.key != period.key {
+				next[id] = timerSlot{at: period.nextAfter(now), key: period.key}
 			}
-			if wake.IsZero() || next[id].Before(wake) {
-				wake = next[id]
+			if wake.IsZero() || next[id].at.Before(wake) {
+				wake = next[id].at
 			}
 		}
 		if !wake.IsZero() {
@@ -376,11 +412,11 @@ func (r *Runtime) timerLoop() {
 				continue
 			}
 		}
-		// Fire every script whose time has come. The next fire is measured from
+		// Fire every script whose time has come. The next fire is computed from
 		// now, so a slow worker never produces a burst of catch-up fires.
 		fired := time.Now()
 		for _, id := range sortedIDs(next) {
-			if next[id].After(fired) {
+			if next[id].at.After(fired) {
 				continue
 			}
 			select {
@@ -389,26 +425,32 @@ func (r *Runtime) timerLoop() {
 				r.monitorDropped.Add(1)
 				slog.Warn("[Automation] timer fire dropped: queue full", "script_id", id)
 			}
-			next[id] = fired.Add(schedule[id])
+			next[id] = timerSlot{at: periods[id].nextAfter(fired), key: periods[id].key}
 		}
 	}
 }
 
-// timerIntervals snapshots the scripts a timer applies to: resident, enabled,
-// ready, and declaring an interval. FROZEN and BROKEN scripts are idle.
-func (r *Runtime) timerIntervals() map[string]time.Duration {
+// timerPeriods snapshots the scripts a timer applies to: resident, enabled,
+// ready, and declaring an interval or a cron schedule. FROZEN and BROKEN
+// scripts are idle.
+func (r *Runtime) timerPeriods() map[string]timerPeriod {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	schedule := make(map[string]time.Duration)
+	periods := make(map[string]timerPeriod)
 	for id, script := range r.scripts {
-		if script.definition.Enabled && script.definition.RuntimeStatus == "READY" && script.interval > 0 {
-			schedule[id] = time.Duration(script.interval) * timerUnit
+		if !script.definition.Enabled || script.definition.RuntimeStatus != "READY" {
+			continue
+		}
+		if script.interval > 0 {
+			periods[id] = timerPeriod{step: time.Duration(script.interval) * timerUnit, key: "interval:" + strconv.FormatInt(script.interval, 10)}
+		} else if script.schedule != nil {
+			periods[id] = timerPeriod{expr: script.schedule, key: "cron:" + script.spec}
 		}
 	}
-	return schedule
+	return periods
 }
 
-// TimerIntervals reports each timer script's period in minutes, for the API.
+// TimerIntervals reports each interval script's period in minutes, for the API.
 func (r *Runtime) TimerIntervals() map[string]int64 {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -419,6 +461,19 @@ func (r *Runtime) TimerIntervals() map[string]int64 {
 		}
 	}
 	return intervals
+}
+
+// TimerSchedules reports each cron script's timer_schedule text, for the API.
+func (r *Runtime) TimerSchedules() map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	schedules := make(map[string]string)
+	for id, script := range r.scripts {
+		if script.spec != "" {
+			schedules[id] = script.spec
+		}
+	}
+	return schedules
 }
 
 // nudgeTimer tells the loop that the scripts map changed. It never blocks: a
@@ -435,7 +490,7 @@ func (r *Runtime) nudgeTimer() {
 func (r *Runtime) dispatchTimer(fire timerFire) {
 	r.mu.RLock()
 	script, ok := r.scripts[fire.id]
-	eligible := ok && script.definition.Enabled && script.definition.RuntimeStatus == "READY" && script.interval > 0
+	eligible := ok && script.definition.Enabled && script.definition.RuntimeStatus == "READY" && (script.interval > 0 || script.schedule != nil)
 	r.mu.RUnlock()
 	if !eligible || r.ctx.Err() != nil {
 		return
@@ -449,20 +504,18 @@ func (r *Runtime) dispatchTimer(fire timerFire) {
 	}
 }
 
+// invokeTimer hands the handler one time.time value: the moment the fire was
+// due. It is not a group-text message dict, which is why on_timer takes a
+// different argument shape (see FeatureStarlarkPeriodicPosts.md §1).
 func (r *Runtime) invokeTimer(script *compiledScript, now time.Time) error {
-	argument := starlark.NewDict(1)
-	if err := argument.SetKey(starlark.String("timestamp_unix"), starlark.MakeInt64(now.Unix())); err != nil {
-		return err
-	}
-	argument.Freeze()
-	return r.invoke(script, "on_timer", starlark.Tuple{argument})
+	return r.invoke(script, "on_timer", starlark.Tuple{starlarktime.Time(now)})
 }
 
 // sortedIDs returns the map keys in a stable order so equal intervals fire
 // deterministically.
-func sortedIDs(times map[string]time.Time) []string {
-	ids := make([]string, 0, len(times))
-	for id := range times {
+func sortedIDs(slots map[string]timerSlot) []string {
+	ids := make([]string, 0, len(slots))
+	for id := range slots {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -604,7 +657,77 @@ func (r *Runtime) Validate(ctx context.Context, id, source string, timeoutMS int
 		cancel()
 	}()
 	_, _, err := compileWithContext(compileCtx, id, source, timeoutMS)
-	return err
+	if err != nil {
+		return err
+	}
+	return r.checkSourceTargets(source)
+}
+
+// RoomChecker is an optional RoomPoster extension: an implementation reports
+// whether one room id is configured, giving validation an existence oracle for
+// room_post targets.
+type RoomChecker interface {
+	HasRoom(roomID string) bool
+}
+
+// checkSourceTargets rejects sources whose room_post or reply calls pass a
+// string literal naming a room or channel that does not exist. Computed
+// targets and calls of script-defined functions of the same name are outside
+// this check's reach.
+func (r *Runtime) checkSourceTargets(source string) error {
+	rooms, channels, err := literalTargets(source)
+	if err != nil {
+		return err
+	}
+	checker, _ := r.poster.(RoomChecker)
+	for _, roomID := range rooms {
+		if checker != nil && !checker.HasRoom(roomID) {
+			return fmt.Errorf("room_post: room %q is not a configured room", roomID)
+		}
+	}
+	for _, channel := range channels {
+		if _, _, _, ok := parsers.LookupTopic(channel); !ok {
+			return fmt.Errorf("reply: channel %q is not an enabled channel", channel)
+		}
+	}
+	return nil
+}
+
+// literalTargets scans the source AST for string-literal first arguments to
+// calls of the room_post and reply capabilities, skipping names the script
+// defines itself.
+func literalTargets(source string) (rooms, channels []string, err error) {
+	file, err := syntax.Parse("target-check.star", source, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	defined := map[string]bool{}
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if def, ok := node.(*syntax.DefStmt); ok {
+			defined[def.Name.Name] = true
+			return true
+		}
+		call, ok := node.(*syntax.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fn.(*syntax.Ident)
+		if !ok || len(call.Args) == 0 || defined[ident.Name] {
+			return true
+		}
+		literal, ok := call.Args[0].(*syntax.Literal)
+		if !ok || literal.Token != syntax.STRING {
+			return true
+		}
+		switch ident.Name {
+		case "room_post":
+			rooms = append(rooms, literal.Value.(string))
+		case "reply":
+			channels = append(channels, literal.Value.(string))
+		}
+		return true
+	})
+	return rooms, channels, nil
 }
 
 func (r *Runtime) Save(ctx context.Context, definition db.AutomationScript, expectedRevision int64) (db.AutomationScript, error) {
@@ -626,6 +749,9 @@ func (r *Runtime) Save(ctx context.Context, definition db.AutomationScript, expe
 	if err := compileCtx.Err(); err != nil {
 		return db.AutomationScript{}, err
 	}
+	if err := r.checkSourceTargets(definition.Source); err != nil {
+		return db.AutomationScript{}, err
+	}
 	r.mutationMu.Lock()
 	defer r.mutationMu.Unlock()
 	if r.ctx.Err() != nil {
@@ -636,7 +762,7 @@ func (r *Runtime) Save(ctx context.Context, definition db.AutomationScript, expe
 		return db.AutomationScript{}, err
 	}
 	r.mu.Lock()
-	r.scripts[saved.ID] = &compiledScript{definition: saved, program: program, interval: compiled.interval, message: compiled.messageEntry, timer: compiled.timerEntry}
+	r.scripts[saved.ID] = &compiledScript{definition: saved, program: program, interval: compiled.interval, schedule: compiled.schedule, spec: compiled.spec, message: compiled.messageEntry, timer: compiled.timerEntry}
 	r.mu.Unlock()
 	r.nudgeTimer()
 	slog.Info("[Automation] script saved", "script_id", saved.ID, "revision", saved.Revision, "enabled", saved.Enabled, "status", saved.RuntimeStatus)
@@ -712,9 +838,11 @@ func (r *Runtime) Delete(ctx context.Context, id string, expectedRevision int64)
 
 // compiledProgram is what compiling tells the runtime beyond the program itself.
 type compiledProgram struct {
-	interval     int64 // timer_interval_minutes value, 0 = none
-	messageEntry bool  // on_group_text is defined and callable
-	timerEntry   bool  // on_timer is defined and callable
+	interval     int64         // timer_interval_minutes value, 0 = none
+	schedule     cron.Schedule // parsed timer_schedule, nil = none
+	spec         string        // timer_schedule source text, "" = none
+	messageEntry bool          // on_group_text is defined and callable
+	timerEntry   bool          // on_timer is defined and callable
 }
 
 func compile(id, source string, timeoutMS int64) (*starlark.Program, compiledProgram, error) {
@@ -733,6 +861,10 @@ func compileWithContext(parent context.Context, id, source string, timeoutMS int
 	if err != nil {
 		return nil, compiledProgram{}, err
 	}
+	schedule, spec, err := parseTimerSchedule(file)
+	if err != nil {
+		return nil, compiledProgram{}, err
+	}
 	ctx, cancel := context.WithTimeout(parent, timeoutDuration(timeoutMS))
 	defer cancel()
 	thread := &starlark.Thread{Name: id + "-validation"}
@@ -745,7 +877,7 @@ func compileWithContext(parent context.Context, id, source string, timeoutMS int
 		}
 		return nil, compiledProgram{}, err
 	}
-	compiled := compiledProgram{interval: interval}
+	compiled := compiledProgram{interval: interval, schedule: schedule, spec: spec}
 	_, compiled.messageEntry = globals["on_group_text"].(starlark.Callable)
 	_, compiled.timerEntry = globals["on_timer"].(starlark.Callable)
 	if err := checkEntryPoints(compiled); err != nil {
@@ -756,11 +888,17 @@ func compileWithContext(parent context.Context, id, source string, timeoutMS int
 
 // checkEntryPoints enforces the entry-point rules after the module's globals exist.
 func checkEntryPoints(compiled compiledProgram) error {
+	intervalSet := compiled.interval > 0
+	scheduleSet := compiled.spec != ""
 	switch {
-	case compiled.interval > 0 && !compiled.timerEntry:
-		return errors.New("script sets timer_interval_minutes but does not define callable on_timer(message)")
-	case compiled.timerEntry && compiled.interval == 0:
-		return errors.New("script defines on_timer but does not set timer_interval_minutes")
+	case intervalSet && scheduleSet:
+		return errors.New("script must not set both timer_interval_minutes and timer_schedule; keep one")
+	case intervalSet && !compiled.timerEntry:
+		return errors.New("script sets timer_interval_minutes but does not define a callable on_timer")
+	case scheduleSet && !compiled.timerEntry:
+		return errors.New("script sets timer_schedule but does not define a callable on_timer")
+	case compiled.timerEntry && !intervalSet && !scheduleSet:
+		return errors.New("script defines on_timer but does not set timer_interval_minutes or timer_schedule")
 	case !compiled.messageEntry && !compiled.timerEntry:
 		return errors.New("script must define callable on_group_text(message) or a timer")
 	}
@@ -836,6 +974,36 @@ func parseTimerInterval(file *syntax.File) (int64, error) {
 		interval = value
 	}
 	return interval, nil
+}
+
+// parseTimerSchedule reads timer_schedule off the module top level: a plain
+// string literal holding a cron expression, or absent/"" for "no timer".
+// The expression is parsed at compile time so a typo is rejected immediately.
+func parseTimerSchedule(file *syntax.File) (cron.Schedule, string, error) {
+	spec := ""
+	for _, statement := range file.Stmts {
+		assignment, ok := statement.(*syntax.AssignStmt)
+		if !ok || assignment.Op != syntax.EQ {
+			continue
+		}
+		name, ok := assignment.LHS.(*syntax.Ident)
+		if !ok || name.Name != "timer_schedule" {
+			continue
+		}
+		literal, ok := assignment.RHS.(*syntax.Literal)
+		if !ok || literal.Token != syntax.STRING {
+			return nil, "", errors.New("timer_schedule must be a string literal cron expression")
+		}
+		spec = literal.Value.(string)
+	}
+	if spec == "" {
+		return nil, "", nil
+	}
+	schedule, err := timerCronParser.Parse(spec)
+	if err != nil {
+		return nil, "", fmt.Errorf("timer_schedule %q is not a valid cron expression: %w", spec, err)
+	}
+	return schedule, spec, nil
 }
 
 func timeoutDuration(timeoutMS int64) time.Duration {

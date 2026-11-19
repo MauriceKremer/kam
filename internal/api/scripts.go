@@ -26,12 +26,17 @@ type Script struct {
 	TimeoutMS     int64  `json:"timeout_ms"`
 	RuntimeStatus string `json:"runtime_status"`
 	LastError     string `json:"last_error,omitempty"`
-	// TimerIntervalMinutes is the period the script's source declares. It is
-	// read-only: the source decides it, so a request's value is ignored.
+	// TimerIntervalMinutes is the period the script's source declares in
+	// timer_interval_minutes. It is read-only: the source decides it, so a
+	// request's value is ignored.
 	TimerIntervalMinutes int64 `json:"timer_interval_minutes"`
-	Revision             int64 `json:"revision"`
-	CreatedAt            int64 `json:"created_at"`
-	UpdatedAt            int64 `json:"updated_at"`
+	// TimerSchedule is the cron expression the source declares in
+	// timer_schedule, when the script uses a cron timer instead. Read-only
+	// and ignored on writes too.
+	TimerSchedule string `json:"timer_schedule,omitempty"`
+	Revision      int64  `json:"revision"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
 }
 
 // ScriptMutation wraps a script write with the revision the caller loaded.

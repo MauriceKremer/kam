@@ -13,10 +13,17 @@ import (
 )
 
 // fakePoster records what a script asked to post and can refuse on demand.
+// A non-nil rooms map makes it a RoomChecker for target-validation tests.
 type fakePoster struct {
 	mu    sync.Mutex
 	calls [][2]string
 	err   error
+	rooms map[string]bool
+}
+
+// HasRoom reports membership in the configured rooms map.
+func (p *fakePoster) HasRoom(roomID string) bool {
+	return p.rooms[roomID]
 }
 
 func (p *fakePoster) Post(_ context.Context, roomID, text string) error {

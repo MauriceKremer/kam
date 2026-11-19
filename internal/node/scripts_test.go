@@ -144,6 +144,18 @@ func TestScriptRoutesThroughUnifiedListener(t *testing.T) {
 		t.Fatalf("timer list: %d %q", status, body)
 	}
 
+	// A cron-declared timer is visible as its schedule text; writes only
+	// compile the source, the schedule text comes back read-only.
+	status, body = doScript(t, http.MethodPost, scriptPath(server, "/scripts"),
+		`{"script":{"id":"cron","name":"cron","source":"timer_schedule = \"0 7 * * *\"\ndef on_timer(message):\n    pass\n","timer_schedule":"99 7 * * *"}}`, "application/json")
+	if status != http.StatusCreated || !strings.Contains(body, `"timer_schedule":"0 7 * * *"`) || strings.Contains(body, "99 7") {
+		t.Fatalf("cron create: %d %q", status, body)
+	}
+	status, body = doScript(t, http.MethodGet, scriptPath(server, "/scripts/cron"), "", "")
+	if status != http.StatusOK || !strings.Contains(body, `"timer_schedule":"0 7 * * *"`) {
+		t.Fatalf("cron read: %d %q", status, body)
+	}
+
 	// Deleting pins a revision; a missing script is a 404 with the capability text.
 	status, body = doScript(t, http.MethodDelete, scriptPath(server, "/scripts/one?revision=2"), "", "")
 	if status != http.StatusNoContent || body != "" {
