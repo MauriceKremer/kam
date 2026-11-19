@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Implemented: all six phases. Compile-time interval and entry-point rules, `rest_get`, `room_post` and room system posts, timer scheduling, the API field, and the example plus docs. |
+| Status | Implemented: all six phases. Compile-time interval and entry-point rules, `rest_get`, `room_post` and room system posts, timer scheduling, the API field, and the example plus docs. The timer line gained a second form on 2026-11-19: cron expressions via `timer_schedule` ([FeatureStarlarkTimerSchedules.md](FeatureStarlarkTimerSchedules.md)); the interval stays valid. |
 | Scope | Timer-driven scripts, the `room_post` host function, the `rest_get` host function, `json`/`time` predeclared modules, room service system posts, scripts API exposure, docs and examples. |
 | Related | [FeatureStarlark.md](FeatureStarlark.md) (runtime and scripts API), [FeatureRoomServer.md](FeatureRoomServer.md) (room posts and push), [FeatureUnifiedApi.md](FeatureUnifiedApi.md) (transport rules). |
 
@@ -13,7 +13,10 @@ post into a room on its own schedule, and fetch a URL to decide what to post:
 
 - A script declares a run interval in its source with one module-level
   assignment: `timer_interval_minutes = 60`. The runtime then calls the
-  script's `on_timer(message)` handler about every that-many minutes.
+  script's `on_timer(now)` handler about every that-many minutes. A cron
+  expression (`timer_schedule = "0 7 * * *"`) is the second, mutually
+  exclusive form of the same timer line — see
+  [FeatureStarlarkTimerSchedules.md](FeatureStarlarkTimerSchedules.md).
 - A script posts into a room with `room_post("lobby", "text")`. The post is
   authored by the room's own identity and reaches clients through the normal
   backlog and push path, exactly like a client post.
@@ -80,7 +83,7 @@ Findings this plan relies on:
 ## Goals
 
 - A stored script can run periodically without any configuration outside its
-  own source: `timer_interval_minutes = N` plus `def on_timer(message)`.
+  own source: `timer_interval_minutes = N` plus `def on_timer(now)`.
 - `N` is in whole minutes and must be at least 1. This keeps a mistake in a
   source file from becoming a tight loop against the radio, and it makes the
   floor plain: one fire a minute, at the fastest, without unit conversion.
@@ -150,7 +153,7 @@ A script opts in with one module-level assignment next to its other globals:
 ```starlark
 timer_interval_minutes = 60
 
-def on_timer(message):
+def on_timer(now):
     room_post("lobby", body_text)
 ```
 
@@ -163,9 +166,13 @@ Rules, enforced at compile time (save and validate both compile):
 - 0 is treated as "no timer" as well; negative values and values below 1 are
   compile errors: `timer_interval_minutes must be at least 1`.
 - If the interval is set, the script must define `on_timer`:
-  `script sets timer_interval_minutes but does not define callable on_timer(message)`.
+  `script sets timer_interval_minutes but does not define callable on_timer(now)`.
 - If `on_timer` exists, the interval must be set:
-  `script defines on_timer but does not set timer_interval_minutes`.
+  `script defines on_timer but does not set timer_interval_minutes or timer_schedule`
+  (the interval's sibling timer line; see
+  [FeatureStarlarkTimerSchedules.md](FeatureStarlarkTimerSchedules.md)).
+- The interval is one of two timer forms, and a script may set exactly one of
+  them; the other form is the cron expression `timer_schedule`.
 - The old rule changes shape: a script must now define `on_group_text` *or* a
   timer. Neither → compile error
   `script must define callable on_group_text(message) or a timer`.
@@ -225,7 +232,7 @@ Every script can use `json` and `time` as plain globals:
 
 ```starlark
 data = json.decode(body, "text/plain")
-stamp = time.from_timestamp(message["timestamp_unix"])
+stamp = time.from_timestamp(message["timestamp_unix"])  # group-text dict, not a timer fire
 ```
 
 - Allowed predeclared names = `hostFunctions` keys ∪ {`json`, `time`}. The
@@ -291,14 +298,17 @@ Timer semantics, to document verbatim for operators:
 - Fires are best-effort: a fire that lands on a full queue is dropped (logged
   and counted), and the next fire is still one interval after the current
   time — intervals never pile up into bursts.
-- Changing a script's interval restarts that script's cycle from now.
+- Changing a script's interval restarts that script's cycle from now: the
+  pending fire is replaced at the save, which is also what makes switching
+  between the interval and the cron form take effect immediately.
 - Disabling, freezing, or deleting a script removes it from the schedule; a
   recovered (or re-saved) timer script rejoins at one full interval later.
 - Scripts with equal intervals fire together after a restart; the single
   worker serializes the invocations.
 
-Firing invokes the same `invoke()` used for messages, with a frozen
-`{"timestamp_unix": now.Unix()}` dict as the message argument, and the same
+Firing invokes the same `invoke()` used for messages, with the fire time as a
+single `time.time` value (`starlarktime.Time(now)`) instead of a message dict
+— there is no `body`, `sender` or `channel` in a timer fire — and the same
 timeout, freeze-on-timeout, and logging. A dedicated `dispatchTimer(fire)`
 does the per-id snapshot and skip when the script is no longer eligible (a
 fire can race a disable/save).
@@ -483,7 +493,7 @@ timer_interval_minutes = 15
 ROOM = "lobby"
 API_URL = "https://api.weatherapi.com/v1/current.json?key=YOUR_KEY&q=Emmen"
 
-def on_timer(message):
+def on_timer(now):
     body, status = rest_get(API_URL)
     if status != 200:
         return  # stay quiet and try again next interval; a bad key is not room news
@@ -495,7 +505,7 @@ def on_timer(message):
         current["condition"]["text"],
         current["wind_kph"],
         current["humidity"],
-        time.from_timestamp(message["timestamp_unix"]).format("15:04"),
+        now.format("15:04"),
     )
     room_post(ROOM, text)
 ```
@@ -557,6 +567,11 @@ no method overrides, no built-in API-key store.
 ```go
 TimerIntervalMinutes int `json:"timer_interval_minutes"`
 ```
+
+The cron sibling of this field is `timer_schedule`, a read-only string with
+the compiled `timer_schedule` text;
+[FeatureStarlarkTimerSchedules.md](FeatureStarlarkTimerSchedules.md) carries
+the details.
 
 - The runtime gets one read helper:
 
@@ -665,7 +680,7 @@ after is independently testable against compile's new contract.
       stagger-free first fire, `timerChanged` nudge from `Save`/`SetEnabled`
       /`Recover`/`Delete`, no catch-up, non-blocking fire enqueue.
 - [x] `dispatchTimer`: per-id eligibility snapshot, frozen dict
-      `{"timestamp_unix": now.Unix()}`, shared `invoke`, freeze-on-timeout.
+      a `time.time` fire value, shared `invoke`, freeze-on-timeout.
 - [x] `TimerIntervals()` snapshot helper.
 - [x] Tests: fire cadence with an overridable minute floor; interval change
       resets; disabled/frozen/deleted scripts stop firing; recovered scripts
@@ -706,7 +721,7 @@ after is independently testable against compile's new contract.
 |---|---|---|
 | D1 | The interval is declared in script source as a module-level integer literal (`timer_interval_minutes`), not stored as a column and not configurable in `kam.yml`. | Source already is the single definition of a script's behavior; a column would add a migration and a second place scripts diverge from settings. The literal is machine-checkable at compile time. |
 | D2 | Timer floor is 1 minute, compile-enforced. | A typo must not become a tight loop hammering the radio, and minutes make the floor self-evident — no second-to-minute conversion to explain or get wrong. |
-| D3 | Timer entry is a separate `on_timer(message)` handler, and the group-text message dict is unchanged. | Reusing `on_group_text` for timer fires would make the name and the argument lie for scripts that never see group texts; a second entry point costs one compile check. |
+| D3 | Timer entry is a separate `on_timer(now)` handler, and the group-text message dict is unchanged. | Reusing `on_group_text` for timer fires would make the name and the argument lie for scripts that never see group texts; a second entry point costs one compile check. |
 | D4 | Timer fires go through the existing bounded worker queue; no parallel dispatch. | Preserves the sequential-execution invariant and reuses timeout/freeze/snapshot logic verbatim; fire-and-recompute (no catch-up) keeps bursts impossible. |
 | D5 | `rest_get` returns `(body, status)`, GET-only, no allowlist/private-IP rules, no returned headers, 1 MiB cap. | The tuple mirrors how scripts read HTTP; the caps are correctness guards. KAM is single-operator; its scripts are trusted code, matching the README philosophy. |
 | D6 | Script posts are authored by the room's own identity, via a new bounded command channel into the room worker. | Room state is worker-owned (existing invariant); the room key is the anticipated author for system posts (db schema comment), and delivery/backlog/push then work with zero new mesh code. |
@@ -722,6 +737,8 @@ after is independently testable against compile's new contract.
 | 2026-11-06 | [FeatureStarlark.md](FeatureStarlark.md) listed "Multiple event types beyond group text" as a first-release non-goal; this feature intentionally supersedes that line with the timer entry (D3). No other statement in that doc was contradicted: the runtime, its policy table, and the scripts API described there hold as written. |
 | 2026-11-06 | §1 said a second top-level `timer_interval_minutes` assignment is allowed and the last one wins. It is not: Starlark's resolver rejects rebinding a global, so the script fails with `cannot reassign global timer_interval_minutes`. One assignment per script; the parser-level error is now part of the grammar table. |
 | 2026-11-06 | §Sample script used `"%.1f" %` for temperatures on the belief that Starlark floats print with a trailing dot. Starlark's `%` has no precision/width flags (`unknown conversion %.`) and no `round()`, so the sample uses `%s`, which prints `4.9` for `4.9` and `4.0` for an integral float. |
+| 2026-11-19 | A save that changed an existing script's declared period left the old pending fire in place, so a new schedule only took effect after one more old-period fire (observed live: a schedule changed to 21:50 did not fire at 21:50). The loop now keeps the declaration each pending fire came from and replaces it when that declaration changes. |
+| 2026-11-19 | Timers gained a second, mutually exclusive source declaration: `timer_schedule = "<cron>"` ([FeatureStarlarkTimerSchedules.md](FeatureStarlarkTimerSchedules.md)). The §1 rule above changes accordingly: `on_timer` alone now fails with `…timer_interval_minutes or timer_schedule`. Existing interval scripts keep compiling and running unchanged, and `timer_interval_minutes = 0` still means "no timer". |
 
 ## Verification
 
@@ -734,7 +751,7 @@ Focused acceptance, in order of the phases:
    message-only echo-style script and a timer-only room-poster script both
    compile and store as READY.
 3. Behavior probe with a fake HTTP server and a fake poster:
-   `on_timer` receives `{"timestamp_unix": …}` at the configured cadence (tests
+   `on_timer` receives the fire time (`now.unix`, `now.format(...)`) at the configured cadence (tests
    shrink the floor via `minTimerInterval`), `rest_get` reports body/status
    through the caps, and `room_post` lands a room-key-authored post that
    `LatestPosts` and the push path serve to a logged-in client.
