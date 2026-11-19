@@ -53,7 +53,7 @@
             <span>Feature Manual</span>
             <h1>KISS Modem Command Layer</h1>
             <p>An explanation of how KAM communicates with the MeshCore KISS radio modem.</p>
-            <p class="mt-4"><span class="badge badge-green">Implemented</span> <span class="text-sm text-slate-500 ml-2">Code is complete; real-radio smoke tests and timing measurements remain pending.</span></p>
+            <p class="mt-4"><span class="badge badge-green">Implemented</span> <span class="text-sm text-slate-500 ml-2">Code is complete; radio responses, TX timing and the reboot-reset and unplug drills were verified on a Heltec V3 in October and November 2026.</span></p>
         </header>
 
         <article class="prose prose-slate max-w-none">
@@ -68,7 +68,7 @@
                 </div>
 
                 <div class="info-box info-box-amber">
-                    <strong>Scope.</strong> The typed Tier 1 commands, request tracking, modem error handling, TX pacing, startup checks, optional radio settings and link-health probe are implemented. Crypto/identity commands and modem reboot remain deferred. Hardware-specific limits and timing still need confirmation on a real board.
+                    <strong>Scope.</strong> The typed Tier 1 commands, request tracking, modem error handling, TX pacing, startup checks, optional radio settings and link-health probe are implemented. Crypto/identity commands and modem reboot remain deferred. Hardware limits, timing and the fail-stop behaviour were confirmed on a Heltec V3; one check on older firmware is still open.
                 </div>
             </section>
 
@@ -85,7 +85,7 @@
                         <tr><td><code>TxDone</code>/<code>TxBusy</code> and TX pacing</td><td><span class="badge badge-green">Implemented</span></td><td>Control traffic has priority; data is gated to one pending frame with one retry and a timeout.</td></tr>
                         <tr><td>Startup checks and optional radio settings</td><td><span class="badge badge-green">Implemented</span></td><td>Ping, radio echo comparison, optional power/CSMA, signal reporting and diagnostics.</td></tr>
                         <tr><td>Link-loss and reset detection</td><td><span class="badge badge-green">Implemented</span></td><td>Serial failures stop <code>Node.Run</code> with an error; a 30-second probe reapplies settings after reset.</td></tr>
-                        <tr><td>Hardware smoke tests</td><td><span class="badge badge-amber">Pending</span></td><td>Radio-specific response captures, TX timing and unplug/reset tests have not been run.</td></tr>
+                        <tr><td>Hardware smoke tests</td><td><span class="badge badge-green">Verified</span></td><td>Radio response captures, TX timing, reboot-reset and unplugged-radio drills ran on a Heltec V3 (2026-10-18 and 2026-11-18); a check on older firmware remains.</td></tr>
                     </tbody>
                 </table>
             </section>
@@ -460,12 +460,12 @@
                     <summary>Delivery phases</summary>
                     <div class="prose">
                         <ol>
-                            <li><strong>Hardware verification (pending):</strong> capture exchanges from a real board and measure the quirks/timing above.</li>
+                            <li><strong>Hardware verification (done):</strong> captured exchanges from a real Heltec V3 and measured the quirks/timing above (2026-10-18; unplug drill 2026-11-18).</li>
                             <li><strong>Implemented:</strong> request slot, typed errors, Ping barrier, Tier 1 commands and validated config.</li>
                             <li><strong>Implemented:</strong> startup probe, TxDone/TxBusy events, TX gate and counters.</li>
                             <li><strong>Implemented:</strong> diagnostics, serial fail-stop and the 30-second reset probe.</li>
                         </ol>
-                        <p>Reference firmware: MeshCore <code>main</code>, read 2026-10-10 (<code>examples/kiss_modem</code> last changed in <code>3b69e78</code>; <code>docs/kiss_modem_protocol.md</code> in <code>448d1b2</code>). Where the firmware and its documentation disagree, the firmware wins. No hardware smoke test was run for this implementation.</p>
+                        <p>Reference firmware: MeshCore <code>main</code>, read 2026-10-10 (<code>examples/kiss_modem</code> last changed in <code>3b69e78</code>; <code>docs/kiss_modem_protocol.md</code> in <code>448d1b2</code>). Where the firmware and its documentation disagree, the firmware wins. Hardware smoke tests ran on a Heltec V3 on 2026-10-18, and the unplug drill ran on 2026-11-18.</p>
                     </div>
                 </details>
             </section>
