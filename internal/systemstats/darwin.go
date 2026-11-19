@@ -3,10 +3,11 @@
 package systemstats
 
 import (
+	"encoding/binary"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -75,25 +76,40 @@ func darwinCPU() *CPUStats {
 	return &stats
 }
 
-// loadAverages reads vm.loadavg, formatted as "{ 1.23 4.56 7.89 }".
+// loadAverages reads vm.loadavg. Its data is the kernel struct loadavg
+// (three fixed-point counters plus the fscale divisor), not the
+// "{ 1.23 4.56 7.89 }" text the sysctl command prints, so it is decoded raw.
 func loadAverages() [3]*float64 {
-	var result [3]*float64
-	text, err := sysctlString("vm.loadavg")
+	raw, err := unix.SysctlRaw("vm.loadavg")
 	if err != nil {
+		return [3]*float64{}
+	}
+	return decodeLoadavg(raw)
+}
+
+// decodeLoadavg parses struct loadavg: fixpt_t ldavg[3] then long fscale,
+// 8 bytes on 64-bit and 4 bytes on 32-bit layouts.
+func decodeLoadavg(raw []byte) [3]*float64 {
+	var result [3]*float64
+	if len(raw) < 12 {
 		return result
 	}
-	text = strings.Trim(text, "{} ")
-	fields := strings.Fields(text)
-	if len(fields) < 3 {
+	var fscale uint64
+	switch {
+	case len(raw) >= 24:
+		fscale = binary.LittleEndian.Uint64(raw[16:24])
+	case len(raw) >= 16:
+		fscale = uint64(binary.LittleEndian.Uint32(raw[12:16]))
+	default:
+		return result
+	}
+	if fscale == 0 {
 		return result
 	}
 	var values [3]float64
 	for i := 0; i < 3; i++ {
-		value, err := strconv.ParseFloat(fields[i], 64)
-		if err != nil {
-			return result
-		}
-		values[i] = value
+		counter := binary.LittleEndian.Uint32(raw[i*4 : i*4+4])
+		values[i] = math.Round(float64(counter)/float64(fscale)*100) / 100
 	}
 	for i := 0; i < 3; i++ {
 		result[i] = &values[i]
