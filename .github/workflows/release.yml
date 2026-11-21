@@ -118,7 +118,8 @@ jobs:
       - name: Download archives
         uses: actions/download-artifact@v4
         with:
-          pattern: kam_*_linux_*.tar.gz
+          # pattern matches artifact names, which carry no .tar.gz suffix
+          pattern: kam_*_linux_*
           path: dist
           merge-multiple: true
 
