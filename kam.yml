@@ -1,5 +1,5 @@
 version: 1
-node_name: "kam"
+node_name: "KAM"
 db_path: "kam.db"
 radio:
   port: "/dev/cu.usbserial-0001"
@@ -61,7 +61,7 @@ rooms:
     name: "KAM Lobby"        # advert name, at most 31 bytes (23 with a location)
     admin_password: "change-me-now"   # at most 15 bytes, never "password"
     guest_password: "letmein" # read-write; leave out and set open_room: true for an open room
-    allow_read_only: false   # any other password logs in as a guest who can read but not post
+    allow_read_only: true   # any other password logs in as a guest who can read but not post
     max_clients: 20
     advert_interval_min: 2          # zero-hop advert interval, 0 = off
     flood_advert_interval_hours: 3 # flood advert interval, 0 = off, otherwise 3-168
