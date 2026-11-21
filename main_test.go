@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -157,6 +158,29 @@ func TestRunRoomShowPrintsKeyAdvertAndContactURI(t *testing.T) {
 	}
 	if !strings.Contains(again.String(), pubHex) || !strings.Contains(again.String(), "existing") {
 		t.Fatalf("second run changed the identity:\n%s", again.String())
+	}
+}
+
+func TestVersionIsNonEmpty(t *testing.T) {
+	if version == "" {
+		t.Fatal("version must not be empty; a local build should report dev")
+	}
+}
+
+func TestRunVersionCommand(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if err := runVersionCommand(nil, &out, &errOut); err != nil {
+		t.Fatalf("version: %v (stderr %q)", err, errOut.String())
+	}
+	want := "kam " + version + " " + runtime.GOOS + "/" + runtime.GOARCH + "\n"
+	if got := out.String(); got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}
+
+func TestRunVersionCommandRejectsArgs(t *testing.T) {
+	if err := runVersionCommand([]string{"extra"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+		t.Fatal("expected an error for extra arguments")
 	}
 }
 

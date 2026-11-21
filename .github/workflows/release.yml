@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# A release is one ordered run: verify, build every target, then publish. A
+# second tag push cancels nothing; each tag gets its own run.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: './go.mod'
+          cache: true
+
+      - name: Verify gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::Files not formatted with gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test -race ./...
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goarch: arm64
+            goarm: ""
+            pkgarch: arm64
+          - goarch: arm
+            goarm: "7"
+            pkgarch: armv7
+          - goarch: amd64
+            goarm: ""
+            pkgarch: amd64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: './go.mod'
+          cache: true
+
+      # The tag names the release (v0.7.0); the binaries and archives use the
+      # version without the v (0.7.0), matching `kam version` in the plan.
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: "0"
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="kam_${version}_linux_${{ matrix.pkgarch }}"
+          mkdir -p "dist/${name}"
+          go build -trimpath -ldflags "-s -w -X main.version=${version}" -o "dist/${name}/kam" .
+
+      # The repo's kam.yml points at the maintainer's macOS serial device. The
+      # archive is for a Pi, so its port becomes /dev/ttyUSB0 (the installer
+      # later replaces this with a by-id path).
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="kam_${version}_linux_${{ matrix.pkgarch }}"
+          sed -E 's#^([[:space:]]*port:[[:space:]]*).*$#\1"/dev/ttyUSB0"#' kam.yml > "dist/${name}/kam.yml"
+          cp LICENSE README.md "dist/${name}/"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          rm -rf "dist/${name}"
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: kam_${{ github.ref_name }}_linux_${{ matrix.pkgarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kam_*_linux_*.tar.gz
+          path: dist
+          merge-multiple: true
+
+      # Prove the artifact, not just the build: the amd64 archive runs on this
+      # runner, so unpack it and let the binary report its version (DST-11).
+      - name: Smoke check the amd64 archive
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p smoke
+          tar -C smoke -xzf "dist/kam_${version}_linux_amd64.tar.gz"
+          got="$(smoke/kam_${version}_linux_amd64/kam version)"
+          echo "$got"
+          test "$got" = "kam ${version} linux/amd64"
+
+      - name: Write SHA256SUMS
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/*.tar.gz dist/SHA256SUMS

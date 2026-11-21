@@ -9,6 +9,7 @@
 //	kam [-config kam.yml] [-db path] [-port /dev/ttyUSB0]
 //	kam channel upsert -name '#ops' -key-strategy derived
 //	kam room show [-config kam.yml] [-db path]
+//	kam version
 //
 // Flags override values from the config file. Set DEBUG=1 for debug logs.
 package main
@@ -46,6 +47,13 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "room" {
 		if err := runRoomCommand(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		if err := runVersionCommand(os.Args[2:], os.Stdout, os.Stderr); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
