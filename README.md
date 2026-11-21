@@ -47,6 +47,14 @@ Or, if the module path is resolvable from your GOPROXY:
 go install kam.bytecoder.nl@latest
 ```
 
+### Install on a Raspberry Pi
+
+For a service-managed install of KAM together with its web monitor, use
+[kamstack](https://github.com/MauriceKremer/kamstack):
+`curl -fsSL https://github.com/MauriceKremer/kamstack/releases/latest/download/install.sh | sudo sh`
+writes the systemd unit and configs, installs the matched pair, and keeps it
+updated. The manual steps below stay the way to run KAM on its own.
+
 ### Configure
 
 Copy the example config and edit the radio port for your OS:
