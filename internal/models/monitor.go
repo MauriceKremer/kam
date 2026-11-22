@@ -43,11 +43,15 @@ func (c MonitorConfig) Validate() error {
 	}
 	host, _, err := net.SplitHostPort(c.Listen)
 	if err != nil {
-		return fmt.Errorf("monitor.listen must be a loopback host:port: %w", err)
+		return fmt.Errorf("monitor.listen must be a host:port: %w", err)
 	}
-	address, err := netip.ParseAddr(host)
-	if err != nil || !address.IsLoopback() {
-		return fmt.Errorf("monitor.listen must use a loopback IP address")
+	// Hostnames stay rejected: the Host guard in internal/api accepts address
+	// literals only, so a hostname would bind an API that could never be called
+	// under that name (FeatureKamApi.md D20).
+	if host != "" {
+		if _, err := netip.ParseAddr(host); err != nil {
+			return fmt.Errorf("monitor.listen must use an IP address, or an empty host for all interfaces")
+		}
 	}
 	if c.EventRing < 256 || c.EventRing > 65536 {
 		return fmt.Errorf("monitor.event_ring must be between 256 and 65536")

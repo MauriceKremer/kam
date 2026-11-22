@@ -360,18 +360,19 @@ func TestListenerGuardsScriptRoutes(t *testing.T) {
 	}
 	body, _ = io.ReadAll(response.Body)
 	response.Body.Close()
-	if response.StatusCode != http.StatusForbidden || strings.TrimSpace(string(body)) != `{"error":"local API serves loopback hosts only"}` {
+	if response.StatusCode != http.StatusForbidden || strings.TrimSpace(string(body)) != `{"error":"local API serves IP hosts only"}` {
 		t.Fatalf("rebound Host: %d %q", response.StatusCode, body)
 	}
 }
 
-func TestLoopbackHostGuard(t *testing.T) {
+func TestIPHostGuard(t *testing.T) {
 	for host, want := range map[string]bool{
 		"127.0.0.1:8766": true, "localhost:8766": true, "LOCALHOST": true, "[::1]:8766": true, "127.0.0.1": true,
-		"attacker.example:8766": false, "192.168.1.5:8766": false, "0.0.0.0:8766": false, "127.0.0.1.attacker.example": false, "": false,
+		"192.168.1.5:8766": true, "[fd00::1]:8766": true, "0.0.0.0:8766": true,
+		"attacker.example:8766": false, "127.0.0.1.attacker.example": false, "": false,
 	} {
-		if got := loopbackHost(host); got != want {
-			t.Errorf("loopbackHost(%q): got %v, want %v", host, got, want)
+		if got := ipHost(host); got != want {
+			t.Errorf("ipHost(%q): got %v, want %v", host, got, want)
 		}
 	}
 }

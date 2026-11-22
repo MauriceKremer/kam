@@ -407,7 +407,7 @@ func TestEmptyStatusHostAndListenerGuards(t *testing.T) {
 		url  string
 		code int
 	}{
-		{"http://127.0.0.1/v1/events", 200}, {"http://[::1]/v1/status", 200}, {"http://evil.example/v1/status", 403},
+		{"http://127.0.0.1/v1/events", 200}, {"http://[::1]/v1/status", 200}, {"http://192.168.10.5/v1/status", 200}, {"http://evil.example/v1/status", 403},
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest("GET", test.url, nil))
@@ -418,9 +418,13 @@ func TestEmptyStatusHostAndListenerGuards(t *testing.T) {
 			t.Fatal("missing JSON content type")
 		}
 	}
-	if server, err := Listen("0.0.0.0:0", handler); err == nil {
-		server.Close()
-		t.Fatal("non-loopback bind accepted")
+	server, err := Listen("0.0.0.0:0", handler)
+	if err != nil {
+		t.Fatalf("all-interfaces bind rejected: %v", err)
+	}
+	server.Close()
+	if _, err := Listen("kam.example:0", handler); err == nil {
+		t.Fatal("hostname bind accepted")
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

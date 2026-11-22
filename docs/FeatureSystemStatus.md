@@ -266,7 +266,7 @@ None to external sources. Two clarifications worth recording:
 
 - Cost without the flag: zero (one `request.URL.Query()` parse and a branch).
 - Cost with the flag: a few syscalls and two tiny file reads, at most once per `system_interval_sec` regardless of request rate or concurrency (the 8-slot listener allows parallel requests; the mutex makes them share one snapshot).
-- Security: the listener already serves loopback hosts only with the existing transport guards; machine memory/disk/load are host-local facts of the same class as today's counters. No secret is exposed: `database.path` is configuration the local user can already read.
+- Security: the listener already binds loopback by default with the existing transport guards (the operator may open it, [FeatureKamApi.md](FeatureKamApi.md) D20); machine memory/disk/load are host-local facts of the same class as today's counters. No secret is exposed: `database.path` is configuration the local user can already read.
 
 ### 9.4 Test plan (acceptance)
 

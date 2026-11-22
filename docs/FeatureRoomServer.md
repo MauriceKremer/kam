@@ -488,7 +488,7 @@ D1, D2, D3, D6, D7, D9 and D11 are candidates for ADRs.
 | R6 | `ServerStats` is a raw C struct; natural-alignment offsets are an inference. | Capture a real status reply and pin the layout with a golden test. |
 | R7 | A Pi without RTC or NTP can have a wrong clock; clients use timestamps for replay checks and cursor logic. Accepted under D9; the failure is silent. | Operator docs; RS-OPS-5 warning; RS-POST-2 and RS-ADV-2 within a run. |
 | R8 | One half-duplex radio is shared with automation replies and group-text sends. | RS-TX-1/7. |
-| R9 | The KAM API is unauthenticated (loopback only) and would control roles and posts. | Keep the loopback and `Host` checks; no role changes from unauthenticated non-loopback paths; note for the Remote API design. |
+| R9 | The KAM API is unauthenticated (loopback by default; the bind is the operator's choice, [FeatureKamApi.md](FeatureKamApi.md) D20) and would control roles and posts. | Keep the `Host` guard; no role changes from unauthenticated paths; note for the Remote API design. |
 | R10 | Login flooding costs an ECDH per attempt; the reference has no rate limit. | RS-AUTH-8. |
 | R11 | Client variance across companion apps and firmware levels (multi-byte path hashes from 1.14, `FIRMWARE_VER_LEVEL` 1). | Test at least two client implementations (§12). |
 | R12 | Reference quirks (`READ_ONLY` posting, 150-byte cap, no out-path reset, no inactive-client eviction, replay state in RAM). | D3, RS-PUSH-6, RS-AUTH-9; list deviations in operator docs. |
