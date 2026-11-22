@@ -210,7 +210,7 @@ func TestListenerPolicyCoversScriptRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	if response.StatusCode != http.StatusForbidden || strings.TrimSpace(string(bodyBytes)) != `{"error":"local API serves loopback hosts only"}` {
+	if response.StatusCode != http.StatusForbidden || strings.TrimSpace(string(bodyBytes)) != `{"error":"local API serves IP hosts only"}` {
 		t.Fatalf("foreign Host: %d %q", response.StatusCode, bodyBytes)
 	}
 

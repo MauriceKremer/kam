@@ -75,7 +75,7 @@ KAM has a Local Management API on `127.0.0.1:8765` that manages Starlark scripts
 3. **Small additions to the script routes (now on the unified listener):** a dry run and in-memory run information.
 4. **A read-only advert inventory** over the adverts table KAM already stores.
 
-KAMmon polls `GET /v1/events?after=N` every one to two seconds, keeps its own in-memory history, and serves its own web pages. KAM never pushes and never authenticates anyone: it stays loopback only. KAMmon adds the web login.
+KAMmon polls `GET /v1/events?after=N` every one to two seconds, keeps its own in-memory history, and serves its own web pages. KAM never pushes and never authenticates anyone: it stays unauthenticated and loopback by default (D20). KAMmon adds the web login.
 
 **KAM is an open system.** Its purpose is to run the radio, the channels, the rooms and the scripts, unhindered, whether or not anything is watching. KAMmon is one client of this API. It supplies the screens and the authentication, and KAM does not know it exists. Any other program (a shell script with `curl`, a different dashboard) can use the same API in the same way. The rules in §5.3 follow from this.
 
@@ -144,7 +144,7 @@ Recorded 2026-10-11 from the planning questions.
 | D9 | KAMmon UI | **Go templates and htmx.** KAM is not affected. |
 | D10 | Starlark build tools | **Dry run plus in-memory run information.** |
 | D11 | Web roles versus MeshCore room roles | **Preserve existing MeshCore room behavior.** KAMmon owns web authentication and web-user roles. KAM keeps room passwords and radio sessions; the previously proposed pinned roles are withdrawn. |
-| D12 | Default state of the monitoring listener | **On by default**, reads and changes both, loopback only (the recommendation was off by default). `monitor.enabled: false` removes it completely. |
+| D12 | Default state of the monitoring listener | **On by default**, reads and changes both, loopback only (the recommendation was off by default). `monitor.enabled: false` removes it completely. *(The bind location is superseded by D20: the operator may move it off loopback.)* |
 | D13 | List responses | **Named envelopes**, such as `{"channels":[]}`. Empty lists are arrays, never `null`. |
 | D14 | Event pagination | **Keep `last_seq` and add `next_after`.** The first describes KAM's ring, the second tells a client where to continue. |
 | D15 | Failed modem changes | **Restore on failure**, including save failure. If restoration fails, report uncertainty and pause TX while RX continues. |
@@ -152,6 +152,7 @@ Recorded 2026-10-11 from the planning questions.
 | D17 | Recording cost | **Short lock, bounded copy.** Encode JSON and write responses after releasing it; test contention rather than promise zero waiting. |
 | D18 | Dry runs | **Synchronous and bounded:** 500 ms default, 3000 ms maximum, one at a time, at most 16 replies and 4096 UTF-8 bytes in captured channel names and text. |
 | D19 | Naming | **KAM API.** The API is not limited to KAMmon: any local program may use it, so it is named after KAM, not after its first client. Earlier text and file names said "Monitor API for KAMmon"; renamed 2026-10-23. |
+| D20 | Where the listener binds | **Loopback by default; the operator may move it.** `monitor.listen` can name any IP address of KAM's interface, or an empty host for all interfaces; hostnames are rejected, and the `Host` guard refuses domain names while accepting address headers. Serving the unauthenticated listener beyond loopback is the operator's choice, not KAM's to prevent. |
 
 **Consequences of the decisions that go beyond the recommendation or change existing text**
 
@@ -161,8 +162,8 @@ Recorded 2026-10-11 from the planning questions.
 - **D5 versus [FeatureKissModem.md](FeatureKissModem.md) D8 and the hot-reload non-goal.** Both said "no HTTP surface" and "radio settings stay startup-only". This plan replaces them. `APP_STRUCTURE.md` must be updated when it ships.
 - **D5 and comments.** `models.SaveKamConfig` rewrites `kam.yml` and drops comments. Channel upserts already do this. The manual must say so.
 - **D11 preserves RS-AUTH-10.** The earlier pinned-role proposal is superseded. Room roles still come from existing radio login rules, not from a KAMmon web role.
-- **D12, on by default.** Every KAM carries the event ring and an unauthenticated listener that can change the radio and remove room sessions. Both are loopback only, the same posture as port 8765, and a node that wants neither sets `monitor.enabled: false`. The cost is accepted; it is not a reason to add tokens.
-- **Open to local programs.** Because KAM is an open system, any program on the device can call the listener. That matches the project's stance for a hobby node.
+- **D12, on by default.** Every KAM carries the event ring and an unauthenticated listener that can change the radio and remove room sessions. Both are loopback by default (D20 lets the operator move the bind), the same posture as port 8765, and a node that wants neither sets `monitor.enabled: false`. The cost is accepted; it is not a reason to add tokens.
+- **Open to local programs.** Because KAM is an open system, any program on the device can call the listener — and on another LAN device once the operator opens the bind (D20). That matches the project's stance for a hobby node.
 
 ## 5. Conventions
 
@@ -171,12 +172,12 @@ Recorded 2026-10-11 from the planning questions.
 ```yaml
 monitor:
   enabled: true              # default true; false removes the listener and the ring
-  listen: "127.0.0.1:8766"   # must be a loopback address
+  listen: "127.0.0.1:8766"   # loopback by default; any IP address may be named
   event_ring: 8192           # 256-65536 events
 ```
 
-- The listener binds only to a loopback address and fails closed otherwise (same check as `listenLoopback` in `API`).
-- Requests need a loopback `Host` header. `POST`, `PUT` and `DELETE` with a body need `Content-Type: application/json`. Unknown JSON fields are rejected.
+- The listener binds the address in `monitor.listen` — `127.0.0.1:8766` by default. An operator who wants the API from another device names an address of KAM's own interface, or an empty host for all interfaces; a hostname is rejected (D20).
+- Requests need a `Host` header that is `localhost` or an IP address; a domain name gets `403` (this stops DNS-rebinding pages). `POST`, `PUT` and `DELETE` with a body need `Content-Type: application/json`. Unknown JSON fields are rejected.
 - If the listener cannot start, KAM logs the error and keeps ingesting, as it does for automation and rooms.
 - Request bodies are limited to 1 MiB.
 
@@ -524,7 +525,7 @@ IDs are stable. "From" lists the KAMmon feature document that needs the item (`t
 
 | ID | Requirement | Level | From |
 |---|---|---|---|
-| API-F-1 | A `monitor` config block with `enabled`, `listen` and `event_ring`; a loopback-only listener; loopback `Host` check; JSON-only bodies; best-effort start (§5.1). | MUST | all |
+| API-F-1 | A `monitor` config block with `enabled`, `listen` and `event_ring`; a listener on the address in `monitor.listen` (loopback by default); an IP-address `Host` check; JSON-only bodies; best-effort start (§5.1). | MUST | all |
 | API-F-2 | Routes live under `/v1`; changes inside `v1` only add fields. | MUST | all |
 | API-F-3 | Errors use `{"error": "..."}` and the status codes in §5.2. | MUST | all |
 | API-F-4 | No response contains a channel key, room password or identity seed. | MUST | Access |
@@ -656,6 +657,6 @@ IDs are stable. "From" lists the KAMmon feature document that needs the item (`t
 | R2 | A radio change while a frame is on the air. | API-MD-5: wait for `TxDone` or the gate timeout. |
 | R3 | `SaveKamConfig` drops comments from `kam.yml`. | Documented; same behaviour as `kam channel upsert`. |
 | R4 | Echo matches but the chip rejected a value. | Reported as `modem_echo`; startup RSSI and noise-floor readings remain hints ([FeatureKissModem.md](FeatureKissModem.md) G1, G2). |
-| R5 | Any local program can call the unauthenticated listener, which is on by default (D12). | Accepted for a hobby device, same as port 8765. Keep the loopback bind check; `monitor.enabled: false` turns it off. |
+| R5 | Any local program can call the unauthenticated listener, which is on by default (D12), and the operator can bind it beyond loopback (D20). | Accepted for a hobby device, same as port 8765. Loopback stays the default, the `Host` guard still refuses domain names, and `monitor.enabled: false` turns it off. |
 | R7 | A slow or misbehaving local client. | API-F-8 and API-F-9: deadlines, size limits, at most 8 requests at once, no per-client state. |
 | R6 | A one-byte room hash collides with another node. | `room` on `rx` is labelled probable. |

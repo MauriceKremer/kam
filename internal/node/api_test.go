@@ -25,7 +25,7 @@ func TestAPIDisabledOrBindFailureKeepsManagerAlive(t *testing.T) {
 	for _, settings := range []models.MonitorConfig{
 		{Enabled: false},
 		{Enabled: true, Listen: listener.Addr().String(), EventRing: 256},
-		{Enabled: true, Listen: "0.0.0.0:8766", EventRing: 256},
+		{Enabled: true, Listen: "kam.example:8766", EventRing: 256},
 	} {
 		manager := &kiss.Manager{}
 		manager.TestInit()

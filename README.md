@@ -142,7 +142,7 @@ Other commands: `kam channel upsert ...` (add or change a channel in `kam.yml`) 
 
 ## Local REST API
 
-KAM serves one loopback REST API — the **KAM API** — on `127.0.0.1:8766`. It
+KAM serves one REST API — the **KAM API** — on `127.0.0.1:8766` by default. It
 hosts the data surfaces — `GET /v1/status` and `GET /v1/events`,
 channel history (`GET /v1/channels`, `GET /v1/channels/{name}/messages`),
 stored adverts (`GET /v1/adverts`),
@@ -177,7 +177,7 @@ collected at most once every `system_interval_sec` seconds (`0` disables the
 throttle). Invalid
 `monitor` settings or a busy port are
 logged without stopping radio ingestion. Changes to this block require a restart.
-The API has no authentication and serves loopback hosts only; KAMmon, the
+The API has no authentication; it binds loopback by default and `monitor.listen` may name another IP address for a client on another device ([FeatureKamApi.md](docs/FeatureKamApi.md) D20). KAMmon, the
 separate web-monitor project, owns its web authentication. JSON events contain
 metadata, never message bodies or keys.
 
@@ -217,8 +217,8 @@ def on_group_text(message):
 ### Managing scripts over the local REST API
 
 Script management lives on the same listener as the read-only data surfaces:
-`monitor.listen` (default `127.0.0.1:8766`), loopback only, no authentication.
-Requests need a loopback `Host` header and, for `POST`/`PUT`, `Content-Type: application/json`. Updates carry the revision you last read (`expected_revision`; `0`/omitted when creating) and fail with `409` if it is stale. The listener answers `GET /` with the routes it serves; endpoint details live in [`docs/APIdetails.md`](docs/APIdetails.md).
+`monitor.listen` (default `127.0.0.1:8766`), any IP address, loopback by default, no authentication.
+Requests need a `Host` header that is `localhost` or an IP address and, for `POST`/`PUT`, `Content-Type: application/json`. Updates carry the revision you last read (`expected_revision`; `0`/omitted when creating) and fail with `409` if it is stale. The listener answers `GET /` with the routes it serves; endpoint details live in [`docs/APIdetails.md`](docs/APIdetails.md).
 
 ```sh
 curl -s localhost:8766/scripts

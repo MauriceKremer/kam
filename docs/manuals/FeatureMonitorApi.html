@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Use KAM's loopback API for status, events, channel history, room monitoring and management, script management and modem diagnostics; script dry runs and run information remain planned.">
+    <meta name="description" content="Use KAM's API for status, events, channel history, room monitoring and management, script management and modem diagnostics; the listener is loopback by default, and script dry runs and run information remain planned.">
     <title>Backend API Manual</title>
     <link href="manuals.css" rel="stylesheet">
     <script>try{var t=localStorage.getItem("kam-theme");if(t?t==="dark":matchMedia("(prefers-color-scheme: dark)").matches)document.documentElement.dataset.theme="dark"}catch(e){}</script>
@@ -60,7 +60,7 @@
                 <p>An <strong>API</strong>, or application programming interface, lets one program ask another program for information or request a change. KAM's backend API provides status, recent radio and room events, configured channels with message history, room summaries, clients, posts and room management (forget a client, delete a post, send an advert now), script management and modem monitoring and radio changes. Any local dashboard or command-line script can use the same API.</p>
                 <p>For example, KAMmon could ask, "Which packets arrived since my last request?" KAM would return a list. KAMmon would draw the chart and decide which of its signed-in web users may see the details.</p>
                 <p><strong>KAM does the radio work. KAMmon provides the web interface.</strong> KAM remains an open system: it starts, receives, stores messages and runs scripts without KAMmon. It does not register KAMmon as a client, check whether KAMmon is alive, or wait for it to consume events.</p>
-                <div class="info-box info-box-blue"><p><strong>Available now:</strong> one loopback listener on port 8766 serving the bounded event ring, status and event reads, channel list/history, room reads and management (forget a client, delete a post, send an advert now), script management (the old script API on port 8765 is retired) and modem monitoring with radio changes. Script dry runs and run information are still planned. The listener answers <code>GET /</code> with the routes it serves right now; <a href="../docs/APIdetails.md">APIdetails.md</a> is the full reference.</p></div>
+                <div class="info-box info-box-blue"><p><strong>Available now:</strong> one listener on port 8766 (loopback by default) serving the bounded event ring, status and event reads, channel list/history, room reads and management (forget a client, delete a post, send an advert now), script management (the old script API on port 8765 is retired) and modem monitoring with radio changes. Script dry runs and run information are still planned. The listener answers <code>GET /</code> with the routes it serves right now; <a href="../docs/APIdetails.md">APIdetails.md</a> is the full reference.</p></div>
             </section>
 
             <section id="concepts">
@@ -115,7 +115,7 @@
   listen: "127.0.0.1:8766"
   event_ring: 8192
   system_interval_sec: 5</code></pre>
-                <p><strong>Loopback</strong> means a connection within the same computer. The address <code>127.0.0.1</code> is loopback; it is not the computer's address on your home network. The listener accepts only loopback addresses and loopback HTTP Host headers.</p>
+                <p><strong>Loopback</strong> means a connection within the same computer. The address <code>127.0.0.1</code> is loopback; it is not the computer's address on your home network. The listener binds this loopback address by default. To call the API from another device on your network, set <code>listen</code> to an IP address of this computer (for example <code>192.168.1.10:8766</code>) or to <code>0.0.0.0:8766</code> for every network interface, then restart KAM. Every request must carry an HTTP Host header that is <code>localhost</code> or an IP address; a domain name gets <code>403</code>. That is a DNS-rebinding guard, not a login.</p>
                 <table>
                     <thead><tr><th>Address</th><th>Purpose</th><th>Status</th></tr></thead>
                     <tbody>
@@ -126,7 +126,7 @@
                 </table>
                 <p>The event-ring capacity may be 256 to 65536 events. It is a <strong>count limit, not a guaranteed duration</strong>. A busy network fills the ring sooner than a quiet network.</p>
                 <p><code>system_interval_sec</code> limits how often KAM reads machine statistics for <code>GET /v1/status?system=true</code>: memory used and available, CPU load, disk space on the database's filesystem and the size of the SQLite database (including its WAL companion file; <strong>WAL</strong>, write-ahead log, is the file SQLite writes changes to before folding them into the main database). A request that asks for the <code>system</code> section inside the window receives the last snapshot with its <code>collected_at</code> time instead of a fresh one. The default is 5 seconds; <code>0</code> allows every request to collect again. Nothing is collected while no request asks for the section.</p>
-                <p>KAMmon uses these local addresses. Browsers connect to KAMmon, not directly to KAM's API. KAMmon owns web authentication and any outward-facing HTTPS setup.</p>
+                <p>KAMmon uses these addresses, usually from the same machine; it can also run on another computer in your network once <code>listen</code> names a network address. Browsers connect to KAMmon, not directly to KAM's API. KAMmon owns web authentication and any outward-facing HTTPS setup.</p>
             </section>
 
             <section id="usage">

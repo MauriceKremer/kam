@@ -228,7 +228,7 @@
                 <h3 id="journey-api">A REST request</h3>
                 <p><strong>Example:</strong> an operator tool asks for recent events.</p>
                 <ol>
-                    <li>The tool sends an HTTP request to <code>127.0.0.1:8766</code>, the default address. The API listens on the local machine only.</li>
+                    <li>The tool sends an HTTP request to <code>127.0.0.1:8766</code>, the default address. The API listens on the local machine by default; the operator may open it to the local network.</li>
                     <li><strong>internal/api</strong> checks the request, runs at most eight at once, applies a five-second limit and decodes any JSON body.</li>
                     <li>The API never touches the radio or the database directly. It calls small adapters that <strong>internal/node</strong> supplies for status, events, channels, rooms and scripts.</li>
                     <li>The adapters read the bounded event ring, the channel registry, the room service or the script repository, and the API sends back JSON.</li>

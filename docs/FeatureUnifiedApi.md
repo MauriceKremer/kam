@@ -196,7 +196,7 @@ The guard test checks imports, not semantics; a capability could still leak deci
 | **Listener** | | |
 | UA-L-1 | One loopback listener serves the script and monitoring surfaces; port 8765 no longer opens. | MUST |
 | UA-L-2 | `monitor.enabled`, `monitor.listen`, `monitor.event_ring` keep their meaning and defaults; `enabled: false` removes the whole listener. | MUST |
-| UA-L-3 | The listener binds loopback only and refuses a non-loopback bind (existing `listenLoopback` behaviour, moved). | MUST |
+| UA-L-3 | The listener binds loopback only and refuses a non-loopback bind (existing `listenLoopback` behaviour, moved). *(Bind flexibility superseded by [FeatureKamApi.md](FeatureKamApi.md) D20: loopback remains the default; the operator may name any IP address or all interfaces.)* | MUST |
 | UA-L-4 | One shutdown path; `Node.Run` stops the single server with the existing 5 s grace. | MUST |
 | **Transport** | | |
 | UA-T-1 | `internal/api` imports only the standard library and `internal/models`; no capability package imports `internal/api`. | MUST |

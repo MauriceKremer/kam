@@ -17,6 +17,8 @@ func TestMonitorConfigurationDefaultsAndDisabled(t *testing.T) {
 		{"{}", true, "127.0.0.1:8766", 8192, 5},
 		{"monitor: {enabled: false}", false, "127.0.0.1:8766", 8192, 5},
 		{"monitor: {listen: '[::1]:0', event_ring: 256, system_interval_sec: 0}", true, "[::1]:0", 256, 0},
+		{"monitor: {listen: '192.168.10.5:8766'}", true, "192.168.10.5:8766", 8192, 5},
+		{"monitor: {listen: ':8766'}", true, ":8766", 8192, 5},
 	} {
 		var cfg KamConfig
 		if err := yaml.Unmarshal([]byte(test.yaml), &cfg); err != nil {
@@ -51,6 +53,30 @@ func TestMonitorConfigurationIntervalValidation(t *testing.T) {
 		}
 		if test.errCode != "" && (err == nil || err.Error() != test.errCode) {
 			t.Fatalf("%s: %v", test.yaml, err)
+		}
+	}
+}
+
+func TestMonitorListenAddressValidation(t *testing.T) {
+	for _, test := range []struct {
+		listen  string
+		errCode string
+	}{
+		{"127.0.0.1:8766", ""},
+		{"0.0.0.0:8766", ""},
+		{"[::]:8766", ""},
+		{"kam.example:8766", "monitor.listen must use an IP address, or an empty host for all interfaces"},
+	} {
+		var cfg KamConfig
+		if err := yaml.Unmarshal([]byte("monitor: {listen: '"+test.listen+"'}"), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		err := cfg.MonitorSettings().Validate()
+		if test.errCode == "" && err != nil {
+			t.Fatalf("%s: %v", test.listen, err)
+		}
+		if test.errCode != "" && (err == nil || err.Error() != test.errCode) {
+			t.Fatalf("%s: %v", test.listen, err)
 		}
 	}
 }

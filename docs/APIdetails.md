@@ -5,7 +5,7 @@ implemented endpoints, with their parameters and responses. Planned endpoints
 (script dry runs and run info) live in
 [FeatureKamApi.md](FeatureKamApi.md) §7 and §10; they are not described here.
 
-KAM serves one small REST API, loopback-only and without authentication, at
+KAM serves one small REST API, unauthenticated and loopback by default, at
 `monitor.listen` (default `127.0.0.1:8766`). It hosts the data surfaces
 (status, events, channels, rooms), Starlark script management, and the
 modem snapshot/query/radio routes. The data surfaces only read, except for one
@@ -28,8 +28,7 @@ automation stays off: the data surfaces work, every script route answers
 
 ## Rules
 
-- **Loopback only.** The `Host` header must be `localhost` or a loopback IP.
-  Anything else gets `403`. This is a DNS-rebinding guard, not a login.
+- **Address `Host` headers; loopback bind by default.** The `Host` header must be `localhost` or an IP address — anything else gets `403`, which is a DNS-rebinding guard, not a login. The listener binds `127.0.0.1` by default; `monitor.listen` may name another address for a client on another device.
 - **Errors are JSON.** Errors the API itself produces are
   `{"error": "message"}` with a suitable status code (`400`, `403`, `404`,
   `405`, `409`, `413`, `415`, `422`, `500`, `502`, `503`, `504`; the modem routes add

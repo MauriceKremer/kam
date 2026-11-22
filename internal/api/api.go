@@ -1,5 +1,5 @@
 // Package api is KAM's local REST layer: routes, JSON decoding and shape
-// validation, transport policy (loopback Host guard, JSON bodies, at most
+// validation, transport policy (address Host guard, JSON bodies, at most
 // eight concurrent requests, a five-second deadline, panic recovery), the
 // wire shapes of every response, error-to-status translation, and the
 // self-describing GET / index.
@@ -111,8 +111,8 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 				writeJSON(w, 500, map[string]string{"error": "internal error"})
 			}
 		}()
-		if !loopbackHost(request.Host) {
-			writeJSON(w, 403, map[string]string{"error": "local API serves loopback hosts only"})
+		if !ipHost(request.Host) {
+			writeJSON(w, 403, map[string]string{"error": "local API serves IP hosts only"})
 			return
 		}
 		if request.Method == http.MethodPost || request.Method == http.MethodPut {
@@ -137,10 +137,11 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 	})
 }
 
-// loopbackHost reports whether the request's Host header names the local
-// machine; it stops web pages from driving the API via DNS rebinding or
-// cross-site forms.
-func loopbackHost(hostport string) bool {
+// ipHost reports whether the request's Host header names an address instead of
+// a domain name; it stops web pages from driving the API via DNS rebinding,
+// where a browser sends a hostile site's name to a local address. Local and
+// LAN clients send addresses, so they pass.
+func ipHost(hostport string) bool {
 	host := hostport
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
 		host = h
@@ -149,8 +150,8 @@ func loopbackHost(hostport string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}
-	address, err := netip.ParseAddr(host)
-	return err == nil && address.IsLoopback()
+	_, err := netip.ParseAddr(host)
+	return err == nil
 }
 
 // requestTimeout bounds ordinary requests. modemApplyTimeout is the one
