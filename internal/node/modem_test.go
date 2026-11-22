@@ -642,14 +642,10 @@ func TestModemRefreshFillsReadingsAndBooksErrors(t *testing.T) {
 	radio.battery = 3900
 	radio.errs["BatteryMillivolts"] = &kiss.ModemError{Code: 0x03}
 	controller := modemTestController(radio, &fakeScheduler{}, "")
-	controller.Start()
-	defer controller.Stop()
 
-	// The loop's first refresh runs immediately; wait until it recorded.
-	waitFor(t, 2*time.Second, func() bool {
-		snapshot, err := controller.Snapshot(context.Background())
-		return err == nil && len(snapshot.Unsupported) == 1 && snapshot.Readings != nil
-	})
+	// Refresh by hand rather than through the loop, so no background refresh
+	// can overlap the later manual ones.
+	controller.refresh()
 	snapshot, err := controller.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
