@@ -7,7 +7,7 @@ purpose, design philosophy, radio-network basics, setup, and everyday operation.
 
 ## Status
 
-KAM v0.6.0 is a pre-release build. The core — radio ingestion, persistent storage,
+KAM v0.8.0 is a pre-release build. The core — radio ingestion, persistent storage,
 Starlark automation, room servers, and the local REST API — is complete, documented,
 and covered by CI; it is not a production promise. Known pending items are listed
 under [Room servers](#room-servers) ("Not yet implemented") and in the feature
