@@ -19,7 +19,7 @@ func TestStatusSystemFlag(t *testing.T) {
 		Disk:        &SystemDisk{Path: "/", TotalBytes: 1000, AvailableBytes: 500, UsedBytes: 500, UsedPercent: 50},
 		Database:    &SystemDB{Path: "kam.db", SizeBytes: 10, WalSizeBytes: &wal},
 	}
-	handler := NewHandlerWithResources(ringEvents{events.NewRing(16)}, func() Status { return Status{} }, nil, nil, nil, nil, func() *SystemStatus { return snapshot })
+	handler := NewHandlerWithResources(ringEvents{events.NewRing(16)}, func() Status { return Status{} }, nil, nil, nil, nil, func() *SystemStatus { return snapshot }, nil)
 
 	t.Run("no flag leaves the response unchanged", func(t *testing.T) {
 		response := httptest.NewRecorder()
@@ -88,7 +88,7 @@ func TestStatusSystemFlag(t *testing.T) {
 }
 
 func TestStatusSystemNilSourceOmitsSection(t *testing.T) {
-	handler := NewHandlerWithResources(ringEvents{events.NewRing(16)}, func() Status { return Status{} }, nil, nil, nil, nil, nil)
+	handler := NewHandlerWithResources(ringEvents{events.NewRing(16)}, func() Status { return Status{} }, nil, nil, nil, nil, nil, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("GET", "http://127.0.0.1/v1/status?system=true", nil))
 	if response.Code != 200 {

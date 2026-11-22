@@ -43,6 +43,10 @@ func (n *Node) startAPI(cfg *models.KamConfig, persistence *db.Persistence, room
 	if n.rooms != nil && n.roomRepository != nil && persistence != nil {
 		roomSource = apiRooms{service: n.rooms, repository: n.roomRepository, persistence: persistence}
 	}
+	var advertReader api.AdvertReader
+	if persistence != nil {
+		advertReader = apiAdverts{persistence: persistence}
+	}
 	var modemSource api.ModemSource
 	if n.scheduler != nil && n.radio != nil && n.radioState != nil {
 		controller := newModemController(n.radio, n.scheduler, n.manager, n.radioState, n.configPath, initialSignalReport)
@@ -56,7 +60,7 @@ func (n *Node) startAPI(cfg *models.KamConfig, persistence *db.Persistence, room
 		snapshot := collector.Collect()
 		return systemToWire(snapshot)
 	}
-	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomSource, modemSource, systemSource))
+	server, err := api.Listen(settings.Listen, api.NewHandlerWithResources(apiEvents{ring}, status, scriptSource, channelReader, roomSource, modemSource, systemSource, advertReader))
 	if err != nil {
 		slog.Error("local API listener unavailable", "address", settings.Listen, "error", err)
 		if n.modem != nil {

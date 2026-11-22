@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -33,6 +34,34 @@ type MonitorChannelPage struct {
 	NextBeforeID *int64
 }
 
+// MonitorAdvert is one stored advert: the latest one heard per public key,
+// because the adverts table replaces a reheard node's row instead of appending.
+// Times use the reception clock, never the node's advertised clock.
+type MonitorAdvert struct {
+	PublicKey        []byte
+	NodeHash         byte
+	Nickname         *string
+	IsChatNode       bool
+	IsRepeater       bool
+	IsRoomServer     bool
+	IsSensor         bool
+	HasLocation      bool
+	Latitude         *float64
+	Longitude        *float64
+	SignatureValid   bool
+	HopCount         int
+	HopStations      []string
+	TimeDriftSeconds int64
+	AdvertTimestamp  time.Time
+	FirstReceivedAt  *time.Time
+	LastReceivedAt   time.Time
+}
+
+type MonitorAdvertPage struct {
+	Adverts   []MonitorAdvert
+	Truncated bool
+}
+
 // ListMonitorChannels combines public channel configuration with retained message counts.
 // It intentionally never reads or returns channel key material.
 func (p *Persistence) ListMonitorChannels(ctx context.Context, configured []models.ChannelConfig) ([]MonitorChannel, error) {
@@ -52,6 +81,72 @@ func (p *Persistence) ListMonitorChannels(ctx context.Context, configured []mode
 		channels = append(channels, item)
 	}
 	return channels, nil
+}
+
+// ListMonitorAdverts returns stored adverts, most recently heard first. A reheard
+// node appears once, with its newest advert, so this is a node inventory, not a
+// reception log. limit is capped by the caller; one extra row is read to report
+// truncation.
+func (p *Persistence) ListMonitorAdverts(ctx context.Context, limit int) (MonitorAdvertPage, error) {
+	page := MonitorAdvertPage{Adverts: []MonitorAdvert{}}
+	if limit < 1 || limit > 10000 {
+		return page, fmt.Errorf("limit must be between 1 and 10000")
+	}
+	rows, err := p.db.QueryContext(ctx, `SELECT public_key, node_hash, nickname,
+  is_chat_node, is_repeater, is_room_server, is_sensor,
+  has_location, latitude, longitude, signature_valid, hop_count, hop_stations,
+  time_drift_seconds, advert_timestamp, first_received_at, received_at
+FROM adverts ORDER BY received_at DESC, id DESC LIMIT ?`, limit+1)
+	if err != nil {
+		return page, fmt.Errorf("read adverts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item MonitorAdvert
+		var nodeHash, hasLocation int
+		var nickname sql.NullString
+		var latitude, longitude sql.NullFloat64
+		var firstReceived sql.NullInt64
+		var advertTimestamp, received int64
+		var hopStations string
+		if err := rows.Scan(&item.PublicKey, &nodeHash, &nickname,
+			&item.IsChatNode, &item.IsRepeater, &item.IsRoomServer, &item.IsSensor,
+			&hasLocation, &latitude, &longitude, &item.SignatureValid, &item.HopCount, &hopStations,
+			&item.TimeDriftSeconds, &advertTimestamp, &firstReceived, &received); err != nil {
+			return page, fmt.Errorf("scan advert: %w", err)
+		}
+		item.NodeHash = byte(nodeHash)
+		if nickname.Valid && nickname.String != "" {
+			value := nickname.String
+			item.Nickname = &value
+		}
+		item.HasLocation = hasLocation != 0
+		if item.HasLocation && latitude.Valid && longitude.Valid {
+			lat, lon := latitude.Float64, longitude.Float64
+			item.Latitude, item.Longitude = &lat, &lon
+		}
+		item.HopStations = []string{}
+		if hopStations != "" {
+			if err := json.Unmarshal([]byte(hopStations), &item.HopStations); err != nil {
+				return page, fmt.Errorf("decode hop stations for %x: %w", item.PublicKey, err)
+			}
+		}
+		item.AdvertTimestamp = time.Unix(advertTimestamp, 0).UTC()
+		if firstReceived.Valid {
+			stamp := time.Unix(firstReceived.Int64, 0).UTC()
+			item.FirstReceivedAt = &stamp
+		}
+		item.LastReceivedAt = time.Unix(received, 0).UTC()
+		page.Adverts = append(page.Adverts, item)
+	}
+	if err := rows.Err(); err != nil {
+		return page, err
+	}
+	if len(page.Adverts) > limit {
+		page.Adverts = page.Adverts[:limit]
+		page.Truncated = true
+	}
+	return page, nil
 }
 
 // ListChannelMessages returns the newest matching page. beforeID is exclusive; q is a

@@ -7,8 +7,8 @@
 // The package is transport only: it implements no KAM capability and imports
 // nothing from this repository except internal/models (shared data types).
 // Capabilities are handed in through the seams below — a scripts source, an
-// events source, a status function, a channel reader and a room source — and
-// are composed in internal/node. See docs/FeatureUnifiedApi.md.
+// events source, a status function, a channel reader, a room source and an
+// advert reader — and are composed in internal/node. See docs/FeatureUnifiedApi.md.
 package api
 
 import (
@@ -32,18 +32,18 @@ type apiEndpoint struct {
 }
 
 func NewHandler(ring EventsSource, status func() Status) http.Handler {
-	return NewHandlerWithResources(ring, status, nil, nil, nil, nil, nil)
+	return NewHandlerWithResources(ring, status, nil, nil, nil, nil, nil, nil)
 }
 
 func NewHandlerWithChannels(ring EventsSource, status func() Status, channels ChannelReader) http.Handler {
-	return NewHandlerWithResources(ring, status, nil, channels, nil, nil, nil)
+	return NewHandlerWithResources(ring, status, nil, channels, nil, nil, nil, nil)
 }
 
 // NewHandlerWithResources composes the whole listener: each area registers its
 // routes on one mux (events.go, status.go, channels.go, rooms.go, scripts.go,
 // modem.go), then the transport guards below wrap it. A nil seam switches its
 // area off.
-func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomSource, modem ModemSource, system func() *SystemStatus) http.Handler {
+func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Scripts, channels ChannelReader, rooms RoomSource, modem ModemSource, system func() *SystemStatus, adverts AdvertReader) http.Handler {
 	mux := http.NewServeMux()
 	registerScriptRoutes(mux, scripts)
 	registerModemRoutes(mux, modem)
@@ -51,6 +51,7 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 	registerStatusRoutes(mux, ring, status, system)
 	registerChannelRoutes(mux, channels)
 	registerRoomRoutes(mux, rooms)
+	registerAdvertRoutes(mux, adverts)
 	indexHandler := func(w http.ResponseWriter, request *http.Request) {
 		endpoints := []apiEndpoint{
 			{Method: "GET", Path: "/v1/status", Purpose: "one snapshot of the running node; add ?system=true for machine memory, cpu, disk and database size"},
@@ -60,6 +61,11 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 			endpoints = append(endpoints,
 				apiEndpoint{Method: "GET", Path: "/v1/channels", Purpose: "configured channels, never a key"},
 				apiEndpoint{Method: "GET", Path: "/v1/channels/{name}/messages", Purpose: "stored group texts, newest first"},
+			)
+		}
+		if adverts != nil {
+			endpoints = append(endpoints,
+				apiEndpoint{Method: "GET", Path: "/v1/adverts", Purpose: "stored adverts, one per node, newest heard first"},
 			)
 		}
 		endpoints = append(endpoints,

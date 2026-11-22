@@ -66,9 +66,9 @@ curl -s http://127.0.0.1:8766/
 
 Each entry shows `method`, `path` and `purpose`; the response also carries
 `api_version` and `docs`. Script, room and modem routes are listed even when
-their capability is off (they then answer `503`); channel routes appear when
-the database is open. The example below is abridged; the live list always
-matches the endpoints documented here.
+their capability is off (they then answer `503`); channel and advert routes
+appear when the database is open. The example below is abridged; the live list
+always matches the endpoints documented here.
 
 ```json
 {
@@ -208,7 +208,7 @@ curl -s -X POST localhost:8766/scripts -H 'Content-Type: application/json' \
 curl -s -X POST localhost:8766/scripts/ping/disable -H 'Content-Type: application/json' -d '{"expected_revision":1}'
 ```
 
-## Status, events, channels and rooms — /v1
+## Status, events, channels, rooms and adverts — /v1
 
 All routes in this section live under `/v1`.
 
@@ -411,6 +411,38 @@ advert timers keep running as before.
 ```sh
 curl -s -X POST -H 'Content-Type: application/json' \
   http://127.0.0.1:8766/v1/rooms/lobby/advert
+```
+
+### GET /v1/adverts
+
+KAM's stored advert inventory: one record per node, newest heard first. The
+only parameter is `limit` (1-10000, default 1000). `truncated` is `true` when
+more rows are stored than the page returns. The adverts table replaces a
+reheard node's row, so this is an inventory of nodes, not a log of every
+reception. Retention follows the `adverts` block in `kam.yml` (`keep_days`,
+default 30; `max_kept`, default 10000).
+
+| Field | Meaning |
+|---|---|
+| `public_key` | Node public key, lowercase hex. |
+| `node_hash` | One-byte node hash, two hex characters. May collide. |
+| `nickname` | Name in the newest advert; `null` when none. A hint, not an identity. |
+| `is_chat_node`, `is_repeater`, `is_room_server`, `is_sensor` | Role flags from that advert. |
+| `has_location` | Whether the advert carried a position. |
+| `latitude`, `longitude` | Advertised position; `null` without one. |
+| `signature_valid` | Whether KAM verified the advert signature. |
+| `hop_count` | Relay hops of the packet that delivered the advert. |
+| `hop_stations` | Per-hop path hashes in hex; `[]` when none. One-byte hashes may collide. |
+| `time_drift_seconds` | Advert clock minus KAM's clock, as computed at reception. |
+| `advert_timestamp` | Clock value inside the advert. |
+| `first_received_at`, `last_received_at` | First and newest reception times; the first is `null` on legacy rows. |
+
+```sh
+curl -s 'http://127.0.0.1:8766/v1/adverts?limit=50'
+```
+
+```json
+{"adverts":[{"public_key":"ed83...","node_hash":"8e","nickname":"Canal relay","is_chat_node":false,"is_repeater":true,"is_room_server":false,"is_sensor":false,"has_location":true,"latitude":52.7792,"longitude":6.9069,"signature_valid":true,"hop_count":2,"hop_stations":["a1","b2"],"time_drift_seconds":12,"advert_timestamp":"2026-11-22T11:40:00Z","first_received_at":"2026-11-01T09:00:00Z","last_received_at":"2026-11-22T11:41:03Z"}],"truncated":false}
 ```
 
 ## Modem monitoring and radio changes — /v1/modem

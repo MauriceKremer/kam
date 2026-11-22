@@ -198,7 +198,7 @@ func TestRoomClientRemovalThroughTheAPI(t *testing.T) {
 	t.Cleanup(service.Stop)
 
 	source := apiRooms{service: service, repository: repository}
-	handler := api.NewHandlerWithResources(apiEvents{events.NewRing(16)}, func() api.Status { return api.Status{} }, nil, nil, source, nil, nil)
+	handler := api.NewHandlerWithResources(apiEvents{events.NewRing(16)}, func() api.Status { return api.Status{} }, nil, nil, source, nil, nil, nil)
 	remove := func(code int) string {
 		t.Helper()
 		response := httptest.NewRecorder()
