@@ -1,6 +1,6 @@
 # Feature: KAM API
 
-**Status:** Phases 1-4 implemented (2026-10-12 phases 1-2; phase 3, modem snapshot/query/radio apply with save, landed with the unified listener — hardware verification remains pending; phase 4, room-client removal, landed 2026-11-15 together with post deletion and a forced advert, which the room plan also wanted). Phase 5 (script run info and dry runs) remains planned. Real-radio capture and hardware timing verification remain pending.
+**Status:** Phases 1-4 implemented (2026-10-12 phases 1-2; phase 3, modem snapshot/query/radio apply with save, landed with the unified listener — hardware verification remains pending; phase 4, room-client removal, landed 2026-11-15 together with post deletion and a forced advert, which the room plan also wanted). Phase 5 (script run info and dry runs) remains planned. The read-only advert inventory (`GET /v1/adverts`) landed 2026-11-22 on the existing `adverts` table. Real-radio capture and hardware timing verification remain pending.
 **Scope:** The REST interface KAM offers on the local device — the **KAM API** — for any local program. KAMmon, a separate web monitor running on the same computer, is the initial consumer: it reads live radio, channel, room and script data, manages room clients, and changes the KISS modem radio settings.
 **Written from:** KAMmon's point of view. The feature needs are in `tmp/KAMmon_Req_*.md`; the UI is shown in `tmp/kammon-prototype.html`. KAMmon is a separate Go project and never opens KAM's SQLite file.
 
@@ -51,6 +51,19 @@ read-only.
 Tests are in `internal/room/remove_test.go`, `internal/api/api_test.go` and
 `internal/node/room_test.go`; the existing room-login tests pass unchanged.
 
+### Adverts delivery
+
+`GET /v1/adverts` lists KAM's stored adverts, one per public key, newest heard
+first (API-AD-1). It is backed by the existing `adverts` table, which already
+keeps nickname, role flags, coordinates, hop count, relay path hashes and
+first/last reception times, and is bounded by `adverts.keep_days` and
+`adverts.max_kept`. It adds no ingestion work and no schema change. The response
+omits signatures, raw payloads and any secret, and reports `truncated` when more
+rows exist than the requested `limit`.
+
+Tests are in `internal/api/adverts_test.go` and
+`internal/db/monitor_read_adverts_test.go`.
+
 KAM has a Local Management API on `127.0.0.1:8765` that manages Starlark scripts. Phases 1-2 add status, recent RX/TX/room events and read-only channel/room resources on port 8766. Later phases provide modem control and client removal. Existing adverts and group texts remain in SQLite, and room client activity follows the existing room-service rules; the event ring is not a persistent packet archive.
 
 > **Superseded by [FeatureUnifiedApi.md](FeatureUnifiedApi.md) D1:** one listener on `monitor.listen` (default 8766) serves monitoring and script management; port 8765 is closed.
@@ -58,8 +71,9 @@ KAM has a Local Management API on `127.0.0.1:8765` that manages Starlark scripts
 *(Historical: at the time this plan was written it added a small `internal/monitor` package with three parts. [FeatureUnifiedApi.md](FeatureUnifiedApi.md) §4 later dissolved it — the routes live in `internal/api`, the ring in `internal/events` — and the same cutover implemented phase 3, the modem routes.)*
 
 1. **An event ring.** A fixed-size, in-memory list of recent events (packets heard, packets sent, room activity, script runs). Each event has a sequence number. Nothing is written to SQLite.
-2. **A second loopback listener** (default `127.0.0.1:8766`) with read endpoints for status, events, channels, rooms and the modem, and write endpoints for room clients and the modem radio.
+2. **A second loopback listener** (default `127.0.0.1:8766`) with read endpoints for status, events, channels, rooms, adverts and the modem, and write endpoints for room clients and the modem radio.
 3. **Small additions to the script routes (now on the unified listener):** a dry run and in-memory run information.
+4. **A read-only advert inventory** over the adverts table KAM already stores.
 
 KAMmon polls `GET /v1/events?after=N` every one to two seconds, keeps its own in-memory history, and serves its own web pages. KAM never pushes and never authenticates anyone: it stays loopback only. KAMmon adds the web login.
 
@@ -476,6 +490,32 @@ A failure returns `ok: false` with `error`. The status is `200` in both cases be
 - Capture at most 16 replies and 4096 total UTF-8 bytes across their channel names and text. The next reply exceeding either limit stops the run with `ok: false` and a clear error; return already captured replies as test output, never transmit them. Each reply still uses normal channel and message-size validation.
 - `ok: false` covers compilation failure, script exceptions, timeout and reply-limit failure. The response always contains `ok`, `duration_ms`, `replies` (possibly `[]`) and `error` on failure. HTTP `200` means the test completed and reported its outcome, not that the script passed. Client disconnection cancels work; no asynchronous test job survives it.
 
+### 7.7 Adverts
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/adverts?limit=` | Stored advert inventory, one record per node, newest heard first. `limit` defaults to 1000, maximum 10000. |
+
+One record per public key: `public_key`, `node_hash`, `nickname`, role flags (`is_chat_node`, `is_repeater`, `is_room_server`, `is_sensor`), `has_location`, `latitude`/`longitude` (`null` unless the node advertised a position), `signature_valid`, `hop_count`, `hop_stations`, `time_drift_seconds`, `advert_timestamp`, `first_received_at` and `last_received_at`.
+
+- The adverts table replaces a reheard node's row, so `received_at` tracks the newest advert and `first_received_at` keeps the original. This endpoint is a node inventory, not a log of every reception.
+- `nickname` is the name in the newest advert, or `null` when none was included. It is a hint, not an identity.
+- `advert_timestamp` is the clock value inside the advert; `last_received_at` is KAM's reception time. `time_drift_seconds` is the difference between the two as KAM computed it.
+- `hop_count` and `hop_stations` describe the packet that delivered the stored advert. Stations are per-hop path hashes in lowercase hex, `[]` when the packet carried none. Node hashes are one byte and can collide, so a station does not prove which node relayed the advert.
+- `first_received_at` is `null` only on rows written before KAM stored it.
+- Retention follows `adverts.keep_days` and `adverts.max_kept` (defaults: 30 days and 10000 rows). `truncated` is `true` when more stored adverts exist than `limit` returns.
+- The route reads SQLite only; it never touches the radio and adds no work to packet ingestion.
+
+Response examples:
+
+```json
+{"adverts":[{"public_key":"ed8342bc8aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","node_hash":"8e","nickname":"Canal relay","is_chat_node":false,"is_repeater":true,"is_room_server":false,"is_sensor":false,"has_location":true,"latitude":52.7792,"longitude":6.9069,"signature_valid":true,"hop_count":2,"hop_stations":["a1","b2"],"time_drift_seconds":12,"advert_timestamp":"2026-11-22T11:40:00Z","first_received_at":"2026-11-01T09:00:00Z","last_received_at":"2026-11-22T11:41:03Z"}],"truncated":false}
+```
+
+```json
+{"adverts":[],"truncated":false}
+```
+
 ## 8. Requirements
 
 IDs are stable. "From" lists the KAMmon feature document that needs the item (`tmp/KAMmon_Req_<name>.md`).
@@ -563,6 +603,16 @@ IDs are stable. "From" lists the KAMmon feature document that needs the item (`t
 | API-AU-4 | A dry run changes no live script state, runs separately from the live worker and follows the timeout, fixture, reply and concurrency limits in §7.6.1. | MUST | Automations |
 | API-AU-5 | `GET /v1/status` includes script queue depth and dropped events. | SHOULD | Overview |
 
+### 8.7 Adverts
+
+| ID | Requirement | Level | From |
+|---|---|---|---|
+| API-AD-1 | `GET /v1/adverts?limit=` returns stored adverts, one per public key, newest heard first, with the fields in §7.7. `limit` defaults to 1000 and must be between 1 and 10000; other values return `400`. | MUST | Adverts |
+| API-AD-2 | The route reads only the existing `adverts` table. It adds no schema change, no ingestion work and no radio access. | MUST | Adverts |
+| API-AD-3 | The response never contains signature bytes, raw payloads, keys or passwords; the public key and node hash are identifiers, not secrets. | MUST | Access, Adverts |
+| API-AD-4 | `nickname`, coordinates, roles, hop count, relay hashes and times are the newest stored advert's values, not proof of identity, position or path; one-byte node hashes may collide. | MUST | Adverts |
+| API-AD-5 | Retention follows `adverts.keep_days` and `adverts.max_kept`; `truncated` reports that more rows exist than the returned `limit`. | MUST | Adverts |
+
 ## 9. Corrections to existing text
 
 | # | Existing statement | Finding |
@@ -584,6 +634,7 @@ IDs are stable. "From" lists the KAMmon feature document that needs the item (`t
 | 3 (implemented; hardware verification pending) | Modem snapshot, query and `PUT /v1/modem/radio` with save | KissModem | A change survives a KAM restart and a simulated modem reset; automated handler and recovery tests pass |
 | 4 (implemented) | Client removal endpoint; protocol roles remain read-only | RoomAccounts | Removal cannot resurrect a client via batch persistence; existing room-login tests remain unchanged |
 | 5 | Script `run` info and dry run | Automations | A dry run never transmits and cannot freeze a live script |
+| Adverts (implemented) | Read-only stored-advert inventory (`GET /v1/adverts`) | Adverts | Repository and handler tests cover ordering, truncation, decoding and empty lists |
 
 **Tests**
 

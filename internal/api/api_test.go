@@ -132,8 +132,8 @@ func TestIndexListsImplementedRoutes(t *testing.T) {
 		t.Fatalf("index lists channels without a channel reader: %+v", base)
 	}
 
-	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomSource{}, nil, nil)))
-	for _, want := range []string{"GET /v1/channels", "GET /v1/channels/{name}/messages",
+	full := paths(readIndex(NewHandlerWithResources(newRingSource(4), func() Status { return Status{} }, nil, &testChannelReader{}, &testRoomSource{}, nil, nil, &testAdvertReader{})))
+	for _, want := range []string{"GET /v1/channels", "GET /v1/channels/{name}/messages", "GET /v1/adverts",
 		"DELETE /v1/rooms/{id}/clients/{key}", "DELETE /v1/rooms/{id}/posts/{post}", "POST /v1/rooms/{id}/advert"} {
 		if !full[want] {
 			t.Fatalf("index missing %s: %+v", want, full)
@@ -221,7 +221,7 @@ func (a *testRoomAdmin) ForceAdvert(_ context.Context, id string) error {
 func TestRoomManagementEndpoints(t *testing.T) {
 	admin := &testRoomAdmin{}
 	reader := &testRoomSource{rooms: []Room{{ID: "lobby"}}, admin: admin}
-	handler := NewHandlerWithResources(newRingSource(64), func() Status { return Status{} }, nil, nil, reader, nil, nil)
+	handler := NewHandlerWithResources(newRingSource(64), func() Status { return Status{} }, nil, nil, reader, nil, nil, nil)
 	do := func(method, path string) *httptest.ResponseRecorder {
 		t.Helper()
 		request := httptest.NewRequest(method, "http://127.0.0.1"+path, nil)
@@ -264,7 +264,7 @@ func TestRoomManagementEndpoints(t *testing.T) {
 	if response := do("POST", "/v1/rooms/lobby/advert"); response.Code != 500 {
 		t.Fatalf("capability failure: %d %s", response.Code, response.Body)
 	}
-	disabled := NewHandlerWithResources(newRingSource(64), func() Status { return Status{} }, nil, nil, nil, nil, nil)
+	disabled := NewHandlerWithResources(newRingSource(64), func() Status { return Status{} }, nil, nil, nil, nil, nil, nil)
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest("POST", "http://127.0.0.1/v1/rooms/lobby/advert", nil)
 	request.Header.Set("Content-Type", "application/json")
@@ -320,7 +320,7 @@ func TestRoomReadEndpoints(t *testing.T) {
 		clients: []RoomClient{},
 		posts:   []RoomPost{{ID: 7, Body: "hello"}},
 	}
-	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader, nil, nil)
+	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, reader, nil, nil, nil)
 	request := func(path string, code int) string {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -351,7 +351,7 @@ func TestRoomReadEndpoints(t *testing.T) {
 
 func TestRoomClientRemoval(t *testing.T) {
 	source := &testRoomSource{rooms: []Room{{ID: "lobby", Name: "Lobby", Enabled: true}}}
-	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, source, nil, nil)
+	handler := NewHandlerWithResources(newRingSource(256), func() Status { return Status{} }, nil, nil, source, nil, nil, nil)
 	send := func(handler http.Handler, method, path string, code int) string {
 		t.Helper()
 		response := httptest.NewRecorder()
