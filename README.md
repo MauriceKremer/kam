@@ -7,7 +7,7 @@ purpose, design philosophy, radio-network basics, setup, and everyday operation.
 
 ## Status
 
-KAM v0.8.0 is a pre-release build. The core — radio ingestion, persistent storage,
+KAM v0.8.5 is a pre-release build. The core — radio ingestion, persistent storage,
 Starlark automation, room servers, and the local REST API — is complete, documented,
 and covered by CI; it is not a production promise. Known pending items are listed
 under [Room servers](#room-servers) ("Not yet implemented") and in the feature
@@ -39,6 +39,7 @@ We value pragmatism over overly strict design or extreme security hardening. KAM
 git clone https://github.com/<you>/kam.git
 cd kam
 go build .
+./kam version               # kam dev <os>/<arch> for a build from source
 ```
 
 Or, if the module path is resolvable from your GOPROXY:
@@ -105,7 +106,17 @@ See [Channel Credentials Storage Design](#channel-credentials-storage-design) be
 ./kam -db /tmp/kam.db        # override SQLite path for this run
 ./kam -config ~/kam-prod.yml
 DEBUG=1 ./kam               # enable debug logs
+
+# Or run straight from the source tree, without building a binary first:
+go run .                    # same as ./kam
 ```
+
+Run the package, not one file: use `go run .`, not `go run main.go`. Naming
+`main.go` compiles only that file, so the rest of the `main` package
+(`version.go`, with the `version` variable and `runVersionCommand`) is left out
+and the build fails with `undefined: runVersionCommand`. The same applies to any
+other file you name on its own: `go run main.go version.go` works, but you have
+to list every file the command needs.
 
 Press `Ctrl+C` to stop. The manager flushes pending SQLite batches and closes the port on shutdown.
 
@@ -138,7 +149,7 @@ DB path precedence: `-db` flag > `kam.yml db_path` > `kam.db`.
 
 Schema policy: KAM creates its SQLite tables on start-up and carries no upgrade machinery. After upgrading to a build that changed the schema, delete `kam.db` and restart; the database is recreated empty. Keep the `rooms/` directory next to it — its files hold each room's identity key. The usual symptom of a stale database is a `no such column` error at start-up.
 
-Other commands: `kam channel upsert ...` (add or change a channel in `kam.yml`) and `kam room show` (print room keys and adverts, see [Room servers](#room-servers)).
+Other commands: `kam version` (print `kam <version> <os>/<arch>`; a build from source reports `dev`, a release binary reports its tag), `kam channel upsert ...` (add or change a channel in `kam.yml`) and `kam room show` (print room keys and adverts, see [Room servers](#room-servers)).
 
 ## Local REST API
 

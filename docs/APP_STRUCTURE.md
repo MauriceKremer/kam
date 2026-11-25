@@ -6,7 +6,7 @@ KAM is a single-process Go service that connects a MeshCore-compatible KISS radi
 
 ```mermaid
 flowchart TD
-    Main["main.go<br/>flags, logging, signals"] --> Node["internal/node<br/>construction and lifecycle"]
+    Main["main.go, version.go<br/>CLI, flags, logging, signals"] --> Node["internal/node<br/>construction and lifecycle"]
     Main --> Config["internal/config<br/>load, validate, watch, bootstrap"]
     CLI["kam channel upsert<br/>command process"] --> Config
     RoomCLI["kam room show<br/>command process"] --> Room
@@ -49,7 +49,7 @@ flowchart TD
 
 | Area | Responsibility |
 |---|---|
-| `main.go` | Parses command-line overrides, configures logging, loads configuration, constructs the node, and handles SIGINT/SIGTERM. Also runs the short-lived `channel upsert` and `room show` commands. |
+| `main.go`, `version.go` | Parses command-line overrides, configures logging, loads configuration, constructs the node, and handles SIGINT/SIGTERM. Also runs the short-lived `channel upsert` and `room show` commands, plus `version`, which prints the release (`dev` for a plain build) and the platform. |
 | `internal/config` | Loads and validates YAML, polls for updates, atomically replaces the in-memory channel registry, upserts channels in YAML, and resolves the database path. |
 | `internal/models` | Defines configuration and persisted packet data types, along with configuration normalization and validation, including the `mesh:` and `rooms:` settings (`ResolveRooms` disables an invalid room instead of failing the whole file). |
 | `internal/node` | Owns component construction and shutdown. It bootstraps channels and persistence, starts the KISS manager, applies and verifies radio settings, creates the transmit scheduler, and (best effort) starts the automation runtime and the room servers. `startAPI` in `api.go` connects the transport seams to capability adapters and starts the one local HTTP server; `status.go` assembles status snapshots, while `events.go`, `channels.go`, `rooms.go`, and `scripts.go` hold the corresponding API adapters. With the API enabled, the node also runs the modem refresh loop behind `/v1/modem`. `Run` starts the 500 ms config watcher and 30 s radio health probe, and joins them first at shutdown. |
@@ -170,7 +170,7 @@ Room servers are implemented for plan phases 1-3; the requirements, decisions an
 
 ## Source Map
 
-- Entry point: [`main.go`](../main.go)
+- Entry point: [`main.go`](../main.go), version command [`version.go`](../version.go)
 - Node lifecycle: [`internal/node/node.go`](../internal/node/node.go)
 - Config and channel bootstrap: [`internal/config`](../internal/config/)
 - Domain types and validation: [`internal/models/models.go`](../internal/models/models.go), room settings in [`internal/models/rooms.go`](../internal/models/rooms.go)
