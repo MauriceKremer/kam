@@ -39,6 +39,24 @@ type Script struct {
 	UpdatedAt     int64  `json:"updated_at"`
 }
 
+// ScriptVersion is a superseded script revision kept in the version journal.
+// Fingerprint identifies the source content; revisions with identical source
+// share it.
+type ScriptVersion struct {
+	Fingerprint   string `json:"fingerprint"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Source        string `json:"source"`
+	Enabled       bool   `json:"enabled"`
+	TimeoutMS     int64  `json:"timeout_ms"`
+	RuntimeStatus string `json:"runtime_status"`
+	LastError     string `json:"last_error,omitempty"`
+	Revision      int64  `json:"revision"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
+	ArchivedAt    int64  `json:"archived_at"`
+}
+
 // ScriptMutation wraps a script write with the revision the caller loaded.
 // A create ignores expected_revision: revision 0 is what a create means.
 type ScriptMutation struct {
@@ -101,6 +119,8 @@ type Scripts interface {
 	Recover(ctx context.Context, id string, timeoutMS int64, expectedRevision int64) (Script, error)
 	Validate(ctx context.Context, id, source string, timeoutMS int64) error
 	DryRun(context.Context, ScriptDryRunRequest) (ScriptDryRunResult, error)
+	Versions(ctx context.Context, id string) ([]ScriptVersion, error)
+	Version(ctx context.Context, id, fingerprint string) (ScriptVersion, error)
 }
 
 type scriptDryRunBody struct {
@@ -286,6 +306,52 @@ func registerScriptRoutes(mux *http.ServeMux, scripts Scripts) {
 			return
 		}
 		writeJSON(w, http.StatusOK, script)
+	})
+	mux.HandleFunc("GET /scripts/{id}/journal", func(w http.ResponseWriter, r *http.Request) {
+		if scripts == nil {
+			automationDisabled(w)
+			return
+		}
+		id := r.PathValue("id")
+		// The fingerprint may arrive as a query parameter on the collection
+		// route, or as a path segment on the route registered below.
+		if fingerprint := r.URL.Query().Get("fingerprintId"); fingerprint != "" {
+			version, err := scripts.Version(r.Context(), id, fingerprint)
+			if err != nil {
+				writeScriptError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, version)
+			return
+		}
+		versions, err := scripts.Versions(r.Context(), id)
+		if err != nil {
+			writeScriptError(w, err)
+			return
+		}
+		// Revisions with identical source share a fingerprint, so list each id once.
+		fingerprints := make([]string, 0, len(versions))
+		seen := make(map[string]struct{}, len(versions))
+		for _, version := range versions {
+			if _, ok := seen[version.Fingerprint]; ok {
+				continue
+			}
+			seen[version.Fingerprint] = struct{}{}
+			fingerprints = append(fingerprints, version.Fingerprint)
+		}
+		writeJSON(w, http.StatusOK, fingerprints)
+	})
+	mux.HandleFunc("GET /scripts/{id}/journal/{fingerprint}", func(w http.ResponseWriter, r *http.Request) {
+		if scripts == nil {
+			automationDisabled(w)
+			return
+		}
+		version, err := scripts.Version(r.Context(), r.PathValue("id"), r.PathValue("fingerprint"))
+		if err != nil {
+			writeScriptError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, version)
 	})
 	mux.HandleFunc("PUT /scripts/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if scripts == nil {

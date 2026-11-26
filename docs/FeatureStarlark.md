@@ -5,7 +5,7 @@
 | Key | File | Used for |
 |---|---|---|
 | `RT` | [internal/automation/runtime.go](../internal/automation/runtime.go) | Runtime, worker, host functions, sentinels, `timeout_ms` defaulting, `Validate`, `MonitorStats` |
-| `DB` | [internal/db/automation.go](../internal/db/automation.go) | `automation_scripts` schema, `AutomationRepository`, revision compare-and-set |
+| `DB` | [internal/db/automation.go](../internal/db/automation.go) | `automation_scripts` and `automation_script_journal` schemas, `AutomationRepository`, revision compare-and-set, version journal |
 | `ADAPT` | [internal/node/scripts.go](../internal/node/scripts.go) | The seam adapter the API's script routes call |
 | `ECHO` | [docs/examples/echo.star](examples/echo.star) | The example script that replaced the native ECHO service |
 | `UA` | [FeatureUnifiedApi.md](FeatureUnifiedApi.md) | The unified listener the script routes now serve |
@@ -31,6 +31,7 @@ YAML remains the source for node, radio, and channel configuration. SQLite becom
 - Each invocation initializes fresh Starlark globals from its resident compiled program. Message dictionaries and path lists are frozen copies. The `reply` capability uses the existing sender and a best-effort 500 ms send timeout.
 - The script routes listen on the unified local REST API (`monitor.listen`, default `127.0.0.1:8766`) without authentication ([FeatureUnifiedApi.md](FeatureUnifiedApi.md) merged the two listeners, retiring port 8765). The routes are `GET /scripts`, `GET /scripts/{id}`, `POST /scripts`, `POST /scripts/validate`, `PUT /scripts/{id}`, `POST /scripts/{id}/enable`, `POST /scripts/{id}/disable`, `POST /scripts/{id}/recover`, and `DELETE /scripts/{id}?revision=N`. Create/update/action requests carry an `expected_revision`; create uses zero. Create/update payloads wrap the script record in a `script` object. A missing `timeout_ms` defaults to 500, and unknown JSON fields are rejected. `enable` and `disable` change only the desired state: a `FROZEN` or `BROKEN` script stays inactive until `recover` (which recompiles the stored source and may set `timeout_ms`) or a source update. Name collisions and stale revisions return 409; unknown IDs return 404. Validate and save additionally reject string-literal `room_post` and `reply` targets that name an unconfigured room or a channel that is not enabled (computed targets are beyond that check).
 - Because the API has no authentication, it serves only `localhost` or IP-address `Host` headers (DNS-rebinding guard) and requires `Content-Type: application/json` on `POST`/`PUT`, which browsers cannot send cross-site without a preflight that the API never answers.
+- Journal reads: `GET /scripts/{id}/journal` returns the source fingerprints of superseded revisions (newest first), and `GET /scripts/{id}/journal/{fingerprint}` returns one version. A fingerprint is the first 8 bytes of the revision source's SHA-256, hex-encoded; revisions with identical source share it.
 - A timeout freezes the script in memory immediately; if persisting `FROZEN` fails the error is logged and the script stays frozen until restart.
 - Host functions are registered in one table (`hostFunctions` in `internal/automation/runtime.go`); compilation only accepts those names as predeclared, and each call receives the invocation context so it shares the script deadline. Adding a capability means adding an entry there, as done for `rest_get` and `room_post`.
 - Status changes (`BROKEN`, `FROZEN`) and API mutations (save, enable/disable, delete) are logged to the console, together with queue drops and script errors.
@@ -139,6 +140,23 @@ CREATE TABLE IF NOT EXISTS automation_scripts (
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
+
+CREATE TABLE IF NOT EXISTS automation_script_journal (
+  journal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  script_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  enabled INTEGER NOT NULL,
+  timeout_ms INTEGER NOT NULL,
+  runtime_status TEXT NOT NULL,
+  last_error TEXT,
+  revision INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  archived_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE (script_id, revision)
+);
 ```
 
 Design notes:
@@ -151,6 +169,7 @@ Design notes:
 - `last_error` stores the latest error detail associated with `BROKEN` or `FROZEN`. It is not an error history. Whenever a status transition sets `runtime_status = 'READY'`, clear `last_error` to `NULL` in the same SQLite transaction.
 - `revision` increments on every source or enabled-state change and supports optimistic concurrency in the API.
 - Do not persist run queues, compiled programs, mutable globals, or per-invocation logs in this table. Persist the latest `last_error` with `BROKEN`/`FROZEN`; also log failures to the console.
+- `automation_script_journal` stores superseded revisions. `Save` (also used by enable/disable and recover) copies the revision being replaced into the journal in the same transaction before the update; `Delete` journals the final revision before removing it. A new script writes no journal row until it is first replaced. Each row stores its `fingerprint` (the first 8 bytes of the source's SHA-256, hex), computed in the archive `INSERT` by the registered `kam_source_fingerprint` SQL function. Versions are read newest-first by `revision`, and `UNIQUE (script_id, revision)` keeps archiving idempotent. This is version history, not per-invocation or error history.
 - Script reads and writes use a dedicated repository interface. Do not add script methods to `kiss.Persistence`; the router should not know about script storage.
 - Use transactions for script update + revision increment. Require a positive timeout; 500 ms is the default and administrators may choose a different value without an application-imposed maximum.
 - There are no product-level v1 caps on script count, source length, or per-script reply rate. Administrators accept responsibility for the timeout they configure. The event queue remains bounded as an internal safeguard for packet routing, not as a per-script policy limit.
@@ -323,6 +342,7 @@ Superseded by [FeatureStarlarkPeriodicPosts.md](FeatureStarlarkPeriodicPosts.md)
 - The per-script timeout is the only operator-configurable execution limit. It defaults to 500 ms, must be positive, and has no application-imposed maximum; the system administrator accepts responsibility for tuning it.
 - There are no product-level v1 caps on script count, source length, or reply rate. The event queue remains internally bounded to protect packet routing.
 - Default `runtime_status` to `READY`. Persist current status and `last_error` for `BROKEN`/`FROZEN`; clear `last_error` when status changes to `READY`. Also log errors to the console; do not persist error history.
+- Keep a version journal (`automation_script_journal`) of superseded script revisions, written when a revision is replaced or deleted. It is separate from `last_error`: successful invocations and status-only changes still write no history.
 - If automation schema setup fails, continue core radio ingestion/persistence with automation disabled.
 - Weather is post-v1. The Remote API and its authentication/authorization model must be designed separately before remote exposure.
 

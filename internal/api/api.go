@@ -78,6 +78,8 @@ func NewHandlerWithResources(ring EventsSource, status func() Status, scripts Sc
 			apiEndpoint{Method: "GET", Path: "/scripts", Purpose: "list all scripts"},
 			apiEndpoint{Method: "POST", Path: "/scripts", Purpose: "create a script (expected_revision 0)"},
 			apiEndpoint{Method: "GET", Path: "/scripts/{id}", Purpose: "read one script"},
+			apiEndpoint{Method: "GET", Path: "/scripts/{id}/journal", Purpose: "source fingerprints of superseded revisions, newest first; add ?fingerprintId=... for one revision"},
+			apiEndpoint{Method: "GET", Path: "/scripts/{id}/journal/{fingerprint}", Purpose: "one superseded revision by source fingerprint"},
 			apiEndpoint{Method: "PUT", Path: "/scripts/{id}", Purpose: "update a script (expected_revision)"},
 			apiEndpoint{Method: "DELETE", Path: "/scripts/{id}?revision=N", Purpose: "delete a script"},
 			apiEndpoint{Method: "POST", Path: "/scripts/validate", Purpose: "compile source without saving; literal room and channel targets must exist"},

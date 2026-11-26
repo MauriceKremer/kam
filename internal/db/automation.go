@@ -2,7 +2,10 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -25,6 +28,43 @@ type AutomationScript struct {
 	Revision      int64  `json:"revision"`
 	CreatedAt     int64  `json:"created_at"`
 	UpdatedAt     int64  `json:"updated_at"`
+}
+
+// AutomationScriptVersion is one superseded script revision kept in the
+// automation_script_journal. The live row lives in automation_scripts; the
+// journal holds every earlier revision, plus the final revision after a
+// delete.
+type AutomationScriptVersion struct {
+	AutomationScript
+	// Fingerprint identifies the source content; revisions with identical
+	// source share it.
+	Fingerprint string `json:"fingerprint"`
+	ArchivedAt  int64  `json:"archived_at"`
+}
+
+// sourceFingerprint is the version's public id: the first 8 bytes of the
+// source's SHA-256, hex encoded.
+func sourceFingerprint(source string) string {
+	sum := sha256.Sum256([]byte(source))
+	return hex.EncodeToString(sum[:8])
+}
+
+// init exposes sourceFingerprint to SQLite so the archive write can compute
+// the column in one statement. It runs before any connection is opened, which
+// is when the driver makes a registered function available.
+func init() {
+	sqlite.MustRegisterDeterministicScalarFunction("kam_source_fingerprint", 1, func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+		var source string
+		switch value := args[0].(type) {
+		case string:
+			source = value
+		case []byte:
+			source = string(value)
+		default:
+			return nil, fmt.Errorf("kam_source_fingerprint: source is %T, not text", args[0])
+		}
+		return sourceFingerprint(source), nil
+	})
 }
 
 type AutomationRepository struct {
@@ -51,23 +91,51 @@ func OpenAutomationRepository(path string) (*AutomationRepository, error) {
 
 func EnsureAutomationScriptsSchema(db *sql.DB) error {
 	const schema = `
-CREATE TABLE IF NOT EXISTS automation_scripts (
-  script_id TEXT PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  source TEXT NOT NULL,
-  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
-  timeout_ms INTEGER NOT NULL DEFAULT 500 CHECK (timeout_ms > 0),
-  runtime_status TEXT NOT NULL DEFAULT 'READY' CHECK (runtime_status IN ('READY', 'BROKEN', 'FROZEN')),
-  last_error TEXT,
-  revision INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
-);`
+	CREATE TABLE IF NOT EXISTS automation_scripts (
+	  script_id TEXT PRIMARY KEY,
+	  name TEXT NOT NULL UNIQUE,
+	  source TEXT NOT NULL,
+	  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+	  timeout_ms INTEGER NOT NULL DEFAULT 500 CHECK (timeout_ms > 0),
+	  runtime_status TEXT NOT NULL DEFAULT 'READY' CHECK (runtime_status IN ('READY', 'BROKEN', 'FROZEN')),
+	  last_error TEXT,
+	  revision INTEGER NOT NULL DEFAULT 1,
+	  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+	  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+	);
+	CREATE TABLE IF NOT EXISTS automation_script_journal (
+	  journal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+	  script_id TEXT NOT NULL,
+	  name TEXT NOT NULL,
+	  source TEXT NOT NULL,
+	  fingerprint TEXT NOT NULL,
+	  enabled INTEGER NOT NULL,
+	  timeout_ms INTEGER NOT NULL,
+	  runtime_status TEXT NOT NULL,
+	  last_error TEXT,
+	  revision INTEGER NOT NULL,
+	  created_at INTEGER NOT NULL,
+	  updated_at INTEGER NOT NULL,
+	  archived_at INTEGER NOT NULL DEFAULT (unixepoch()),
+	  UNIQUE (script_id, revision)
+	);`
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("ensure automation schema: %w", err)
 	}
 	return nil
 }
+
+// archiveAutomationVersionSQL copies the addressed revision into the journal.
+// It is an INSERT ... SELECT so the caller's transaction still starts with a
+// write, which avoids SQLITE_BUSY_SNAPSHOT when the persistence connection
+// commits between a read and a write. The fingerprint is computed in the same
+// statement from the stored source.
+const archiveAutomationVersionSQL = `
+INSERT OR IGNORE INTO automation_script_journal
+  (script_id, name, source, fingerprint, enabled, timeout_ms, runtime_status, last_error, revision, created_at, updated_at)
+SELECT script_id, name, source, kam_source_fingerprint(source), enabled, timeout_ms, runtime_status, last_error, revision, created_at, updated_at
+FROM automation_scripts
+WHERE script_id = ? AND revision = ?`
 
 func (r *AutomationRepository) Close() error { return r.db.Close() }
 
@@ -105,6 +173,27 @@ func (r *AutomationRepository) Get(ctx context.Context, id string) (AutomationSc
 	return script, nil
 }
 
+// Versions returns the script's superseded revisions, newest first. A script
+// that has never been updated or deleted has no journal entries.
+func (r *AutomationRepository) Versions(ctx context.Context, id string) ([]AutomationScriptVersion, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT script_id, name, source, fingerprint, enabled, timeout_ms, runtime_status, COALESCE(last_error, ''), revision, created_at, updated_at, archived_at FROM automation_script_journal WHERE script_id = ? ORDER BY revision DESC`, id)
+	if err != nil {
+		return nil, fmt.Errorf("list automation script versions: %w", err)
+	}
+	defer rows.Close()
+	versions := []AutomationScriptVersion{}
+	for rows.Next() {
+		var version AutomationScriptVersion
+		var enabled int
+		if err := rows.Scan(&version.ID, &version.Name, &version.Source, &version.Fingerprint, &enabled, &version.TimeoutMS, &version.RuntimeStatus, &version.LastError, &version.Revision, &version.CreatedAt, &version.UpdatedAt, &version.ArchivedAt); err != nil {
+			return nil, fmt.Errorf("scan automation script version: %w", err)
+		}
+		version.Enabled = enabled != 0
+		versions = append(versions, version)
+	}
+	return versions, rows.Err()
+}
+
 func (r *AutomationRepository) Save(ctx context.Context, script AutomationScript, expectedRevision int64) (AutomationScript, error) {
 	if strings.TrimSpace(script.ID) == "" || strings.TrimSpace(script.Name) == "" {
 		return AutomationScript{}, errors.New("script id and name are required")
@@ -137,6 +226,10 @@ func (r *AutomationRepository) Save(ctx context.Context, script AutomationScript
 			return AutomationScript{}, ErrAutomationNameTaken
 		}
 	} else {
+		// Journal the version being replaced before overwriting it.
+		if _, err = tx.ExecContext(ctx, archiveAutomationVersionSQL, script.ID, expectedRevision); err != nil {
+			return AutomationScript{}, fmt.Errorf("journal automation script: %w", err)
+		}
 		var result sql.Result
 		result, err = tx.ExecContext(ctx, `UPDATE automation_scripts SET name = ?, source = ?, enabled = ?, timeout_ms = ?, runtime_status = ?, last_error = NULLIF(?, ''), revision = revision + 1, updated_at = unixepoch() WHERE script_id = ? AND revision = ?`, script.Name, script.Source, boolToInt(script.Enabled), script.TimeoutMS, script.RuntimeStatus, script.LastError, script.ID, expectedRevision)
 		if isConstraintError(err) {
@@ -179,12 +272,24 @@ func (r *AutomationRepository) SetStatus(ctx context.Context, id, status, detail
 }
 
 func (r *AutomationRepository) Delete(ctx context.Context, id string, expectedRevision int64) error {
-	result, err := r.db.ExecContext(ctx, `DELETE FROM automation_scripts WHERE script_id = ? AND revision = ?`, id, expectedRevision)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin automation delete: %w", err)
+	}
+	defer tx.Rollback()
+	// Journal the final revision before removing it.
+	if _, err := tx.ExecContext(ctx, archiveAutomationVersionSQL, id, expectedRevision); err != nil {
+		return fmt.Errorf("journal automation script: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM automation_scripts WHERE script_id = ? AND revision = ?`, id, expectedRevision)
 	if err != nil {
 		return fmt.Errorf("delete automation script: %w", err)
 	}
 	if count, _ := result.RowsAffected(); count == 0 {
-		return missingOrConflict(ctx, r.db, id)
+		return missingOrConflict(ctx, tx, id)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit automation delete: %w", err)
 	}
 	return nil
 }

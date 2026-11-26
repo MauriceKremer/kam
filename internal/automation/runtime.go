@@ -62,6 +62,7 @@ type Repository interface {
 	Save(context.Context, db.AutomationScript, int64) (db.AutomationScript, error)
 	Delete(context.Context, string, int64) error
 	SetStatus(context.Context, string, string, string) error
+	Versions(context.Context, string) ([]db.AutomationScriptVersion, error)
 }
 
 type compiledScript struct {
@@ -644,6 +645,26 @@ func (r *Runtime) List(ctx context.Context) ([]db.AutomationScript, error) {
 
 func (r *Runtime) Get(ctx context.Context, id string) (db.AutomationScript, error) {
 	return r.repository.Get(ctx, id)
+}
+
+// Versions returns a script's superseded revisions, newest first.
+func (r *Runtime) Versions(ctx context.Context, id string) ([]db.AutomationScriptVersion, error) {
+	return r.repository.Versions(ctx, id)
+}
+
+// Version returns the newest superseded revision whose source fingerprint
+// matches. Revisions with identical source share a fingerprint.
+func (r *Runtime) Version(ctx context.Context, id, fingerprint string) (db.AutomationScriptVersion, error) {
+	versions, err := r.repository.Versions(ctx, id)
+	if err != nil {
+		return db.AutomationScriptVersion{}, err
+	}
+	for _, version := range versions {
+		if version.Fingerprint == fingerprint {
+			return version, nil
+		}
+	}
+	return db.AutomationScriptVersion{}, ErrScriptNotFound
 }
 
 func (r *Runtime) Validate(ctx context.Context, id, source string, timeoutMS int64) error {

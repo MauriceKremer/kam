@@ -40,6 +40,26 @@ func (s apiScripts) Get(ctx context.Context, id string) (api.Script, error) {
 	return withPeriods(toAPIScript(script), s.runtime.TimerIntervals(), s.runtime.TimerSchedules()), nil
 }
 
+func (s apiScripts) Versions(ctx context.Context, id string) ([]api.ScriptVersion, error) {
+	stored, err := s.runtime.Versions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	versions := make([]api.ScriptVersion, 0, len(stored))
+	for _, item := range stored {
+		versions = append(versions, toAPIScriptVersion(item))
+	}
+	return versions, nil
+}
+
+func (s apiScripts) Version(ctx context.Context, id, fingerprint string) (api.ScriptVersion, error) {
+	version, err := s.runtime.Version(ctx, id, fingerprint)
+	if err != nil {
+		return api.ScriptVersion{}, translateScriptError(err)
+	}
+	return toAPIScriptVersion(version), nil
+}
+
 func (s apiScripts) Save(ctx context.Context, script api.Script, expectedRevision int64) (api.Script, error) {
 	saved, err := s.runtime.Save(ctx, toDBScript(script), expectedRevision)
 	if err != nil {
@@ -135,5 +155,14 @@ func toDBScript(script api.Script) db.AutomationScript {
 		ID: script.ID, Name: script.Name, Source: script.Source, Enabled: script.Enabled,
 		TimeoutMS: script.TimeoutMS, RuntimeStatus: script.RuntimeStatus, LastError: script.LastError,
 		Revision: script.Revision, CreatedAt: script.CreatedAt, UpdatedAt: script.UpdatedAt,
+	}
+}
+
+func toAPIScriptVersion(version db.AutomationScriptVersion) api.ScriptVersion {
+	return api.ScriptVersion{
+		Fingerprint: version.Fingerprint, ID: version.ID, Name: version.Name, Source: version.Source,
+		Enabled: version.Enabled, TimeoutMS: version.TimeoutMS, RuntimeStatus: version.RuntimeStatus,
+		LastError: version.LastError, Revision: version.Revision, CreatedAt: version.CreatedAt,
+		UpdatedAt: version.UpdatedAt, ArchivedAt: version.ArchivedAt,
 	}
 }
