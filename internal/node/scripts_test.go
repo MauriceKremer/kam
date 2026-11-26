@@ -6,6 +6,8 @@ package node
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -183,6 +185,63 @@ func TestScriptRoutesThroughUnifiedListener(t *testing.T) {
 	if status != http.StatusUnprocessableEntity || body == "" {
 		t.Fatalf("invalid validate: %d %q", status, body)
 	}
+}
+
+func TestScriptJournalRoutesThroughUnifiedListener(t *testing.T) {
+	server, _ := scriptServer(t)
+	sourceV1 := "def on_group_text(message):\n    pass\n# v1\n"
+	sourceV2 := "def on_group_text(message):\n    pass\n# v2\n"
+
+	status, body := doScript(t, http.MethodPost, scriptPath(server, "/scripts"),
+		`{"script":{"id":"journal","name":"journal","source":"def on_group_text(message):\n    pass\n# v1\n"}}`, "application/json")
+	if status != http.StatusCreated {
+		t.Fatalf("create: %d %s", status, body)
+	}
+	status, body = doScript(t, http.MethodPut, scriptPath(server, "/scripts/journal"),
+		`{"expected_revision":1,"script":{"name":"journal","source":"def on_group_text(message):\n    pass\n# v2\n"}}`, "application/json")
+	if status != http.StatusOK {
+		t.Fatalf("update: %d %s", status, body)
+	}
+
+	// The list returns just the fingerprint of the replaced source.
+	var fingerprints []string
+	status, body = doScript(t, http.MethodGet, scriptPath(server, "/scripts/journal/journal"), "", "")
+	if err := json.Unmarshal([]byte(body), &fingerprints); err != nil || status != http.StatusOK || len(fingerprints) != 1 {
+		t.Fatalf("journal list: %d %q error %v", status, body, err)
+	}
+	wantV1 := fingerprintOf(sourceV1)
+	if fingerprints[0] != wantV1 {
+		t.Fatalf("journal list fingerprint: got %q, want %q", fingerprints[0], wantV1)
+	}
+
+	// Reading by fingerprint returns that old version, source included.
+	status, body = doScript(t, http.MethodGet, scriptPath(server, "/scripts/journal/journal/"+wantV1), "", "")
+	var version api.ScriptVersion
+	if err := json.Unmarshal([]byte(body), &version); err != nil || status != http.StatusOK || version.Source != sourceV1 || version.Revision != 1 || version.Fingerprint != wantV1 || version.ArchivedAt == 0 {
+		t.Fatalf("journal read: %d %q version %+v error %v", status, body, version, err)
+	}
+
+	// A second update lists the newest fingerprint first.
+	status, body = doScript(t, http.MethodPut, scriptPath(server, "/scripts/journal"),
+		`{"expected_revision":2,"script":{"name":"journal","source":"def on_group_text(message):\n    pass\n# v3\n"}}`, "application/json")
+	if status != http.StatusOK {
+		t.Fatalf("second update: %d %s", status, body)
+	}
+	status, body = doScript(t, http.MethodGet, scriptPath(server, "/scripts/journal/journal"), "", "")
+	if err := json.Unmarshal([]byte(body), &fingerprints); err != nil || status != http.StatusOK || len(fingerprints) != 2 || fingerprints[0] != fingerprintOf(sourceV2) || fingerprints[1] != wantV1 {
+		t.Fatalf("journal order: %d %q %v error %v", status, body, fingerprints, err)
+	}
+
+	// An unknown fingerprint is a 404 with the capability's text.
+	status, body = doScript(t, http.MethodGet, scriptPath(server, "/scripts/journal/journal/0000000000000000"), "", "")
+	if status != http.StatusNotFound || body != `{"error":"automation script not found"}` {
+		t.Fatalf("missing fingerprint: %d %q", status, body)
+	}
+}
+
+func fingerprintOf(source string) string {
+	sum := sha256.Sum256([]byte(source))
+	return hex.EncodeToString(sum[:8])
 }
 
 func TestListenerPolicyCoversScriptRoutes(t *testing.T) {

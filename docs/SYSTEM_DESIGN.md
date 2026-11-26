@@ -543,8 +543,10 @@ close.
 
 ## 7. SQLite
 
-One file (`kam.db`) holds `adverts`, `group_texts`, the automation table
-`automation_scripts` (script source, timeout, status, last error, revision),
+One file (`kam.db`) holds `adverts`, `group_texts`, the automation tables
+`automation_scripts` (script source, timeout, status, last error, revision)
+and `automation_script_journal` (superseded revisions, archived when a
+revision is replaced or the script is deleted),
 and the room tables `rooms` (id and public key), `room_posts` (room, server
 timestamp, author key, text) and `room_clients` (role, cursor, replay
 timestamp, stored route). Channel configuration is **not** persisted here — it lives in `kam.yml` (see

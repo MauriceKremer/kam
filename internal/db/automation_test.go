@@ -176,3 +176,84 @@ func TestAutomationRepositorySaveRules(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAutomationRepositoryJournalsReplacedVersions(t *testing.T) {
+	repository := openAutomationTestRepository(t, filepath.Join(t.TempDir(), "kam.db"))
+	ctx := context.Background()
+	first := saveScript(t, repository, "journal", "journal")
+	if versions, err := repository.Versions(ctx, first.ID); err != nil || len(versions) != 0 {
+		t.Fatalf("new script must have no journal: %+v, error %v", versions, err)
+	}
+
+	second, err := repository.Save(ctx, AutomationScript{ID: first.ID, Name: first.Name, Source: first.Source + "# v2\n", Enabled: true, TimeoutMS: 250}, first.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions, err := repository.Versions(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("update must journal one version: %+v", versions)
+	}
+	old := versions[0]
+	if old.Revision != first.Revision || old.Name != first.Name || old.Source != first.Source || old.TimeoutMS != first.TimeoutMS || old.Enabled {
+		t.Fatalf("journaled version does not match the replaced row: %+v", old)
+	}
+	if old.ArchivedAt == 0 {
+		t.Fatal("journaled version has no archived_at")
+	}
+	if old.Fingerprint != sourceFingerprint(old.Source) || len(old.Fingerprint) != 16 {
+		t.Fatalf("journaled version fingerprint: %q", old.Fingerprint)
+	}
+	// The fingerprint is stored on the row, not derived at read time.
+	var storedFingerprint string
+	if err := repository.db.QueryRow(`SELECT fingerprint FROM automation_script_journal WHERE script_id = ? AND revision = ?`, first.ID, first.Revision).Scan(&storedFingerprint); err != nil || storedFingerprint != old.Fingerprint {
+		t.Fatalf("journal row fingerprint: %q, error %v", storedFingerprint, err)
+	}
+
+	// A stale update changes nothing and journals nothing.
+	if _, err := repository.Save(ctx, AutomationScript{ID: first.ID, Name: first.Name, Source: "x", TimeoutMS: 500}, first.Revision); !errors.Is(err, ErrAutomationConflict) {
+		t.Fatalf("stale update: got %v", err)
+	}
+	if versions, _ := repository.Versions(ctx, first.ID); len(versions) != 1 {
+		t.Fatalf("failed update journaled a version: %+v", versions)
+	}
+
+	// Each successful change appends one revision; newest is listed first.
+	if _, err := repository.Save(ctx, AutomationScript{ID: second.ID, Name: second.Name, Source: second.Source, Enabled: false, TimeoutMS: second.TimeoutMS}, second.Revision); err != nil {
+		t.Fatal(err)
+	}
+	versions, err = repository.Versions(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 2 || versions[0].Revision != second.Revision || versions[1].Revision != first.Revision {
+		t.Fatalf("versions not in newest-first order: %+v", versions)
+	}
+}
+
+func TestAutomationRepositoryJournalsDeletedVersion(t *testing.T) {
+	repository := openAutomationTestRepository(t, filepath.Join(t.TempDir(), "kam.db"))
+	ctx := context.Background()
+	script := saveScript(t, repository, "gone", "gone")
+
+	if err := repository.Delete(ctx, script.ID, script.Revision); err != nil {
+		t.Fatal(err)
+	}
+	versions, err := repository.Versions(ctx, script.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 || versions[0].Revision != script.Revision || versions[0].Source != script.Source {
+		t.Fatalf("delete must journal the final version: %+v", versions)
+	}
+
+	// Repeating the delete of a now-missing script journals nothing new.
+	if err := repository.Delete(ctx, script.ID, script.Revision); !errors.Is(err, ErrAutomationNotFound) {
+		t.Fatalf("second delete: got %v", err)
+	}
+	if versions, _ := repository.Versions(ctx, script.ID); len(versions) != 1 {
+		t.Fatalf("failed delete journaled a version: %+v", versions)
+	}
+}

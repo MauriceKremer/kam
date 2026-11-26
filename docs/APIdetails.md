@@ -104,6 +104,17 @@ Every read and write returns a script in this shape:
 | `revision` | Counter that goes up on every change; pass it as `expected_revision` to make a change. |
 | `created_at`, `updated_at` | Unix epoch seconds. |
 
+### The version object
+
+A journal version has the script fields above (`id`, `name`, `source`,
+`enabled`, `timeout_ms`, `runtime_status`, `last_error`, `revision`,
+`created_at`, `updated_at`) plus:
+
+| Field | Meaning |
+|---|---|
+| `fingerprint` | Stored with each journal row: the first 8 bytes of the SHA-256 of `source`, hex-encoded (16 characters), and the id used in the URL. Revisions with identical source share it. |
+| `archived_at` | Unix epoch seconds when the revision was replaced or deleted. |
+
 ### Endpoints
 
 | Method & path | Purpose |
@@ -112,6 +123,8 @@ Every read and write returns a script in this shape:
 | `GET /scripts` | List all scripts. |
 | `POST /scripts` | Create a script. |
 | `GET /scripts/{id}` | Read one script. |
+| `GET /scripts/{id}/journal` | List the source fingerprints of superseded revisions. |
+| `GET /scripts/{id}/journal/{fingerprint}` | Read one superseded revision by fingerprint. |
 | `PUT /scripts/{id}` | Update source, name, enabled state or timeout. |
 | `DELETE /scripts/{id}?revision=N` | Delete a script. |
 | `POST /scripts/validate` | Compile source without saving. |
@@ -148,6 +161,17 @@ stale or the new name is taken; `404` for an unknown id.
 **DELETE /scripts/{id}?revision=N** — returns `204`. N must be the current
 revision. `404` for an unknown id, `400` when the revision is missing or
 invalid, `409` when stale.
+
+**GET /scripts/{id}/journal** — returns a JSON array of fingerprint strings,
+newest revision first. A fingerprint is the first 8 bytes of the SHA-256 of
+the version's `source`, hex-encoded. Revisions with identical source share a
+fingerprint, so each appears once. Returns `[]` when the script has no
+superseded revisions. Add `?fingerprintId=...` to return that one version
+instead of the list.
+
+**GET /scripts/{id}/journal/{fingerprint}** — returns the newest superseded
+revision with that source fingerprint, including its source and `archived_at`.
+`404` when the script has no revision with that fingerprint.
 
 **POST /scripts/validate** — body `{"id": "scratch", "source": "...",
 "timeout_ms": 500}` (`id` optional, `timeout_ms` optional). Returns

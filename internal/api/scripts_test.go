@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,14 +16,16 @@ import (
 // tests below check what the handler forwards and how it maps errors to
 // status codes — never what a real capability does.
 type scriptFake struct {
-	list    func() ([]Script, error)
-	get     func(string) (Script, error)
-	save    func(Script, int64) (Script, error)
-	del     func(string, int64) error
-	enabled func(string, bool, int64) (Script, error)
-	recover func(string, int64, int64) (Script, error)
-	prepare func(string, string, int64) error
-	dryRun  func(ScriptDryRunRequest) (ScriptDryRunResult, error)
+	list     func() ([]Script, error)
+	get      func(string) (Script, error)
+	save     func(Script, int64) (Script, error)
+	del      func(string, int64) error
+	enabled  func(string, bool, int64) (Script, error)
+	recover  func(string, int64, int64) (Script, error)
+	prepare  func(string, string, int64) error
+	dryRun   func(ScriptDryRunRequest) (ScriptDryRunResult, error)
+	versions func(string) ([]ScriptVersion, error)
+	version  func(string, string) (ScriptVersion, error)
 
 	record []string
 }
@@ -91,6 +94,22 @@ func (f *scriptFake) DryRun(_ context.Context, request ScriptDryRunRequest) (Scr
 	return f.dryRun(request)
 }
 
+func (f *scriptFake) Versions(_ context.Context, id string) ([]ScriptVersion, error) {
+	f.record = append(f.record, "versions:"+id)
+	if f.versions == nil {
+		return nil, nil
+	}
+	return f.versions(id)
+}
+
+func (f *scriptFake) Version(_ context.Context, id, fingerprint string) (ScriptVersion, error) {
+	f.record = append(f.record, "version:"+id+":"+fingerprint)
+	if f.version == nil {
+		return ScriptVersion{}, nil
+	}
+	return f.version(id, fingerprint)
+}
+
 func scriptHandler(scripts Scripts) http.Handler {
 	return NewHandlerWithResources(newRingSource(8), func() Status { return Status{} }, scripts, nil, nil, nil, nil, nil)
 }
@@ -112,6 +131,8 @@ func TestScriptRoutesAnswerDisabledWithoutAutomation(t *testing.T) {
 		{http.MethodGet, "/scripts", ""},
 		{http.MethodPost, "/scripts", `{"script":{"id":"x"}}`},
 		{http.MethodGet, "/scripts/x", ""},
+		{http.MethodGet, "/scripts/x/journal", ""},
+		{http.MethodGet, "/scripts/x/journal/abc123", ""},
 		{http.MethodPut, "/scripts/x", `{"script":{}}`},
 		{http.MethodDelete, "/scripts/x?revision=1", ""},
 		{http.MethodPost, "/scripts/validate", `{"source":"def on_group_text(message):\n    pass\n"}`},
@@ -397,5 +418,56 @@ func TestScriptCreateRejectsOversizedBody(t *testing.T) {
 	atCap := prefix + strings.Repeat("a", maxRequestBodyBytes-len(prefix)-len(suffix)) + suffix
 	if response := scriptRequest(handler, http.MethodPost, "/scripts", atCap, "application/json"); response.Code != http.StatusCreated || !saved {
 		t.Fatalf("body at the cap: %d %q", response.Code, response.Body)
+	}
+}
+
+func TestScriptJournalRoutes(t *testing.T) {
+	var fake scriptFake
+	handler := scriptHandler(&fake)
+
+	// The list endpoint returns fingerprints, newest first, once per source.
+	fake.versions = func(string) ([]ScriptVersion, error) {
+		return []ScriptVersion{
+			{Fingerprint: "aaaa", Revision: 3},
+			{Fingerprint: "bbbb", Revision: 2},
+			{Fingerprint: "aaaa", Revision: 1},
+		}, nil
+	}
+	response := scriptRequest(handler, http.MethodGet, "/scripts/one/journal", "", "")
+	if response.Code != http.StatusOK || response.Body.String() != `["aaaa","bbbb"]` {
+		t.Fatalf("journal list: %d %q", response.Code, response.Body)
+	}
+
+	// No revisions reads as an empty array, never null.
+	fake.versions = func(string) ([]ScriptVersion, error) { return nil, nil }
+	if response := scriptRequest(handler, http.MethodGet, "/scripts/one/journal", "", ""); response.Code != http.StatusOK || response.Body.String() != "[]" {
+		t.Fatalf("empty journal list: %d %q", response.Code, response.Body)
+	}
+
+	// The fingerprint is the path parameter and comes back on the record.
+	var gotFingerprint string
+	fake.version = func(id, fingerprint string) (ScriptVersion, error) {
+		gotFingerprint = fingerprint
+		return ScriptVersion{Fingerprint: fingerprint, ID: id, Source: "old source", Revision: 1, ArchivedAt: 42}, nil
+	}
+	response = scriptRequest(handler, http.MethodGet, "/scripts/one/journal/aaaa", "", "")
+	var version ScriptVersion
+	if err := json.Unmarshal(response.Body.Bytes(), &version); err != nil || response.Code != http.StatusOK || gotFingerprint != "aaaa" || version.Source != "old source" || version.ArchivedAt != 42 {
+		t.Fatalf("journal get: %d %q fingerprint %q version %+v error %v", response.Code, response.Body, gotFingerprint, version, err)
+	}
+
+	// The same lookup accepts the fingerprint as a query parameter.
+	gotFingerprint = ""
+	response = scriptRequest(handler, http.MethodGet, "/scripts/one/journal?fingerprintId=bbbb", "", "")
+	if response.Code != http.StatusOK || gotFingerprint != "bbbb" {
+		t.Fatalf("journal query get: %d %q fingerprint %q", response.Code, response.Body, gotFingerprint)
+	}
+
+	// A fingerprint that is not in the journal is a 404 with the capability text.
+	fake.version = func(string, string) (ScriptVersion, error) {
+		return ScriptVersion{}, &ScriptError{Class: ScriptErrorNotFound, Message: "automation script not found"}
+	}
+	if response := scriptRequest(handler, http.MethodGet, "/scripts/one/journal/missing", "", ""); response.Code != http.StatusNotFound || response.Body.String() != `{"error":"automation script not found"}` {
+		t.Fatalf("missing version: %d %q", response.Code, response.Body)
 	}
 }
